@@ -27,7 +27,7 @@ jobs:
           filters: |
             codechange:
               - ".github/workflows/build-test.yaml"
-              - "Dockerfile"
+              - "Dockerfile.fips"
               - "go.mod"
               - "go.sum"
               - "cmd/**"
