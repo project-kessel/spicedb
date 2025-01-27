@@ -1,12 +1,7 @@
 FROM registry.access.redhat.com/ubi8/ubi-minimal:8.10-1154 AS base
 ARG TARGETARCH
 USER root
-RUN microdnf install -y tar gzip make which git gcc
-
-# Install Go
-RUN curl -O -J https://dl.google.com/go/go1.23.1.linux-${TARGETARCH}.tar.gz && \
-    tar -C /usr/local -xzf go1.23.1.linux-${TARGETARCH}.tar.gz && \
-    ln -s /usr/local/go/bin/go /usr/local/bin/go
+RUN microdnf install -y tar gzip make which git gcc go-toolset
 
 # Builder for spicedb
 FROM base AS spicedb-builder
@@ -18,15 +13,16 @@ COPY . .
 RUN mkdir /tmp/go && GOPATH=/tmp/go GOCACHE=/tmp/go go install github.com/acardace/fips-detect@latest
 RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/go/pkg/mod go mod download && \
     go mod tidy && \
-    GOEXPERIMENT=boringcrypto GOOS=linux GOARCH=${TARGETARCH} GOFLAGS="" go build -tags=fips_enabled -gcflags=all=-trimpath=/go -asmflags=all=-trimpath=/go ./cmd/...
+    GOEXPERIMENT=strictfipsruntime,boringcrypto GOOS=linux GOARCH=${TARGETARCH} GOFLAGS="" go build -tags=fips_enabled -gcflags=all=-trimpath=/go -asmflags=all=-trimpath=/go ./cmd/...
 
 # Builder for health probe
 FROM base AS health-probe-builder
 WORKDIR /go/src/app
 RUN git clone https://github.com/authzed/grpc-health-probe.git
 WORKDIR /go/src/app/grpc-health-probe
-RUN git checkout 6d38dca5b401cd800e34400522721b895a70df7f
-RUN CGO_ENABLED=1 GOBIN=/go/bin go install -a -tags netgo -ldflags=-w
+# Bump this when moving to go 1.23+
+RUN git checkout aefcf1106afeb10e87df1649b21fd20d2ef79d2f
+RUN GOEXPERIMENT=strictfipsruntime,boringcrypto CGO_ENABLED=1 GOBIN=/go/bin go install -a -tags netgo -ldflags=-w
 
 # Final stage
 FROM base
