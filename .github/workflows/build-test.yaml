@@ -15,7 +15,7 @@ env:
   DOCKERHUB_PUBLIC_USER: "spicedbgithubactions"
 jobs:
   paths-filter:
-    runs-on: "depot-ubuntu-24.04-small"
+    runs-on: "ubuntu-latest"
     outputs:
       codechange: "${{ steps.code-filter.outputs.codechange }}"
       protochange: "${{ steps.proto-filter.outputs.protochange }}"
@@ -27,7 +27,7 @@ jobs:
           filters: |
             codechange:
               - ".github/workflows/build-test.yaml"
-              - "Dockerfile"
+              - "Dockerfile.fips"
               - "go.mod"
               - "go.sum"
               - "cmd/**"
@@ -45,7 +45,7 @@ jobs:
               - "go.mod"
   build:
     name: "Build Binary & Image"
-    runs-on: "depot-ubuntu-24.04-4"
+    runs-on: "ubuntu-latest"
     needs: "paths-filter"
     if: |
       needs.paths-filter.outputs.codechange == 'true'
@@ -62,7 +62,7 @@ jobs:
 
   unit:
     name: "Unit"
-    runs-on: "depot-ubuntu-24.04-4"
+    runs-on: "ubuntu-latest"
     needs: "paths-filter"
     if: |
       needs.paths-filter.outputs.codechange == 'true'
@@ -93,7 +93,7 @@ jobs:
 
   integration:
     name: "Integration Tests"
-    runs-on: "depot-ubuntu-24.04-4"
+    runs-on: "ubuntu-latest"
     needs: "paths-filter"
     if: |
       needs.paths-filter.outputs.codechange == 'true'
@@ -109,7 +109,7 @@ jobs:
 
   datastoreinttest:
     name: "Datastore Integration Tests"
-    runs-on: "depot-ubuntu-24.04-8"
+    runs-on: "ubuntu-latest"
     needs: "paths-filter"
     strategy:
       fail-fast: false
@@ -269,7 +269,7 @@ jobs:
 
   e2e:
     name: "E2E"
-    runs-on: "depot-ubuntu-24.04-8"
+    runs-on: "ubuntu-latest"
     needs: "paths-filter"
     if: |
       needs.paths-filter.outputs.codechange == 'true'
@@ -302,7 +302,7 @@ jobs:
           path: "e2e/newenemy/*.log"
   analyzers-unit-tests:
     name: "Analyzers Unit Tests"
-    runs-on: "depot-ubuntu-24.04-small"
+    runs-on: "ubuntu-latest"
     needs: "paths-filter"
     if: |
       needs.paths-filter.outputs.codechange == 'true'
@@ -316,7 +316,7 @@ jobs:
         run: "go run mage.go test:analyzers"
   development:
     name: "WASM Tests"
-    runs-on: "ubuntu-22.04" # do not run Depot runners due to somehow triggering https://github.com/agnivade/wasmbrowsertest/issues/40
+    runs-on: "ubuntu-latest"
     needs: "paths-filter"
     if: |
       needs.paths-filter.outputs.codechange == 'true'
@@ -328,7 +328,7 @@ jobs:
 
   protobuf:
     name: "Generate Protobufs"
-    runs-on: "depot-ubuntu-24.04-small"
+    runs-on: "ubuntu-latest"
     needs: "paths-filter"
     if: |
       needs.paths-filter.outputs.protochange == 'true'
