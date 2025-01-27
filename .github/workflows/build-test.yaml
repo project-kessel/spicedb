@@ -114,8 +114,8 @@ jobs:
           token: "${{ secrets.CODECOV_TOKEN }}"
           fail_ci_if_error: false
 
-  datastoreinttest:
-    name: "Datastore Integration Tests"
+  datastore:
+    name: "Datastore Tests"
     runs-on: "ubuntu-latest"
     needs: "paths-filter"
     strategy:
