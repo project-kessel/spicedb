@@ -9,8 +9,7 @@ WORKDIR /go/src/app
 ENV CGO_ENABLED=1
 COPY go.mod go.sum ./
 COPY . .
-# adds fips-detect tool for FIPS validation -- likely not needed long term
-RUN mkdir /tmp/go && GOPATH=/tmp/go GOCACHE=/tmp/go go install github.com/acardace/fips-detect@latest
+
 RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/go/pkg/mod go mod download && \
     go mod tidy && \
     GOEXPERIMENT=strictfipsruntime,boringcrypto GOOS=linux GOARCH=${TARGETARCH} GOFLAGS="" go build -tags=fips_enabled -gcflags=all=-trimpath=/go -asmflags=all=-trimpath=/go ./cmd/...
@@ -22,13 +21,14 @@ RUN git clone https://github.com/authzed/grpc-health-probe.git
 WORKDIR /go/src/app/grpc-health-probe
 # Bump this when moving to go 1.23+
 RUN git checkout aefcf1106afeb10e87df1649b21fd20d2ef79d2f
-RUN GOEXPERIMENT=strictfipsruntime,boringcrypto CGO_ENABLED=1 GOBIN=/go/bin go install -a -tags netgo -ldflags=-w
+# manually patches Critical CVE's until we can get to 1.23
+RUN GOBIN=/go/bin go get -u golang.org/x/crypto@v0.31.0 && go get -u golang.org/x/net@v0.33.0 && \
+    GOEXPERIMENT=strictfipsruntime,boringcrypto CGO_ENABLED=1 GOBIN=/go/bin go install -a -tags netgo -ldflags=-w
 
 # Final stage
-FROM base
+FROM registry.access.redhat.com/ubi9/ubi-minimal:9.5-1736404155
 COPY --from=health-probe-builder /go/bin/grpc-health-probe /bin/grpc_health_probe
 COPY --from=spicedb-builder /go/src/app/spicedb /usr/local/bin/spicedb
-COPY --from=spicedb-builder /tmp/go/bin/fips-detect /usr/local/bin/
 ENV PATH="$PATH:/usr/local/bin"
 EXPOSE 50051
 ENTRYPOINT ["spicedb"]
