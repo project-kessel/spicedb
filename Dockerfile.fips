@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/ubi9/ubi-minimal:9.5-1736404155 AS base
+FROM registry.access.redhat.com/ubi9/ubi-minimal:9.5-1741850109 AS base
 ARG TARGETARCH
 USER root
 RUN microdnf install -y tar gzip make which git gcc go-toolset
