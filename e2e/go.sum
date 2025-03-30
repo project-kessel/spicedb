@@ -69,8 +69,8 @@ github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dlmiddlecote/sqlstats v1.0.2 h1:gSU11YN23D/iY50A2zVYwgXgy072khatTsIW6UPjUtI=
 github.com/dlmiddlecote/sqlstats v1.0.2/go.mod h1:0CWaIh/Th+z2aI6Q9Jpfg/o21zmGxWhbByHgQSCUQvY=
-github.com/ecordell/optgen v0.0.10-0.20230609182709-018141bf9698 h1:Ms2IoxhBTljF7ItN1Oj4yy9DVJHn5L4A8sydRkrxoUE=
-github.com/ecordell/optgen v0.0.10-0.20230609182709-018141bf9698/go.mod h1:+YZ4tk5pNGMoeH+Y4F4HeDDj0SLOlIgMMNae7az4h5g=
+github.com/ecordell/optgen v0.0.10-0.20230612144226-966d7a8de7ac h1:l/awcw0nRUSXEKMa6aWGbEr9qe8YpHoYgywce38sIWY=
+github.com/ecordell/optgen v0.0.10-0.20230612144226-966d7a8de7ac/go.mod h1:+YZ4tk5pNGMoeH+Y4F4HeDDj0SLOlIgMMNae7az4h5g=
 github.com/emirpasic/gods v1.18.1 h1:FXtiHYKDGKCW2KzwZKx0iC0PQmdlorYgdFG9jPXJ1Bc=
 github.com/emirpasic/gods v1.18.1/go.mod h1:8tpGGwCnJ5H4r6BWwaV6OrWmMoPhUl5jm/FMNAnJvWQ=
 github.com/envoyproxy/go-control-plane v0.9.0/go.mod h1:YTl/9mNaCwkRvm6d1a2C3ymFceY/DCBVvsKhRF0iEA4=
