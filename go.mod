@@ -1,6 +1,8 @@
 module github.com/authzed/spicedb
 
-go 1.22.2
+go 1.23.0
+
+toolchain go1.23.8
 
 require (
 	buf.build/gen/go/prometheus/prometheus/protocolbuffers/go v1.33.0-20240125203449-c3402bbea49b.1
@@ -336,7 +338,7 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.26.0 // indirect
 	golang.org/x/crypto v0.21.0 // indirect
-	golang.org/x/exp/typeparams v0.0.0-20240314144324-c7f7c6466f7f // indirect
+	golang.org/x/exp/typeparams v0.0.0-20250305212735-054e65f0b394 // indirect
 	golang.org/x/net v0.23.0 // indirect
 	golang.org/x/oauth2 v0.18.0 // indirect
 	golang.org/x/sys v0.18.0 // indirect
