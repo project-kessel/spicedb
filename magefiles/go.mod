@@ -30,7 +30,7 @@ require (
 	github.com/chromedp/chromedp v0.9.2 // indirect
 	github.com/chromedp/sysutil v1.0.0 // indirect
 	github.com/containerd/stargz-snapshotter/estargz v0.15.1 // indirect
-	github.com/cpuguy83/go-md2man/v2 v2.0.3 // indirect
+	github.com/cpuguy83/go-md2man/v2 v2.0.6 // indirect
 	github.com/creasty/defaults v1.7.0 // indirect
 	github.com/dave/jennifer v1.6.1 // indirect
 	github.com/distribution/reference v0.5.0 // indirect
