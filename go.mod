@@ -108,7 +108,7 @@ require (
 
 require (
 	4d63.com/gocheckcompilerdirectives v1.2.1 // indirect
-	4d63.com/gochecknoglobals v0.2.1 // indirect
+	4d63.com/gochecknoglobals v0.2.2 // indirect
 	buf.build/gen/go/gogo/protobuf/protocolbuffers/go v1.33.0-20210810001428-4df00b267f94.1 // indirect
 	cloud.google.com/go v0.112.1 // indirect
 	cloud.google.com/go/compute v1.24.0 // indirect
