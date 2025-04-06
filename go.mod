@@ -9,7 +9,7 @@ require (
 	github.com/IBM/pgxpoolprometheus v1.1.1
 	github.com/Masterminds/squirrel v1.5.4
 	github.com/authzed/authzed-go v0.11.2-0.20240320204618-9622b72a72c6
-	github.com/authzed/cel-go v0.17.5
+	github.com/authzed/cel-go v0.20.2
 	github.com/authzed/consistent v0.1.0
 	github.com/authzed/grpcutil v0.0.0-20240123092924-129dc0a6a6e1
 	github.com/aws/aws-sdk-go v1.51.11
@@ -99,6 +99,7 @@ require (
 )
 
 require (
+	github.com/antlr4-go/antlr/v4 v4.13.0 // indirect
 	github.com/bombsimon/wsl/v4 v4.2.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.0.0-alpha.1 // indirect
 	github.com/jjti/go-spancheck v0.5.3 // indirect
@@ -134,7 +135,6 @@ require (
 	github.com/alexkohler/nakedret/v2 v2.0.4 // indirect
 	github.com/alexkohler/prealloc v1.0.0 // indirect
 	github.com/alingse/asasalint v0.0.11 // indirect
-	github.com/antlr/antlr4/runtime/Go/antlr/v4 v4.0.0-20230512164433-5d1fd1a340c9 // indirect
 	github.com/ashanbrown/forbidigo v1.6.0 // indirect
 	github.com/ashanbrown/makezero v1.1.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
