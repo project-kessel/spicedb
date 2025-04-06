@@ -1,6 +1,8 @@
 module magefiles
 
-go 1.22.2
+go 1.23.0
+
+toolchain go1.23.8
 
 require (
 	github.com/agnivade/wasmbrowsertest v0.8.0
@@ -11,7 +13,7 @@ require (
 	github.com/planetscale/vtprotobuf v0.5.1-0.20231212170721-e7d721933795
 	golang.org/x/tools v0.19.0
 	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.3.0
-	google.golang.org/protobuf v1.33.0
+	google.golang.org/protobuf v1.36.6
 	mvdan.cc/gofumpt v0.6.0
 )
 
@@ -99,6 +101,6 @@ require (
 	golang.org/x/term v0.18.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20240304212257-790db918fca8 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20240304212257-790db918fca8 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20250404141209-ee84b53bf3d0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
