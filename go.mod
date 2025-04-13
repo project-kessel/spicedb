@@ -59,7 +59,7 @@ require (
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58
 	github.com/planetscale/vtprotobuf v0.6.0
 	github.com/prometheus/client_golang v1.19.0
-	github.com/prometheus/client_model v0.6.0
+	github.com/prometheus/client_model v0.6.2
 	github.com/prometheus/common v0.51.1
 	github.com/rs/cors v1.10.1
 	github.com/rs/xid v1.5.0
@@ -91,7 +91,7 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20240311132316-a219d84964c2
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240318140521-94a12d6c2237
 	google.golang.org/grpc v1.62.1
-	google.golang.org/protobuf v1.33.0
+	google.golang.org/protobuf v1.36.6
 	gopkg.in/yaml.v2 v2.4.0
 	gopkg.in/yaml.v3 v3.0.1
 	resenje.org/singleflight v0.4.1
