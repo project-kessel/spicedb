@@ -57,8 +57,8 @@ github.com/cncf/udpa/go v0.0.0-20220112060539-c52dc94e7fbe/go.mod h1:6pvJx4me5XP
 github.com/cncf/xds/go v0.0.0-20231128003011-0fa0005c9caa h1:jQCWAUqqlij9Pgj2i/PB79y4KOPYVyFYdROxgaCwdTQ=
 github.com/cncf/xds/go v0.0.0-20231128003011-0fa0005c9caa/go.mod h1:x/1Gn8zydmfq8dk6e9PdstVsDgu9RuyIIJqAaF//0IM=
 github.com/coreos/go-systemd/v22 v22.5.0/go.mod h1:Y58oyj3AT4RCenI/lSvhwexgC+NSVTIJ3seZv2GcEnc=
-github.com/creasty/defaults v1.7.0 h1:eNdqZvc5B509z18lD8yc212CAqJNvfT1Jq6L8WowdBA=
-github.com/creasty/defaults v1.7.0/go.mod h1:iGzKe6pbEHnpMPtfDXZEr0NVxWnPTjb1bbDy08fPzYM=
+github.com/creasty/defaults v1.8.0 h1:z27FJxCAa0JKt3utc0sCImAEb+spPucmKoOdLHvHYKk=
+github.com/creasty/defaults v1.8.0/go.mod h1:iGzKe6pbEHnpMPtfDXZEr0NVxWnPTjb1bbDy08fPzYM=
 github.com/dalzilio/rudd v1.1.1-0.20230806153452-9e08a6ea8170 h1:bHEN1z3EOO/IXHTQ8ZcmGoW4gTJt+mSrH2Sd458uo0E=
 github.com/dalzilio/rudd v1.1.1-0.20230806153452-9e08a6ea8170/go.mod h1:IxPC4Bdi3WqUwyGBMgLrWWGx67aRtUAZmOZrkIr7qaM=
 github.com/dave/jennifer v1.6.1 h1:T4T/67t6RAA5AIV6+NP8Uk/BIsXgDoqEowgycdQQLuk=
