@@ -1,6 +1,8 @@
 module github.com/authzed/spicedb
 
-go 1.22.2
+go 1.23
+
+toolchain go1.23.8
 
 require (
 	buf.build/gen/go/prometheus/prometheus/protocolbuffers/go v1.33.0-20240125203449-c3402bbea49b.1
@@ -357,7 +359,7 @@ require (
 	k8s.io/utils v0.0.0-20230726121419-3b25d923346b // indirect
 	mvdan.cc/gofumpt v0.6.0 // indirect
 	mvdan.cc/unparam v0.0.0-20240104100049-c549a3470d14 // indirect
-	sigs.k8s.io/json v0.0.0-20221116044647-bc3834ca7abd // indirect
+	sigs.k8s.io/json v0.0.0-20241014173422-cfa47c3a1cc8 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.1 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
