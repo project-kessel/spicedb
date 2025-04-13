@@ -100,7 +100,7 @@ require (
 
 require (
 	github.com/bombsimon/wsl/v4 v4.2.1 // indirect
-	github.com/go-viper/mapstructure/v2 v2.0.0-alpha.1 // indirect
+	github.com/go-viper/mapstructure/v2 v2.2.1 // indirect
 	github.com/jjti/go-spancheck v0.5.3 // indirect
 	github.com/spf13/afero v1.11.0 // indirect
 	go-simpler.org/musttag v0.9.0 // indirect
