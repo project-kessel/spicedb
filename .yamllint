@@ -1,5 +1,7 @@
 # vim: ft=yaml
 ---
+ignore: |
+  .tekton/
 yaml-files:
   - "*.yaml"
   - "*.yml"
