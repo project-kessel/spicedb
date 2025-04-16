@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ccoveille/go-safecast"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -23,6 +24,8 @@ func RegisterTypes(m *pgtype.Map) {
 	})
 	m.RegisterDefaultPgType(pgSnapshot{}, "snapshot")
 	m.RegisterDefaultPgType(xid8{}, "xid")
+	// needed for text query modes (exec, and simple), so that caveats are serialized as JSONB
+	m.RegisterDefaultPgType(map[string]any{}, "jsonb")
 }
 
 type SnapshotCodec struct {
@@ -141,6 +144,21 @@ const (
 	concurrent
 )
 
+func (cr comparisonResult) String() string {
+	switch cr {
+	case equal:
+		return "="
+	case lt:
+		return "<"
+	case gt:
+		return ">"
+	case concurrent:
+		return "~"
+	default:
+		return "?"
+	}
+}
+
 // compare will return whether we can definitely assert that one snapshot was
 // definitively created after, before, at the same time, or was executed
 // concurrent with another transaction. We assess this based on whether a
@@ -148,6 +166,9 @@ const (
 // of in-progress transactions. E.g. if one snapshot only sees txids 1 and 3 as
 // visible but another transaction sees 1-3 as visible, that transaction is
 // greater.
+// example:
+// 0:4:2   -> (1,3 visible)
+// 0:4:2,3 -> (1 visible)
 func (s pgSnapshot) compare(rhs pgSnapshot) comparisonResult {
 	rhsHasMoreInfo := rhs.anyTXVisible(s.xmax, s.xipList)
 	lhsHasMoreInfo := s.anyTXVisible(rhs.xmax, rhs.xipList)
@@ -256,7 +277,9 @@ func (s pgSnapshot) markInProgress(txid uint64) pgSnapshot {
 	var numToDrop int
 	startingXipLen := len(newSnapshot.xipList)
 	for numToDrop = 0; numToDrop < startingXipLen; numToDrop++ {
-		if newSnapshot.xipList[startingXipLen-1-numToDrop] != newSnapshot.xmax-uint64(numToDrop)-1 {
+		// numToDrop should be nonnegative
+		uintNumToDrop, _ := safecast.ToUint64(numToDrop)
+		if newSnapshot.xipList[startingXipLen-1-numToDrop] != newSnapshot.xmax-uintNumToDrop-1 {
 			break
 		}
 	}

@@ -43,6 +43,7 @@ func (c *Config) ToOption() ConfigOption {
 		to.PresharedSecureKey = c.PresharedSecureKey
 		to.ShutdownGracePeriod = c.ShutdownGracePeriod
 		to.DisableVersionResponse = c.DisableVersionResponse
+		to.ServerName = c.ServerName
 		to.HTTPGateway = c.HTTPGateway
 		to.HTTPGatewayUpstreamAddr = c.HTTPGatewayUpstreamAddr
 		to.HTTPGatewayUpstreamTLSCertPath = c.HTTPGatewayUpstreamTLSCertPath
@@ -70,8 +71,10 @@ func (c *Config) ToOption() ConfigOption {
 		to.Dispatcher = c.Dispatcher
 		to.DispatchHashringReplicationFactor = c.DispatchHashringReplicationFactor
 		to.DispatchHashringSpread = c.DispatchHashringSpread
+		to.DispatchChunkSize = c.DispatchChunkSize
 		to.DispatchSecondaryUpstreamAddrs = c.DispatchSecondaryUpstreamAddrs
 		to.DispatchSecondaryUpstreamExprs = c.DispatchSecondaryUpstreamExprs
+		to.DispatchPrimaryDelayForTesting = c.DispatchPrimaryDelayForTesting
 		to.DispatchCacheConfig = c.DispatchCacheConfig
 		to.ClusterDispatchCacheConfig = c.ClusterDispatchCacheConfig
 		to.DisableV1SchemaAPI = c.DisableV1SchemaAPI
@@ -81,6 +84,13 @@ func (c *Config) ToOption() ConfigOption {
 		to.MaxDatastoreReadPageSize = c.MaxDatastoreReadPageSize
 		to.StreamingAPITimeout = c.StreamingAPITimeout
 		to.WatchHeartbeat = c.WatchHeartbeat
+		to.MaxReadRelationshipsLimit = c.MaxReadRelationshipsLimit
+		to.MaxDeleteRelationshipsLimit = c.MaxDeleteRelationshipsLimit
+		to.MaxLookupResourcesLimit = c.MaxLookupResourcesLimit
+		to.MaxBulkExportRelationshipsLimit = c.MaxBulkExportRelationshipsLimit
+		to.EnableExperimentalLookupResources = c.EnableExperimentalLookupResources
+		to.EnableExperimentalRelationshipExpiration = c.EnableExperimentalRelationshipExpiration
+		to.EnableRevisionHeartbeat = c.EnableRevisionHeartbeat
 		to.MetricsAPI = c.MetricsAPI
 		to.UnaryMiddlewareModification = c.UnaryMiddlewareModification
 		to.StreamingMiddlewareModification = c.StreamingMiddlewareModification
@@ -104,6 +114,7 @@ func (c Config) DebugMap() map[string]any {
 	debugMap["PresharedSecureKey"] = helpers.SensitiveDebugValue(c.PresharedSecureKey)
 	debugMap["ShutdownGracePeriod"] = helpers.DebugValue(c.ShutdownGracePeriod, false)
 	debugMap["DisableVersionResponse"] = helpers.DebugValue(c.DisableVersionResponse, false)
+	debugMap["ServerName"] = helpers.DebugValue(c.ServerName, false)
 	debugMap["HTTPGateway"] = helpers.DebugValue(c.HTTPGateway, false)
 	debugMap["HTTPGatewayUpstreamAddr"] = helpers.DebugValue(c.HTTPGatewayUpstreamAddr, false)
 	debugMap["HTTPGatewayUpstreamTLSCertPath"] = helpers.DebugValue(c.HTTPGatewayUpstreamTLSCertPath, false)
@@ -131,6 +142,7 @@ func (c Config) DebugMap() map[string]any {
 	debugMap["Dispatcher"] = helpers.DebugValue(c.Dispatcher, false)
 	debugMap["DispatchHashringReplicationFactor"] = helpers.DebugValue(c.DispatchHashringReplicationFactor, false)
 	debugMap["DispatchHashringSpread"] = helpers.DebugValue(c.DispatchHashringSpread, false)
+	debugMap["DispatchChunkSize"] = helpers.DebugValue(c.DispatchChunkSize, false)
 	debugMap["DispatchSecondaryUpstreamAddrs"] = helpers.DebugValue(c.DispatchSecondaryUpstreamAddrs, false)
 	debugMap["DispatchSecondaryUpstreamExprs"] = helpers.DebugValue(c.DispatchSecondaryUpstreamExprs, false)
 	debugMap["DispatchCacheConfig"] = helpers.DebugValue(c.DispatchCacheConfig, false)
@@ -142,6 +154,13 @@ func (c Config) DebugMap() map[string]any {
 	debugMap["MaxDatastoreReadPageSize"] = helpers.DebugValue(c.MaxDatastoreReadPageSize, false)
 	debugMap["StreamingAPITimeout"] = helpers.DebugValue(c.StreamingAPITimeout, false)
 	debugMap["WatchHeartbeat"] = helpers.DebugValue(c.WatchHeartbeat, false)
+	debugMap["MaxReadRelationshipsLimit"] = helpers.DebugValue(c.MaxReadRelationshipsLimit, false)
+	debugMap["MaxDeleteRelationshipsLimit"] = helpers.DebugValue(c.MaxDeleteRelationshipsLimit, false)
+	debugMap["MaxLookupResourcesLimit"] = helpers.DebugValue(c.MaxLookupResourcesLimit, false)
+	debugMap["MaxBulkExportRelationshipsLimit"] = helpers.DebugValue(c.MaxBulkExportRelationshipsLimit, false)
+	debugMap["EnableExperimentalLookupResources"] = helpers.DebugValue(c.EnableExperimentalLookupResources, false)
+	debugMap["EnableExperimentalRelationshipExpiration"] = helpers.DebugValue(c.EnableExperimentalRelationshipExpiration, false)
+	debugMap["EnableRevisionHeartbeat"] = helpers.DebugValue(c.EnableRevisionHeartbeat, false)
 	debugMap["MetricsAPI"] = helpers.DebugValue(c.MetricsAPI, false)
 	debugMap["SilentlyDisableTelemetry"] = helpers.DebugValue(c.SilentlyDisableTelemetry, false)
 	debugMap["TelemetryCAOverridePath"] = helpers.DebugValue(c.TelemetryCAOverridePath, false)
@@ -208,6 +227,13 @@ func WithShutdownGracePeriod(shutdownGracePeriod time.Duration) ConfigOption {
 func WithDisableVersionResponse(disableVersionResponse bool) ConfigOption {
 	return func(c *Config) {
 		c.DisableVersionResponse = disableVersionResponse
+	}
+}
+
+// WithServerName returns an option that can set ServerName on a Config
+func WithServerName(serverName string) ConfigOption {
+	return func(c *Config) {
+		c.ServerName = serverName
 	}
 }
 
@@ -407,6 +433,13 @@ func WithDispatchHashringSpread(dispatchHashringSpread uint8) ConfigOption {
 	}
 }
 
+// WithDispatchChunkSize returns an option that can set DispatchChunkSize on a Config
+func WithDispatchChunkSize(dispatchChunkSize uint16) ConfigOption {
+	return func(c *Config) {
+		c.DispatchChunkSize = dispatchChunkSize
+	}
+}
+
 // WithDispatchSecondaryUpstreamAddrs returns an option that can append DispatchSecondaryUpstreamAddrss to Config.DispatchSecondaryUpstreamAddrs
 func WithDispatchSecondaryUpstreamAddrs(key string, value string) ConfigOption {
 	return func(c *Config) {
@@ -432,6 +465,13 @@ func WithDispatchSecondaryUpstreamExprs(key string, value string) ConfigOption {
 func SetDispatchSecondaryUpstreamExprs(dispatchSecondaryUpstreamExprs map[string]string) ConfigOption {
 	return func(c *Config) {
 		c.DispatchSecondaryUpstreamExprs = dispatchSecondaryUpstreamExprs
+	}
+}
+
+// WithDispatchPrimaryDelayForTesting returns an option that can set DispatchPrimaryDelayForTesting on a Config
+func WithDispatchPrimaryDelayForTesting(dispatchPrimaryDelayForTesting time.Duration) ConfigOption {
+	return func(c *Config) {
+		c.DispatchPrimaryDelayForTesting = dispatchPrimaryDelayForTesting
 	}
 }
 
@@ -495,6 +535,55 @@ func WithStreamingAPITimeout(streamingAPITimeout time.Duration) ConfigOption {
 func WithWatchHeartbeat(watchHeartbeat time.Duration) ConfigOption {
 	return func(c *Config) {
 		c.WatchHeartbeat = watchHeartbeat
+	}
+}
+
+// WithMaxReadRelationshipsLimit returns an option that can set MaxReadRelationshipsLimit on a Config
+func WithMaxReadRelationshipsLimit(maxReadRelationshipsLimit uint32) ConfigOption {
+	return func(c *Config) {
+		c.MaxReadRelationshipsLimit = maxReadRelationshipsLimit
+	}
+}
+
+// WithMaxDeleteRelationshipsLimit returns an option that can set MaxDeleteRelationshipsLimit on a Config
+func WithMaxDeleteRelationshipsLimit(maxDeleteRelationshipsLimit uint32) ConfigOption {
+	return func(c *Config) {
+		c.MaxDeleteRelationshipsLimit = maxDeleteRelationshipsLimit
+	}
+}
+
+// WithMaxLookupResourcesLimit returns an option that can set MaxLookupResourcesLimit on a Config
+func WithMaxLookupResourcesLimit(maxLookupResourcesLimit uint32) ConfigOption {
+	return func(c *Config) {
+		c.MaxLookupResourcesLimit = maxLookupResourcesLimit
+	}
+}
+
+// WithMaxBulkExportRelationshipsLimit returns an option that can set MaxBulkExportRelationshipsLimit on a Config
+func WithMaxBulkExportRelationshipsLimit(maxBulkExportRelationshipsLimit uint32) ConfigOption {
+	return func(c *Config) {
+		c.MaxBulkExportRelationshipsLimit = maxBulkExportRelationshipsLimit
+	}
+}
+
+// WithEnableExperimentalLookupResources returns an option that can set EnableExperimentalLookupResources on a Config
+func WithEnableExperimentalLookupResources(enableExperimentalLookupResources bool) ConfigOption {
+	return func(c *Config) {
+		c.EnableExperimentalLookupResources = enableExperimentalLookupResources
+	}
+}
+
+// WithEnableExperimentalRelationshipExpiration returns an option that can set EnableExperimentalRelationshipExpiration on a Config
+func WithEnableExperimentalRelationshipExpiration(enableExperimentalRelationshipExpiration bool) ConfigOption {
+	return func(c *Config) {
+		c.EnableExperimentalRelationshipExpiration = enableExperimentalRelationshipExpiration
+	}
+}
+
+// WithEnableRevisionHeartbeat returns an option that can set EnableRevisionHeartbeat on a Config
+func WithEnableRevisionHeartbeat(enableRevisionHeartbeat bool) ConfigOption {
+	return func(c *Config) {
+		c.EnableRevisionHeartbeat = enableRevisionHeartbeat
 	}
 }
 

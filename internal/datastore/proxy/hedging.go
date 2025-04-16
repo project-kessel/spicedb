@@ -155,7 +155,7 @@ func newHedgingProxyWithTimeSource(
 	}
 
 	if maxSampleCount < minMaxRequestsThreshold {
-		return nil, fmt.Errorf(fmt.Sprintf("maxSampleCount must be >=%d", minMaxRequestsThreshold))
+		return nil, fmt.Errorf("maxSampleCount must be >=%d", minMaxRequestsThreshold)
 	}
 
 	if hedgingQuantile <= 0.0 || hedgingQuantile >= 1.0 {
@@ -275,7 +275,9 @@ func (hp hedgingReader) executeQuery(
 		// only the first call to once.Do will run the function, so whichever
 		// hedged request is slower will have resultsUsed = false
 		if !resultsUsed && tempErr == nil {
-			tempIterator.Close()
+			for range tempIterator {
+				break
+			}
 		}
 		responseReady <- struct{}{}
 	}

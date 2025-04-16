@@ -23,19 +23,21 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
 
-	"github.com/authzed/spicedb/internal/datastore/memdb"
+	"github.com/authzed/spicedb/internal/datastore/dsfortesting"
 	"github.com/authzed/spicedb/internal/dispatch/graph"
-	"github.com/authzed/spicedb/internal/middleware/consistency"
 	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/middleware/servicespecific"
 	tf "github.com/authzed/spicedb/internal/testfixtures"
 	"github.com/authzed/spicedb/pkg/cmd/server"
 	"github.com/authzed/spicedb/pkg/cmd/util"
+	"github.com/authzed/spicedb/pkg/middleware/consistency"
 	"github.com/authzed/spicedb/pkg/tuple"
 	"github.com/authzed/spicedb/pkg/zedtoken"
 )
 
 func TestCertRotation(t *testing.T) {
+	t.Parallel()
+
 	const (
 		// length of time the initial cert is valid
 		initialValidDuration = 3 * time.Second
@@ -44,8 +46,7 @@ func TestCertRotation(t *testing.T) {
 		waitFactor = 2
 	)
 
-	certDir, err := os.MkdirTemp("", "test-certs-")
-	require.NoError(t, err)
+	certDir := t.TempDir()
 
 	ca := &x509.Certificate{
 		NotBefore:             time.Now(),
@@ -113,13 +114,13 @@ func TestCertRotation(t *testing.T) {
 	require.NoError(t, certFile.Close())
 
 	// start a server with an initial set of certs
-	emptyDS, err := memdb.NewMemdbDatastore(0, 10, time.Duration(90_000_000_000_000))
+	emptyDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 10, time.Duration(90_000_000_000_000))
 	require.NoError(t, err)
 	ds, revision := tf.StandardDatastoreWithData(emptyDS, require.New(t))
 	ctx, cancel := context.WithCancel(context.Background())
 	srv, err := server.NewConfigWithOptionsAndDefaults(
 		server.WithDatastore(ds),
-		server.WithDispatcher(graph.NewLocalOnlyDispatcher(1)),
+		server.WithDispatcher(graph.NewLocalOnlyDispatcher(1, 100)),
 		server.WithDispatchMaxDepth(50),
 		server.WithMaximumPreconditionCount(1000),
 		server.WithMaximumUpdatesPerWrite(1000),
@@ -146,7 +147,7 @@ func TestCertRotation(t *testing.T) {
 					},
 					{
 						Name:       "consistency",
-						Middleware: consistency.UnaryServerInterceptor(),
+						Middleware: consistency.UnaryServerInterceptor("testing"),
 					},
 					{
 						Name:       "servicespecific",
@@ -165,7 +166,7 @@ func TestCertRotation(t *testing.T) {
 					},
 					{
 						Name:       "consistency",
-						Middleware: consistency.StreamServerInterceptor(),
+						Middleware: consistency.StreamServerInterceptor("testing"),
 					},
 					{
 						Name:       "servicespecific",
@@ -205,7 +206,7 @@ func TestCertRotation(t *testing.T) {
 	}()
 	// requests work with the old key
 	client := v1.NewPermissionsServiceClient(conn)
-	rel := tuple.MustToRelationship(tuple.Parse(tf.StandardTuples[0]))
+	rel := tuple.ToV1Relationship(tuple.MustParse(tf.StandardRelationships[0]))
 	_, err = client.CheckPermission(ctx, &v1.CheckPermissionRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{

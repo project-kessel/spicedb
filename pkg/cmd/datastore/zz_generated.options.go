@@ -37,11 +37,18 @@ func (c *Config) ToOption() ConfigOption {
 		to.LegacyFuzzing = c.LegacyFuzzing
 		to.RevisionQuantization = c.RevisionQuantization
 		to.MaxRevisionStalenessPercent = c.MaxRevisionStalenessPercent
+		to.CredentialsProviderName = c.CredentialsProviderName
+		to.FilterMaximumIDCount = c.FilterMaximumIDCount
 		to.ReadConnPool = c.ReadConnPool
 		to.WriteConnPool = c.WriteConnPool
 		to.ReadOnly = c.ReadOnly
 		to.EnableDatastoreMetrics = c.EnableDatastoreMetrics
 		to.DisableStats = c.DisableStats
+		to.IncludeQueryParametersInTraces = c.IncludeQueryParametersInTraces
+		to.ReadReplicaConnPool = c.ReadReplicaConnPool
+		to.OldReadReplicaConnPool = c.OldReadReplicaConnPool
+		to.ReadReplicaURIs = c.ReadReplicaURIs
+		to.ReadReplicaCredentialsProviderName = c.ReadReplicaCredentialsProviderName
 		to.BootstrapFiles = c.BootstrapFiles
 		to.BootstrapFileContents = c.BootstrapFileContents
 		to.BootstrapOverwrite = c.BootstrapOverwrite
@@ -59,13 +66,23 @@ func (c *Config) ToOption() ConfigOption {
 		to.GCInterval = c.GCInterval
 		to.GCMaxOperationTime = c.GCMaxOperationTime
 		to.SpannerCredentialsFile = c.SpannerCredentialsFile
+		to.SpannerCredentialsJSON = c.SpannerCredentialsJSON
 		to.SpannerEmulatorHost = c.SpannerEmulatorHost
 		to.SpannerMinSessions = c.SpannerMinSessions
 		to.SpannerMaxSessions = c.SpannerMaxSessions
+		to.SpannerDatastoreMetricsOption = c.SpannerDatastoreMetricsOption
 		to.TablePrefix = c.TablePrefix
+		to.RelationshipIntegrityEnabled = c.RelationshipIntegrityEnabled
+		to.RelationshipIntegrityCurrentKey = c.RelationshipIntegrityCurrentKey
+		to.RelationshipIntegrityExpiredKeys = c.RelationshipIntegrityExpiredKeys
 		to.WatchBufferLength = c.WatchBufferLength
 		to.WatchBufferWriteTimeout = c.WatchBufferWriteTimeout
+		to.WatchConnectTimeout = c.WatchConnectTimeout
 		to.MigrationPhase = c.MigrationPhase
+		to.AllowedMigrations = c.AllowedMigrations
+		to.ExperimentalColumnOptimization = c.ExperimentalColumnOptimization
+		to.EnableExperimentalRelationshipExpiration = c.EnableExperimentalRelationshipExpiration
+		to.EnableRevisionHeartbeat = c.EnableRevisionHeartbeat
 	}
 }
 
@@ -78,11 +95,16 @@ func (c Config) DebugMap() map[string]any {
 	debugMap["LegacyFuzzing"] = helpers.DebugValue(c.LegacyFuzzing, false)
 	debugMap["RevisionQuantization"] = helpers.DebugValue(c.RevisionQuantization, false)
 	debugMap["MaxRevisionStalenessPercent"] = helpers.DebugValue(c.MaxRevisionStalenessPercent, false)
+	debugMap["CredentialsProviderName"] = helpers.DebugValue(c.CredentialsProviderName, false)
 	debugMap["ReadConnPool"] = helpers.DebugValue(c.ReadConnPool, false)
 	debugMap["WriteConnPool"] = helpers.DebugValue(c.WriteConnPool, false)
 	debugMap["ReadOnly"] = helpers.DebugValue(c.ReadOnly, false)
 	debugMap["EnableDatastoreMetrics"] = helpers.DebugValue(c.EnableDatastoreMetrics, false)
 	debugMap["DisableStats"] = helpers.DebugValue(c.DisableStats, false)
+	debugMap["IncludeQueryParametersInTraces"] = helpers.DebugValue(c.IncludeQueryParametersInTraces, false)
+	debugMap["ReadReplicaConnPool"] = helpers.DebugValue(c.ReadReplicaConnPool, false)
+	debugMap["ReadReplicaURIs"] = helpers.SensitiveDebugValue(c.ReadReplicaURIs)
+	debugMap["ReadReplicaCredentialsProviderName"] = helpers.DebugValue(c.ReadReplicaCredentialsProviderName, false)
 	debugMap["BootstrapFiles"] = helpers.DebugValue(c.BootstrapFiles, true)
 	debugMap["BootstrapFileContents"] = helpers.DebugValue(c.BootstrapFileContents, false)
 	debugMap["BootstrapOverwrite"] = helpers.DebugValue(c.BootstrapOverwrite, false)
@@ -100,13 +122,23 @@ func (c Config) DebugMap() map[string]any {
 	debugMap["GCInterval"] = helpers.DebugValue(c.GCInterval, false)
 	debugMap["GCMaxOperationTime"] = helpers.DebugValue(c.GCMaxOperationTime, false)
 	debugMap["SpannerCredentialsFile"] = helpers.DebugValue(c.SpannerCredentialsFile, false)
+	debugMap["SpannerCredentialsJSON"] = helpers.SensitiveDebugValue(c.SpannerCredentialsJSON)
 	debugMap["SpannerEmulatorHost"] = helpers.DebugValue(c.SpannerEmulatorHost, false)
 	debugMap["SpannerMinSessions"] = helpers.DebugValue(c.SpannerMinSessions, false)
 	debugMap["SpannerMaxSessions"] = helpers.DebugValue(c.SpannerMaxSessions, false)
+	debugMap["SpannerDatastoreMetricsOption"] = helpers.DebugValue(c.SpannerDatastoreMetricsOption, false)
 	debugMap["TablePrefix"] = helpers.DebugValue(c.TablePrefix, false)
+	debugMap["RelationshipIntegrityEnabled"] = helpers.DebugValue(c.RelationshipIntegrityEnabled, false)
+	debugMap["RelationshipIntegrityCurrentKey"] = helpers.DebugValue(c.RelationshipIntegrityCurrentKey, false)
+	debugMap["RelationshipIntegrityExpiredKeys"] = helpers.DebugValue(c.RelationshipIntegrityExpiredKeys, false)
 	debugMap["WatchBufferLength"] = helpers.DebugValue(c.WatchBufferLength, false)
 	debugMap["WatchBufferWriteTimeout"] = helpers.DebugValue(c.WatchBufferWriteTimeout, false)
+	debugMap["WatchConnectTimeout"] = helpers.DebugValue(c.WatchConnectTimeout, false)
 	debugMap["MigrationPhase"] = helpers.DebugValue(c.MigrationPhase, false)
+	debugMap["AllowedMigrations"] = helpers.DebugValue(c.AllowedMigrations, false)
+	debugMap["ExperimentalColumnOptimization"] = helpers.DebugValue(c.ExperimentalColumnOptimization, false)
+	debugMap["EnableExperimentalRelationshipExpiration"] = helpers.DebugValue(c.EnableExperimentalRelationshipExpiration, false)
+	debugMap["EnableRevisionHeartbeat"] = helpers.DebugValue(c.EnableRevisionHeartbeat, false)
 	return debugMap
 }
 
@@ -168,6 +200,20 @@ func WithMaxRevisionStalenessPercent(maxRevisionStalenessPercent float64) Config
 	}
 }
 
+// WithCredentialsProviderName returns an option that can set CredentialsProviderName on a Config
+func WithCredentialsProviderName(credentialsProviderName string) ConfigOption {
+	return func(c *Config) {
+		c.CredentialsProviderName = credentialsProviderName
+	}
+}
+
+// WithFilterMaximumIDCount returns an option that can set FilterMaximumIDCount on a Config
+func WithFilterMaximumIDCount(filterMaximumIDCount uint16) ConfigOption {
+	return func(c *Config) {
+		c.FilterMaximumIDCount = filterMaximumIDCount
+	}
+}
+
 // WithReadConnPool returns an option that can set ReadConnPool on a Config
 func WithReadConnPool(readConnPool ConnPoolConfig) ConfigOption {
 	return func(c *Config) {
@@ -200,6 +246,48 @@ func WithEnableDatastoreMetrics(enableDatastoreMetrics bool) ConfigOption {
 func WithDisableStats(disableStats bool) ConfigOption {
 	return func(c *Config) {
 		c.DisableStats = disableStats
+	}
+}
+
+// WithIncludeQueryParametersInTraces returns an option that can set IncludeQueryParametersInTraces on a Config
+func WithIncludeQueryParametersInTraces(includeQueryParametersInTraces bool) ConfigOption {
+	return func(c *Config) {
+		c.IncludeQueryParametersInTraces = includeQueryParametersInTraces
+	}
+}
+
+// WithReadReplicaConnPool returns an option that can set ReadReplicaConnPool on a Config
+func WithReadReplicaConnPool(readReplicaConnPool ConnPoolConfig) ConfigOption {
+	return func(c *Config) {
+		c.ReadReplicaConnPool = readReplicaConnPool
+	}
+}
+
+// WithOldReadReplicaConnPool returns an option that can set OldReadReplicaConnPool on a Config
+func WithOldReadReplicaConnPool(oldReadReplicaConnPool ConnPoolConfig) ConfigOption {
+	return func(c *Config) {
+		c.OldReadReplicaConnPool = oldReadReplicaConnPool
+	}
+}
+
+// WithReadReplicaURIs returns an option that can append ReadReplicaURIss to Config.ReadReplicaURIs
+func WithReadReplicaURIs(readReplicaURIs string) ConfigOption {
+	return func(c *Config) {
+		c.ReadReplicaURIs = append(c.ReadReplicaURIs, readReplicaURIs)
+	}
+}
+
+// SetReadReplicaURIs returns an option that can set ReadReplicaURIs on a Config
+func SetReadReplicaURIs(readReplicaURIs []string) ConfigOption {
+	return func(c *Config) {
+		c.ReadReplicaURIs = readReplicaURIs
+	}
+}
+
+// WithReadReplicaCredentialsProviderName returns an option that can set ReadReplicaCredentialsProviderName on a Config
+func WithReadReplicaCredentialsProviderName(readReplicaCredentialsProviderName string) ConfigOption {
+	return func(c *Config) {
+		c.ReadReplicaCredentialsProviderName = readReplicaCredentialsProviderName
 	}
 }
 
@@ -336,6 +424,20 @@ func WithSpannerCredentialsFile(spannerCredentialsFile string) ConfigOption {
 	}
 }
 
+// WithSpannerCredentialsJSON returns an option that can append SpannerCredentialsJSONs to Config.SpannerCredentialsJSON
+func WithSpannerCredentialsJSON(spannerCredentialsJSON byte) ConfigOption {
+	return func(c *Config) {
+		c.SpannerCredentialsJSON = append(c.SpannerCredentialsJSON, spannerCredentialsJSON)
+	}
+}
+
+// SetSpannerCredentialsJSON returns an option that can set SpannerCredentialsJSON on a Config
+func SetSpannerCredentialsJSON(spannerCredentialsJSON []byte) ConfigOption {
+	return func(c *Config) {
+		c.SpannerCredentialsJSON = spannerCredentialsJSON
+	}
+}
+
 // WithSpannerEmulatorHost returns an option that can set SpannerEmulatorHost on a Config
 func WithSpannerEmulatorHost(spannerEmulatorHost string) ConfigOption {
 	return func(c *Config) {
@@ -357,10 +459,45 @@ func WithSpannerMaxSessions(spannerMaxSessions uint64) ConfigOption {
 	}
 }
 
+// WithSpannerDatastoreMetricsOption returns an option that can set SpannerDatastoreMetricsOption on a Config
+func WithSpannerDatastoreMetricsOption(spannerDatastoreMetricsOption string) ConfigOption {
+	return func(c *Config) {
+		c.SpannerDatastoreMetricsOption = spannerDatastoreMetricsOption
+	}
+}
+
 // WithTablePrefix returns an option that can set TablePrefix on a Config
 func WithTablePrefix(tablePrefix string) ConfigOption {
 	return func(c *Config) {
 		c.TablePrefix = tablePrefix
+	}
+}
+
+// WithRelationshipIntegrityEnabled returns an option that can set RelationshipIntegrityEnabled on a Config
+func WithRelationshipIntegrityEnabled(relationshipIntegrityEnabled bool) ConfigOption {
+	return func(c *Config) {
+		c.RelationshipIntegrityEnabled = relationshipIntegrityEnabled
+	}
+}
+
+// WithRelationshipIntegrityCurrentKey returns an option that can set RelationshipIntegrityCurrentKey on a Config
+func WithRelationshipIntegrityCurrentKey(relationshipIntegrityCurrentKey RelIntegrityKey) ConfigOption {
+	return func(c *Config) {
+		c.RelationshipIntegrityCurrentKey = relationshipIntegrityCurrentKey
+	}
+}
+
+// WithRelationshipIntegrityExpiredKeys returns an option that can append RelationshipIntegrityExpiredKeyss to Config.RelationshipIntegrityExpiredKeys
+func WithRelationshipIntegrityExpiredKeys(relationshipIntegrityExpiredKeys string) ConfigOption {
+	return func(c *Config) {
+		c.RelationshipIntegrityExpiredKeys = append(c.RelationshipIntegrityExpiredKeys, relationshipIntegrityExpiredKeys)
+	}
+}
+
+// SetRelationshipIntegrityExpiredKeys returns an option that can set RelationshipIntegrityExpiredKeys on a Config
+func SetRelationshipIntegrityExpiredKeys(relationshipIntegrityExpiredKeys []string) ConfigOption {
+	return func(c *Config) {
+		c.RelationshipIntegrityExpiredKeys = relationshipIntegrityExpiredKeys
 	}
 }
 
@@ -378,9 +515,51 @@ func WithWatchBufferWriteTimeout(watchBufferWriteTimeout time.Duration) ConfigOp
 	}
 }
 
+// WithWatchConnectTimeout returns an option that can set WatchConnectTimeout on a Config
+func WithWatchConnectTimeout(watchConnectTimeout time.Duration) ConfigOption {
+	return func(c *Config) {
+		c.WatchConnectTimeout = watchConnectTimeout
+	}
+}
+
 // WithMigrationPhase returns an option that can set MigrationPhase on a Config
 func WithMigrationPhase(migrationPhase string) ConfigOption {
 	return func(c *Config) {
 		c.MigrationPhase = migrationPhase
+	}
+}
+
+// WithAllowedMigrations returns an option that can append AllowedMigrationss to Config.AllowedMigrations
+func WithAllowedMigrations(allowedMigrations string) ConfigOption {
+	return func(c *Config) {
+		c.AllowedMigrations = append(c.AllowedMigrations, allowedMigrations)
+	}
+}
+
+// SetAllowedMigrations returns an option that can set AllowedMigrations on a Config
+func SetAllowedMigrations(allowedMigrations []string) ConfigOption {
+	return func(c *Config) {
+		c.AllowedMigrations = allowedMigrations
+	}
+}
+
+// WithExperimentalColumnOptimization returns an option that can set ExperimentalColumnOptimization on a Config
+func WithExperimentalColumnOptimization(experimentalColumnOptimization bool) ConfigOption {
+	return func(c *Config) {
+		c.ExperimentalColumnOptimization = experimentalColumnOptimization
+	}
+}
+
+// WithEnableExperimentalRelationshipExpiration returns an option that can set EnableExperimentalRelationshipExpiration on a Config
+func WithEnableExperimentalRelationshipExpiration(enableExperimentalRelationshipExpiration bool) ConfigOption {
+	return func(c *Config) {
+		c.EnableExperimentalRelationshipExpiration = enableExperimentalRelationshipExpiration
+	}
+}
+
+// WithEnableRevisionHeartbeat returns an option that can set EnableRevisionHeartbeat on a Config
+func WithEnableRevisionHeartbeat(enableRevisionHeartbeat bool) ConfigOption {
+	return func(c *Config) {
+		c.EnableRevisionHeartbeat = enableRevisionHeartbeat
 	}
 }

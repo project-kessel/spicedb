@@ -1,13 +1,16 @@
 package graph
 
 import (
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/exp/maps"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/authzed/spicedb/internal/caveats"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
+	v1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
 	"github.com/authzed/spicedb/pkg/tuple"
 )
 
@@ -142,7 +145,7 @@ func TestMembershipSetAddMemberViaRelationship(t *testing.T) {
 		existingMembers          map[string]*core.CaveatExpression
 		resourceID               string
 		resourceCaveatExpression *core.CaveatExpression
-		parentRelationship       *core.RelationTuple
+		parentRelationship       tuple.Relationship
 		expectedMembers          map[string]*core.CaveatExpression
 		hasDeterminedMember      bool
 	}{
@@ -705,6 +708,34 @@ func TestMembershipSetSubtract(t *testing.T) {
 			false,
 			false,
 		},
+		{
+			"non overlapping",
+			map[string]*core.CaveatExpression{
+				"resource1": nil,
+				"resource2": nil,
+			},
+			map[string]*core.CaveatExpression{
+				"resource2": nil,
+			},
+			map[string]*core.CaveatExpression{
+				"resource1": nil,
+			},
+			true,
+			false,
+		},
+		{
+			"non overlapping reversed",
+			map[string]*core.CaveatExpression{
+				"resource2": nil,
+			},
+			map[string]*core.CaveatExpression{
+				"resource1": nil,
+				"resource2": nil,
+			},
+			map[string]*core.CaveatExpression{},
+			false,
+			true,
+		},
 	}
 
 	for _, tc := range tcs {
@@ -720,6 +751,64 @@ func TestMembershipSetSubtract(t *testing.T) {
 	}
 }
 
+func TestMembershipSetUnionWithNonMemberEntries(t *testing.T) {
+	ms := NewMembershipSet()
+	ms.addMember("resource1", nil)
+	ms.addMember("resource2", nil)
+
+	ms.UnionWith(CheckResultsMap{
+		"resource3": &v1.ResourceCheckResult{
+			Membership: v1.ResourceCheckResult_NOT_MEMBER,
+		},
+	})
+
+	keys := maps.Keys(ms.membersByID)
+	sort.Strings(keys)
+
+	require.Equal(t, 2, ms.Size())
+	require.True(t, ms.HasDeterminedMember())
+	require.Equal(t, []string{"resource1", "resource2"}, keys)
+}
+
+func TestMembershipSetIntersectWithNonMemberEntries(t *testing.T) {
+	ms := NewMembershipSet()
+	ms.addMember("resource1", nil)
+	ms.addMember("resource2", nil)
+
+	ms.IntersectWith(CheckResultsMap{
+		"resource1": &v1.ResourceCheckResult{
+			Membership: v1.ResourceCheckResult_NOT_MEMBER,
+		},
+		"resource2": &v1.ResourceCheckResult{
+			Membership: v1.ResourceCheckResult_MEMBER,
+		},
+	})
+
+	require.Equal(t, 1, ms.Size())
+	require.True(t, ms.HasDeterminedMember())
+	require.Equal(t, []string{"resource2"}, maps.Keys(ms.membersByID))
+}
+
+func TestMembershipSetSubtractWithNonMemberEntries(t *testing.T) {
+	ms := NewMembershipSet()
+	ms.addMember("resource1", nil)
+	ms.addMember("resource2", nil)
+
+	// Subtracting a set with a non-member entry should not change the set.
+	ms.Subtract(CheckResultsMap{
+		"resource1": &v1.ResourceCheckResult{
+			Membership: v1.ResourceCheckResult_NOT_MEMBER,
+		},
+		"resource2": &v1.ResourceCheckResult{
+			Membership: v1.ResourceCheckResult_MEMBER,
+		},
+	})
+
+	require.Equal(t, 1, ms.Size())
+	require.True(t, ms.HasDeterminedMember())
+	require.Equal(t, []string{"resource1"}, maps.Keys(ms.membersByID))
+}
+
 func unwrapCaveat(ce *core.CaveatExpression) *core.ContextualizedCaveat {
 	if ce == nil {
 		return nil
@@ -727,7 +816,7 @@ func unwrapCaveat(ce *core.CaveatExpression) *core.ContextualizedCaveat {
 	return ce.GetCaveat()
 }
 
-func withCaveat(tple *core.RelationTuple, ce *core.CaveatExpression) *core.RelationTuple {
-	tple.Caveat = unwrapCaveat(ce)
+func withCaveat(tple tuple.Relationship, ce *core.CaveatExpression) tuple.Relationship {
+	tple.OptionalCaveat = unwrapCaveat(ce)
 	return tple
 }

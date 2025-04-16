@@ -11,6 +11,7 @@ import (
 
 	"github.com/authzed/spicedb/internal/datastore/common"
 	"github.com/authzed/spicedb/pkg/spiceerrors"
+	"github.com/authzed/spicedb/pkg/tuple"
 
 	"github.com/google/uuid"
 	"github.com/hashicorp/go-memdb"
@@ -99,16 +100,20 @@ type snapshot struct {
 	db       *memdb.MemDB
 }
 
+func (mdb *memdbDatastore) MetricsID() (string, error) {
+	return "memdb", nil
+}
+
 func (mdb *memdbDatastore) SnapshotReader(dr datastore.Revision) datastore.Reader {
 	mdb.RLock()
 	defer mdb.RUnlock()
 
 	if len(mdb.revisions) == 0 {
-		return &memdbReader{nil, nil, fmt.Errorf("memdb datastore is not ready")}
+		return &memdbReader{nil, nil, fmt.Errorf("memdb datastore is not ready"), time.Now()}
 	}
 
 	if err := mdb.checkRevisionLocalCallerMustLock(dr); err != nil {
-		return &memdbReader{nil, nil, err}
+		return &memdbReader{nil, nil, err, time.Now()}
 	}
 
 	revIndex := sort.Search(len(mdb.revisions), func(i int) bool {
@@ -122,7 +127,7 @@ func (mdb *memdbDatastore) SnapshotReader(dr datastore.Revision) datastore.Reade
 
 	rev := mdb.revisions[revIndex]
 	if rev.db == nil {
-		return &memdbReader{nil, nil, fmt.Errorf("memdb datastore is already closed")}
+		return &memdbReader{nil, nil, fmt.Errorf("memdb datastore is already closed"), time.Now()}
 	}
 
 	roTxn := rev.db.Txn(false)
@@ -130,7 +135,11 @@ func (mdb *memdbDatastore) SnapshotReader(dr datastore.Revision) datastore.Reade
 		return roTxn, nil
 	}
 
-	return &memdbReader{noopTryLocker{}, txSrc, nil}
+	return &memdbReader{noopTryLocker{}, txSrc, nil, time.Now()}
+}
+
+func (mdb *memdbDatastore) SupportsIntegrity() bool {
+	return true
 }
 
 func (mdb *memdbDatastore) ReadWriteTx(
@@ -172,7 +181,7 @@ func (mdb *memdbDatastore) ReadWriteTx(
 		}
 
 		newRevision := mdb.newRevisionID()
-		rwt := &memdbReadWriteTx{memdbReader{&sync.Mutex{}, txSrc, nil}, newRevision}
+		rwt := &memdbReadWriteTx{memdbReader{&sync.Mutex{}, txSrc, nil, time.Now()}, newRevision}
 		if err := f(ctx, rwt); err != nil {
 			mdb.Lock()
 			if tx != nil {
@@ -198,27 +207,33 @@ func (mdb *memdbDatastore) ReadWriteTx(
 		mdb.Lock()
 		defer mdb.Unlock()
 
-		tracked := common.NewChanges(revisions.TimestampIDKeyFunc, datastore.WatchRelationships|datastore.WatchSchema)
+		tracked := common.NewChanges(revisions.TimestampIDKeyFunc, datastore.WatchRelationships|datastore.WatchSchema, 0)
 		if tx != nil {
+			if config.Metadata != nil && len(config.Metadata.GetFields()) > 0 {
+				if err := tracked.SetRevisionMetadata(ctx, newRevision, config.Metadata.AsMap()); err != nil {
+					return datastore.NoRevision, err
+				}
+			}
+
 			for _, change := range tx.Changes() {
 				switch change.Table {
 				case tableRelationship:
 					if change.After != nil {
-						rt, err := change.After.(*relationship).RelationTuple()
+						rt, err := change.After.(*relationship).Relationship()
 						if err != nil {
 							return datastore.NoRevision, err
 						}
 
-						if err := tracked.AddRelationshipChange(ctx, newRevision, rt, corev1.RelationTupleUpdate_TOUCH); err != nil {
+						if err := tracked.AddRelationshipChange(ctx, newRevision, rt, tuple.UpdateOperationTouch); err != nil {
 							return datastore.NoRevision, err
 						}
 					} else if change.After == nil && change.Before != nil {
-						rt, err := change.Before.(*relationship).RelationTuple()
+						rt, err := change.Before.(*relationship).Relationship()
 						if err != nil {
 							return datastore.NoRevision, err
 						}
 
-						if err := tracked.AddRelationshipChange(ctx, newRevision, rt, corev1.RelationTupleUpdate_DELETE); err != nil {
+						if err := tracked.AddRelationshipChange(ctx, newRevision, rt, tuple.UpdateOperationDelete); err != nil {
 							return datastore.NoRevision, err
 						}
 					} else {
@@ -231,9 +246,15 @@ func (mdb *memdbDatastore) ReadWriteTx(
 							return datastore.NoRevision, err
 						}
 
-						tracked.AddChangedDefinition(ctx, newRevision, loaded)
+						err := tracked.AddChangedDefinition(ctx, newRevision, loaded)
+						if err != nil {
+							return datastore.NoRevision, err
+						}
 					} else if change.After == nil && change.Before != nil {
-						tracked.AddDeletedNamespace(ctx, newRevision, change.Before.(*namespace).name)
+						err := tracked.AddDeletedNamespace(ctx, newRevision, change.Before.(*namespace).name)
+						if err != nil {
+							return datastore.NoRevision, err
+						}
 					} else {
 						return datastore.NoRevision, spiceerrors.MustBugf("unexpected namespace change")
 					}
@@ -244,9 +265,15 @@ func (mdb *memdbDatastore) ReadWriteTx(
 							return datastore.NoRevision, err
 						}
 
-						tracked.AddChangedDefinition(ctx, newRevision, loaded)
+						err := tracked.AddChangedDefinition(ctx, newRevision, loaded)
+						if err != nil {
+							return datastore.NoRevision, err
+						}
 					} else if change.After == nil && change.Before != nil {
-						tracked.AddDeletedCaveat(ctx, newRevision, change.Before.(*caveat).name)
+						err := tracked.AddDeletedCaveat(ctx, newRevision, change.Before.(*caveat).name)
+						if err != nil {
+							return datastore.NoRevision, err
+						}
 					} else {
 						return datastore.NoRevision, spiceerrors.MustBugf("unexpected namespace change")
 					}
@@ -254,7 +281,11 @@ func (mdb *memdbDatastore) ReadWriteTx(
 			}
 
 			var rc datastore.RevisionChanges
-			changes := tracked.AsRevisionChanges(revisions.TimestampIDKeyLessThanFunc)
+			changes, err := tracked.AsRevisionChanges(revisions.TimestampIDKeyLessThanFunc)
+			if err != nil {
+				return datastore.NoRevision, err
+			}
+
 			if len(changes) > 1 {
 				return datastore.NoRevision, spiceerrors.MustBugf("unexpected MemDB transaction with multiple revision changes")
 			} else if len(changes) == 1 {
@@ -296,8 +327,25 @@ func (mdb *memdbDatastore) ReadyState(_ context.Context) (datastore.ReadyState, 
 	}, nil
 }
 
+func (mdb *memdbDatastore) OfflineFeatures() (*datastore.Features, error) {
+	return &datastore.Features{
+		Watch: datastore.Feature{
+			Status: datastore.FeatureSupported,
+		},
+		IntegrityData: datastore.Feature{
+			Status: datastore.FeatureSupported,
+		},
+		ContinuousCheckpointing: datastore.Feature{
+			Status: datastore.FeatureUnsupported,
+		},
+		WatchEmitsImmediately: datastore.Feature{
+			Status: datastore.FeatureUnsupported,
+		},
+	}, nil
+}
+
 func (mdb *memdbDatastore) Features(_ context.Context) (*datastore.Features, error) {
-	return &datastore.Features{Watch: datastore.Feature{Enabled: true}}, nil
+	return mdb.OfflineFeatures()
 }
 
 func (mdb *memdbDatastore) Close() error {

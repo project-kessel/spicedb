@@ -9,6 +9,7 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/authzed/spicedb/internal/datastore/crdb/schema"
 	"github.com/authzed/spicedb/internal/datastore/revisions"
 	"github.com/authzed/spicedb/pkg/datastore"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
@@ -17,14 +18,14 @@ import (
 var (
 	upsertCaveatSuffix = fmt.Sprintf(
 		"ON CONFLICT (%s) DO UPDATE SET %s = excluded.%s",
-		colCaveatName,
-		colCaveatDefinition,
-		colCaveatDefinition,
+		schema.ColCaveatName,
+		schema.ColCaveatDefinition,
+		schema.ColCaveatDefinition,
 	)
-	writeCaveat  = psql.Insert(tableCaveat).Columns(colCaveatName, colCaveatDefinition).Suffix(upsertCaveatSuffix)
-	readCaveat   = psql.Select(colCaveatDefinition, colTimestamp)
-	listCaveat   = psql.Select(colCaveatName, colCaveatDefinition, colTimestamp).From(tableCaveat).OrderBy(colCaveatName)
-	deleteCaveat = psql.Delete(tableCaveat)
+	writeCaveat  = psql.Insert(schema.TableCaveat).Columns(schema.ColCaveatName, schema.ColCaveatDefinition).Suffix(upsertCaveatSuffix)
+	readCaveat   = psql.Select(schema.ColCaveatDefinition, schema.ColTimestamp)
+	listCaveat   = psql.Select(schema.ColCaveatName, schema.ColCaveatDefinition, schema.ColTimestamp).OrderBy(schema.ColCaveatName)
+	deleteCaveat = psql.Delete(schema.TableCaveat)
 )
 
 const (
@@ -35,11 +36,12 @@ const (
 )
 
 func (cr *crdbReader) ReadCaveatByName(ctx context.Context, name string) (*core.CaveatDefinition, datastore.Revision, error) {
-	query := cr.fromBuilder(readCaveat, tableCaveat).Where(sq.Eq{colCaveatName: name})
+	query := cr.addFromToQuery(readCaveat.Where(sq.Eq{schema.ColCaveatName: name}), schema.TableCaveat)
 	sql, args, err := query.ToSql()
 	if err != nil {
 		return nil, datastore.NoRevision, fmt.Errorf(errReadCaveat, name, err)
 	}
+	cr.assertHasExpectedAsOfSystemTime(sql)
 
 	var definitionBytes []byte
 	var timestamp time.Time
@@ -79,15 +81,16 @@ type bytesAndTimestamp struct {
 }
 
 func (cr *crdbReader) lookupCaveats(ctx context.Context, caveatNames []string) ([]datastore.RevisionedCaveat, error) {
-	caveatsWithNames := cr.fromBuilder(listCaveat, tableCaveat)
+	caveatsWithNames := cr.addFromToQuery(listCaveat, schema.TableCaveat)
 	if len(caveatNames) > 0 {
-		caveatsWithNames = caveatsWithNames.Where(sq.Eq{colCaveatName: caveatNames})
+		caveatsWithNames = caveatsWithNames.Where(sq.Eq{schema.ColCaveatName: caveatNames})
 	}
 
 	sql, args, err := caveatsWithNames.ToSql()
 	if err != nil {
 		return nil, fmt.Errorf(errListCaveats, err)
 	}
+	cr.assertHasExpectedAsOfSystemTime(sql)
 
 	var allDefinitionBytes []bytesAndTimestamp
 
@@ -156,7 +159,7 @@ func (rwt *crdbReadWriteTXN) WriteCaveats(ctx context.Context, caveats []*core.C
 }
 
 func (rwt *crdbReadWriteTXN) DeleteCaveats(ctx context.Context, names []string) error {
-	deleteCaveatClause := deleteCaveat.Where(sq.Eq{colCaveatName: names})
+	deleteCaveatClause := deleteCaveat.Where(sq.Eq{schema.ColCaveatName: names})
 	sql, args, err := deleteCaveatClause.ToSql()
 	if err != nil {
 		return fmt.Errorf(errDeleteCaveats, err)

@@ -8,7 +8,6 @@ import (
 	"github.com/authzed/cel-go/cel"
 	"github.com/authzed/cel-go/common/types"
 	"github.com/authzed/cel-go/common/types/ref"
-	"github.com/authzed/cel-go/interpreter"
 )
 
 // EvaluationConfig is configuration given to an EvaluateCaveatWithConfig call.
@@ -47,8 +46,12 @@ func (cr CaveatResult) PartialValue() (*CompiledCaveat, error) {
 		return nil, fmt.Errorf("result is fully evaluated")
 	}
 
-	expr := interpreter.PruneAst(cr.parentCaveat.ast.Expr(), cr.parentCaveat.ast.SourceInfo().GetMacroCalls(), cr.details.State())
-	return &CompiledCaveat{cr.parentCaveat.celEnv, cel.ParsedExprToAst(expr), cr.parentCaveat.name}, nil
+	ast, err := cr.parentCaveat.celEnv.ResidualAst(cr.parentCaveat.ast, cr.details)
+	if err != nil {
+		return nil, err
+	}
+
+	return &CompiledCaveat{cr.parentCaveat.celEnv, ast, cr.parentCaveat.name}, nil
 }
 
 // ContextValues returns the context values used when computing this result.
@@ -65,6 +68,11 @@ func (cr CaveatResult) ContextStruct() (*structpb.Struct, error) {
 // ExpressionString returns the human-readable expression string for the evaluated expression.
 func (cr CaveatResult) ExpressionString() (string, error) {
 	return cr.parentCaveat.ExprString()
+}
+
+// ParentCaveat returns the caveat that was evaluated to produce this result.
+func (cr CaveatResult) ParentCaveat() *CompiledCaveat {
+	return cr.parentCaveat
 }
 
 // MissingVarNames returns the name(s) of the missing variables.
@@ -111,7 +119,7 @@ func EvaluateCaveatWithConfig(caveat *CompiledCaveat, contextValues map[string]a
 
 	val, details, err := prg.Eval(activation)
 	if err != nil {
-		return nil, EvaluationErr{err}
+		return nil, EvaluationError{err}
 	}
 
 	// If the value produced has Unknown type, then it means required context was missing.

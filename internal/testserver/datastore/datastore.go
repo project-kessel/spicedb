@@ -4,12 +4,14 @@
 package datastore
 
 import (
+	"os"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/authzed/spicedb/internal/datastore/postgres/version"
+	crdbversion "github.com/authzed/spicedb/internal/datastore/crdb/version"
+	pgversion "github.com/authzed/spicedb/internal/datastore/postgres/version"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/migrate"
 )
@@ -61,9 +63,17 @@ func RunDatastoreEngineWithBridge(t testing.TB, engine string, bridgeNetworkName
 		require.Equal(t, "", bridgeNetworkName, "memory datastore does not support bridge networking")
 		return RunMemoryForTesting(t)
 	case "cockroachdb":
-		return RunCRDBForTesting(t, bridgeNetworkName)
+		ver := os.Getenv("CRDB_TEST_VERSION")
+		if ver == "" {
+			ver = crdbversion.LatestTestedCockroachDBVersion
+		}
+		return RunCRDBForTesting(t, bridgeNetworkName, ver)
 	case "postgres":
-		return RunPostgresForTesting(t, bridgeNetworkName, migrate.Head, version.MinimumSupportedPostgresVersion, false)
+		ver := os.Getenv("POSTGRES_TEST_VERSION")
+		if ver == "" {
+			ver = pgversion.LatestTestedPostgresVersion
+		}
+		return RunPostgresForTesting(t, bridgeNetworkName, migrate.Head, ver, false)
 	case "mysql":
 		return RunMySQLForTesting(t, bridgeNetworkName)
 	case "spanner":

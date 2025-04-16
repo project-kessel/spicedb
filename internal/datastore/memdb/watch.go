@@ -14,21 +14,27 @@ import (
 
 const errWatchError = "watch error: %w"
 
-func (mdb *memdbDatastore) Watch(ctx context.Context, ar datastore.Revision, options datastore.WatchOptions) (<-chan *datastore.RevisionChanges, <-chan error) {
+func (mdb *memdbDatastore) Watch(ctx context.Context, ar datastore.Revision, options datastore.WatchOptions) (<-chan datastore.RevisionChanges, <-chan error) {
 	watchBufferLength := options.WatchBufferLength
 	if watchBufferLength == 0 {
 		watchBufferLength = mdb.watchBufferLength
 	}
 
-	updates := make(chan *datastore.RevisionChanges, watchBufferLength)
+	updates := make(chan datastore.RevisionChanges, watchBufferLength)
 	errs := make(chan error, 1)
+
+	if options.EmissionStrategy == datastore.EmitImmediatelyStrategy {
+		close(updates)
+		errs <- errors.New("emit immediately strategy is unsupported in MemDB")
+		return updates, errs
+	}
 
 	watchBufferWriteTimeout := options.WatchBufferWriteTimeout
 	if watchBufferWriteTimeout == 0 {
 		watchBufferWriteTimeout = mdb.watchBufferWriteTimeout
 	}
 
-	sendChange := func(change *datastore.RevisionChanges) bool {
+	sendChange := func(change datastore.RevisionChanges) bool {
 		select {
 		case updates <- change:
 			return true
@@ -57,7 +63,7 @@ func (mdb *memdbDatastore) Watch(ctx context.Context, ar datastore.Revision, opt
 		currentTxn := ar.(revisions.TimestampRevision).TimestampNanoSec()
 
 		for {
-			var stagedUpdates []*datastore.RevisionChanges
+			var stagedUpdates []datastore.RevisionChanges
 			var watchChan <-chan struct{}
 			var err error
 			stagedUpdates, currentTxn, watchChan, err = mdb.loadChanges(ctx, currentTxn, options)
@@ -93,7 +99,7 @@ func (mdb *memdbDatastore) Watch(ctx context.Context, ar datastore.Revision, opt
 	return updates, errs
 }
 
-func (mdb *memdbDatastore) loadChanges(_ context.Context, currentTxn int64, options datastore.WatchOptions) ([]*datastore.RevisionChanges, int64, <-chan struct{}, error) {
+func (mdb *memdbDatastore) loadChanges(_ context.Context, currentTxn int64, options datastore.WatchOptions) ([]datastore.RevisionChanges, int64, <-chan struct{}, error) {
 	mdb.RLock()
 	defer mdb.RUnlock()
 
@@ -105,25 +111,25 @@ func (mdb *memdbDatastore) loadChanges(_ context.Context, currentTxn int64, opti
 		return nil, 0, nil, fmt.Errorf(errWatchError, err)
 	}
 
-	var changes []*datastore.RevisionChanges
+	var changes []datastore.RevisionChanges
 	lastRevision := currentTxn
 	for changeRaw := it.Next(); changeRaw != nil; changeRaw = it.Next() {
 		change := changeRaw.(*changelog)
 
 		if options.Content&datastore.WatchRelationships == datastore.WatchRelationships && len(change.changes.RelationshipChanges) > 0 {
-			changes = append(changes, &change.changes)
-		}
-
-		if options.Content&datastore.WatchCheckpoints == datastore.WatchCheckpoints && change.revisionNanos > lastRevision {
-			changes = append(changes, &datastore.RevisionChanges{
-				Revision:     revisions.NewForTimestamp(change.revisionNanos),
-				IsCheckpoint: true,
-			})
+			changes = append(changes, change.changes)
 		}
 
 		if options.Content&datastore.WatchSchema == datastore.WatchSchema &&
 			len(change.changes.ChangedDefinitions) > 0 || len(change.changes.DeletedCaveats) > 0 || len(change.changes.DeletedNamespaces) > 0 {
-			changes = append(changes, &change.changes)
+			changes = append(changes, change.changes)
+		}
+
+		if options.Content&datastore.WatchCheckpoints == datastore.WatchCheckpoints && change.revisionNanos > lastRevision {
+			changes = append(changes, datastore.RevisionChanges{
+				Revision:     revisions.NewForTimestamp(change.revisionNanos),
+				IsCheckpoint: true,
+			})
 		}
 
 		lastRevision = change.revisionNanos

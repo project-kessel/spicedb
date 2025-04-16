@@ -7,8 +7,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
-	"github.com/authzed/spicedb/pkg/typesystem"
+	"github.com/authzed/spicedb/pkg/schema"
 
+	"github.com/authzed/spicedb/internal/datastore/dsfortesting"
 	"github.com/authzed/spicedb/internal/datastore/memdb"
 	ns "github.com/authzed/spicedb/pkg/namespace"
 )
@@ -195,20 +196,22 @@ func TestAliasing(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			require := require.New(t)
 
-			ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
+			ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
 			require.NoError(err)
 
 			lastRevision, err := ds.HeadRevision(context.Background())
 			require.NoError(err)
 
-			ts, err := typesystem.NewNamespaceTypeSystem(tc.toCheck, typesystem.ResolverForDatastoreReader(ds.SnapshotReader(lastRevision)))
+			ts := schema.NewTypeSystem(schema.ResolverForDatastoreReader(ds.SnapshotReader(lastRevision)))
+
+			def, err := schema.NewDefinition(ts, tc.toCheck)
 			require.NoError(err)
 
 			ctx := context.Background()
-			vts, terr := ts.Validate(ctx)
+			vdef, terr := def.Validate(ctx)
 			require.NoError(terr)
 
-			computed, aerr := computePermissionAliases(vts)
+			computed, aerr := computePermissionAliases(vdef)
 			if tc.expectedError != "" {
 				require.Equal(tc.expectedError, aerr.Error())
 			} else {

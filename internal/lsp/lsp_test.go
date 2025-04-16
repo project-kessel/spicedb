@@ -51,7 +51,7 @@ func TestDocumentNoDiagnostics(t *testing.T) {
 	require.Len(t, resp.Items, 0)
 }
 
-func TestDocumentDiagnostics(t *testing.T) {
+func TestDocumentErrorDiagnostics(t *testing.T) {
 	tester := newLSPTester(t)
 	tester.initialize()
 
@@ -78,6 +78,33 @@ func TestDocumentDiagnostics(t *testing.T) {
 		})
 	require.Equal(t, "full", resp.Kind)
 	require.Len(t, resp.Items, 0)
+}
+
+func TestDocumentWarningDiagnostics(t *testing.T) {
+	tester := newLSPTester(t)
+	tester.initialize()
+
+	tester.setFileContents("file:///test", `
+		definition user {}
+
+		definition resource {
+			relation viewer: user
+			permission view_resource = viewer
+		}
+	`)
+
+	resp, _ := sendAndReceive[FullDocumentDiagnosticReport](tester, "textDocument/diagnostic",
+		TextDocumentDiagnosticParams{
+			TextDocument: TextDocument{URI: "file:///test"},
+		})
+	require.Equal(t, "full", resp.Kind)
+	require.Len(t, resp.Items, 1)
+	require.Equal(t, lsp.DiagnosticSeverity(lsp.Warning), resp.Items[0].Severity)
+	require.Equal(t, `Permission "view_resource" references parent type "resource" in its name; it is recommended to drop the suffix (relation-name-references-parent)`, resp.Items[0].Message)
+	require.Equal(t, lsp.Range{
+		Start: lsp.Position{Line: 5, Character: 3},
+		End:   lsp.Position{Line: 5, Character: 3},
+	}, resp.Items[0].Range)
 }
 
 func TestDocumentDiagnosticsForTypeError(t *testing.T) {
@@ -121,6 +148,14 @@ func TestDocumentFormat(t *testing.T) {
 		End:   lsp.Position{Line: 10000000, Character: 100000000},
 	}, resp[0].Range)
 	require.Equal(t, "definition user {}", resp[0].NewText)
+
+	// test formatting malformed content without panicing
+	tester.setFileContents("file:///test", "dfinition user{}")
+	err, _ := sendAndExpectError(tester, "textDocument/formatting",
+		lsp.DocumentFormattingParams{
+			TextDocument: lsp.TextDocumentIdentifier{URI: "file:///test"},
+		})
+	require.Error(t, err)
 }
 
 func TestDocumentOpenedClosed(t *testing.T) {
@@ -177,4 +212,27 @@ definition resource {
 
 	require.Equal(t, "definition user {}", resp.Contents.Value)
 	require.Equal(t, "spicedb", resp.Contents.Language)
+
+	// test hovering malformed content without panicing
+	sendAndReceive[any](tester, "textDocument/didOpen", lsp.DidOpenTextDocumentParams{
+		TextDocument: lsp.TextDocumentItem{
+			URI:        lsp.DocumentURI("file:///test"),
+			LanguageID: "test",
+			Version:    1,
+			Text: `definition user {}
+
+dfinition resource {
+	relation viewer: user
+}
+`,
+		},
+	})
+
+	err, _ := sendAndExpectError(tester, "textDocument/hover", lsp.TextDocumentPositionParams{
+		TextDocument: lsp.TextDocumentIdentifier{
+			URI: lsp.DocumentURI("file:///test"),
+		},
+		Position: lsp.Position{Line: 3, Character: 18},
+	})
+	require.Error(t, err)
 }

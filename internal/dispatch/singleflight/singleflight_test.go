@@ -30,9 +30,9 @@ func TestSingleFlightDispatcher(t *testing.T) {
 	disp := New(mockDispatcher{f: f}, &keys.DirectKeyHandler{})
 
 	req := &v1.DispatchCheckRequest{
-		ResourceRelation: tuple.RelationReference("document", "view"),
+		ResourceRelation: tuple.RR("document", "view").ToCoreRR(),
 		ResourceIds:      []string{"foo", "bar"},
-		Subject:          tuple.ObjectAndRelation("user", "tom", "..."),
+		Subject:          tuple.ONRStringToCore("user", "tom", "..."),
 		Metadata: &v1.ResolverMeta{
 			AtRevision:     "1234",
 			TraversalBloom: v1.MustNewTraversalBloomFilter(defaultBloomFilterSize),
@@ -78,9 +78,9 @@ func TestSingleFlightDispatcherDetectsLoop(t *testing.T) {
 	disp := New(mockDispatcher{f: f}, keyHandler)
 
 	req := &v1.DispatchCheckRequest{
-		ResourceRelation: tuple.RelationReference("document", "view"),
+		ResourceRelation: tuple.RR("document", "view").ToCoreRR(),
 		ResourceIds:      []string{"foo", "bar"},
-		Subject:          tuple.ObjectAndRelation("user", "tom", "..."),
+		Subject:          tuple.ONRStringToCore("user", "tom", "..."),
 		Metadata: &v1.ResolverMeta{
 			AtRevision:     "1234",
 			TraversalBloom: v1.MustNewTraversalBloomFilter(defaultBloomFilterSize),
@@ -134,9 +134,9 @@ func TestSingleFlightDispatcherDetectsLoopThroughDelegate(t *testing.T) {
 	disp := New(New(mockDispatcher{f: f}, keyHandler), keyHandler)
 
 	req := &v1.DispatchCheckRequest{
-		ResourceRelation: tuple.RelationReference("document", "view"),
+		ResourceRelation: tuple.RR("document", "view").ToCoreRR(),
 		ResourceIds:      []string{"foo", "bar"},
-		Subject:          tuple.ObjectAndRelation("user", "tom", "..."),
+		Subject:          tuple.ONRStringToCore("user", "tom", "..."),
 		Metadata: &v1.ResolverMeta{
 			AtRevision:     "1234",
 			TraversalBloom: v1.MustNewTraversalBloomFilter(defaultBloomFilterSize),
@@ -175,9 +175,9 @@ func TestSingleFlightDispatcherCancelation(t *testing.T) {
 	}
 
 	req := &v1.DispatchCheckRequest{
-		ResourceRelation: tuple.RelationReference("document", "view"),
+		ResourceRelation: tuple.RR("document", "view").ToCoreRR(),
 		ResourceIds:      []string{"foo", "bar"},
-		Subject:          tuple.ObjectAndRelation("user", "tom", "..."),
+		Subject:          tuple.ONRStringToCore("user", "tom", "..."),
 		Metadata: &v1.ResolverMeta{
 			AtRevision:     "1234",
 			TraversalBloom: v1.MustNewTraversalBloomFilter(defaultBloomFilterSize),
@@ -223,7 +223,7 @@ func TestSingleFlightDispatcherExpand(t *testing.T) {
 	disp := New(mockDispatcher{f: f}, &keys.DirectKeyHandler{})
 
 	req := &v1.DispatchExpandRequest{
-		ResourceAndRelation: tuple.ObjectAndRelation("document", "foo", "view"),
+		ResourceAndRelation: tuple.ONRStringToCore("document", "foo", "view"),
 		Metadata: &v1.ResolverMeta{
 			AtRevision:     "1234",
 			TraversalBloom: v1.MustNewTraversalBloomFilter(defaultBloomFilterSize),
@@ -267,9 +267,9 @@ func TestSingleFlightDispatcherCheckBypassesIfMissingBloomFiler(t *testing.T) {
 	disp := New(mockDispatcher{f: f}, &keys.DirectKeyHandler{})
 
 	req := &v1.DispatchCheckRequest{
-		ResourceRelation: tuple.RelationReference("document", "view"),
+		ResourceRelation: tuple.RR("document", "view").ToCoreRR(),
 		ResourceIds:      []string{"foo", "bar"},
-		Subject:          tuple.ObjectAndRelation("user", "tom", "..."),
+		Subject:          tuple.ONRStringToCore("user", "tom", "..."),
 		Metadata: &v1.ResolverMeta{
 			AtRevision: "1234",
 		},
@@ -292,7 +292,7 @@ func TestSingleFlightDispatcherExpandBypassesIfMissingBloomFiler(t *testing.T) {
 	disp := New(mockDispatcher{f: f}, &keys.DirectKeyHandler{})
 
 	req := &v1.DispatchExpandRequest{
-		ResourceAndRelation: tuple.ObjectAndRelation("document", "foo", "view"),
+		ResourceAndRelation: tuple.ONRStringToCore("document", "foo", "view"),
 		Metadata: &v1.ResolverMeta{
 			AtRevision: "1234",
 		},
@@ -365,11 +365,7 @@ func (m mockDispatcher) DispatchExpand(_ context.Context, _ *v1.DispatchExpandRe
 	return &v1.DispatchExpandResponse{}, nil
 }
 
-func (m mockDispatcher) DispatchReachableResources(_ *v1.DispatchReachableResourcesRequest, _ dispatch.ReachableResourcesStream) error {
-	return nil
-}
-
-func (m mockDispatcher) DispatchLookupResources(_ *v1.DispatchLookupResourcesRequest, _ dispatch.LookupResourcesStream) error {
+func (m mockDispatcher) DispatchLookupResources2(_ *v1.DispatchLookupResources2Request, _ dispatch.LookupResources2Stream) error {
 	return nil
 }
 

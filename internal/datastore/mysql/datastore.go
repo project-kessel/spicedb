@@ -10,14 +10,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	mysqlCommon "github.com/authzed/spicedb/internal/datastore/mysql/common"
+
 	sq "github.com/Masterminds/squirrel"
 	"github.com/dlmiddlecote/sqlstats"
 	"github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 
 	datastoreinternal "github.com/authzed/spicedb/internal/datastore"
@@ -27,7 +27,6 @@ import (
 	log "github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/datastore/options"
-	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 )
 
 const (
@@ -35,6 +34,7 @@ const (
 
 	colID               = "id"
 	colTimestamp        = "timestamp"
+	colMetadata         = "metadata"
 	colNamespace        = "namespace"
 	colConfig           = "serialized_config"
 	colCreatedTxn       = "created_transaction"
@@ -48,12 +48,20 @@ const (
 	colCaveatDefinition = "definition"
 	colCaveatName       = "caveat_name"
 	colCaveatContext    = "caveat_context"
+	colExpiration       = "expiration"
+
+	colCounterName              = "name"
+	colCounterSerializedFilter  = "serialized_filter"
+	colCounterCurrentCount      = "current_count"
+	colCounterUpdatedAtRevision = "count_updated_at_revision"
 
 	errUnableToInstantiate = "unable to instantiate datastore: %w"
 	liveDeletedTxnID       = uint64(math.MaxInt64)
 	batchDeleteSize        = 1000
 	noLastInsertID         = 0
 	seedingTimeout         = 10 * time.Second
+
+	primaryInstanceID = -1
 
 	// https://dev.mysql.com/doc/mysql-errors/8.0/en/server-error-reference.html#error_er_lock_wait_timeout
 	errMysqlLockWaitTimeout = 1205
@@ -95,7 +103,7 @@ type sqlFilter interface {
 // URI: [scheme://][user[:[password]]@]host[:port][/schema][?attribute1=value1&attribute2=value2...
 // See https://dev.mysql.com/doc/refman/8.0/en/connecting-using-uri-or-key-value-pairs.html
 func NewMySQLDatastore(ctx context.Context, uri string, options ...Option) (datastore.Datastore, error) {
-	ds, err := newMySQLDatastore(ctx, uri, options...)
+	ds, err := newMySQLDatastore(ctx, uri, primaryInstanceID, options...)
 	if err != nil {
 		return nil, err
 	}
@@ -103,22 +111,55 @@ func NewMySQLDatastore(ctx context.Context, uri string, options ...Option) (data
 	return datastoreinternal.NewSeparatingContextDatastoreProxy(ds), nil
 }
 
-func newMySQLDatastore(ctx context.Context, uri string, options ...Option) (*Datastore, error) {
+func NewReadOnlyMySQLDatastore(
+	ctx context.Context,
+	url string,
+	index uint32,
+	options ...Option,
+) (datastore.ReadOnlyDatastore, error) {
+	ds, err := newMySQLDatastore(ctx, url, int(index), options...)
+	if err != nil {
+		return nil, err
+	}
+
+	return datastoreinternal.NewSeparatingContextDatastoreProxy(ds), nil
+}
+
+func newMySQLDatastore(ctx context.Context, uri string, replicaIndex int, options ...Option) (*Datastore, error) {
+	isPrimary := replicaIndex == primaryInstanceID
 	config, err := generateConfig(options)
 	if err != nil {
 		return nil, fmt.Errorf(errUnableToInstantiate, err)
 	}
 
-	parsedURI, err := mysql.ParseDSN(uri)
+	mysqlConfig, err := mysql.ParseDSN(uri)
 	if err != nil {
 		return nil, common.RedactAndLogSensitiveConnString(ctx, "NewMySQLDatastore: could not parse connection URI", err, uri)
 	}
 
-	if !parsedURI.ParseTime {
+	if !mysqlConfig.ParseTime {
 		return nil, errors.New("error in NewMySQLDatastore: connection URI for MySQL datastore must include `parseTime=true` as a query parameter; see https://spicedb.dev/d/parse-time-mysql for more details")
 	}
 
-	connector, err := mysql.MySQLDriver{}.OpenConnector(uri)
+	// Setup the credentials provider
+	var credentialsProvider datastore.CredentialsProvider
+	if config.credentialsProviderName != "" {
+		credentialsProvider, err = datastore.NewCredentialsProvider(ctx, config.credentialsProviderName)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	err = mysqlCommon.MaybeAddCredentialsProviderHook(mysqlConfig, credentialsProvider)
+	if err != nil {
+		return nil, err
+	}
+
+	// Feed our logger through to the Connector
+	mysqlConfig.Logger = debugLogger{}
+
+	// Call NewConnector with the existing parsed configuration to preserve the BeforeConnect added by the CredentialsProvider
+	connector, err := mysql.NewConnector(mysqlConfig)
 	if err != nil {
 		return nil, common.RedactAndLogSensitiveConnString(ctx, "NewMySQLDatastore: failed to create connector", err, uri)
 	}
@@ -140,14 +181,21 @@ func newMySQLDatastore(ctx context.Context, uri string, options ...Option) (*Dat
 			return nil, common.RedactAndLogSensitiveConnString(ctx, "NewMySQLDatastore: unable to instrument connector", err, uri)
 		}
 
+		dbName := "spicedb"
+		if replicaIndex != primaryInstanceID {
+			dbName = fmt.Sprintf("spicedb_replica_%d", replicaIndex)
+		}
+
 		db = sql.OpenDB(connector)
-		collector := sqlstats.NewStatsCollector("spicedb", db)
+		collector := sqlstats.NewStatsCollector(dbName, db)
 		if err := prometheus.Register(collector); err != nil {
 			return nil, fmt.Errorf(errUnableToInstantiate, err)
 		}
 
-		if err := common.RegisterGCMetrics(); err != nil {
-			return nil, fmt.Errorf(errUnableToInstantiate, err)
+		if isPrimary {
+			if err := common.RegisterGCMetrics(); err != nil {
+				return nil, fmt.Errorf(errUnableToInstantiate, err)
+			}
 		}
 	} else {
 		db = sql.OpenDB(connector)
@@ -161,14 +209,16 @@ func newMySQLDatastore(ctx context.Context, uri string, options ...Option) (*Dat
 	driver := migrations.NewMySQLDriverFromDB(db, config.tablePrefix)
 	queryBuilder := NewQueryBuilder(driver)
 
-	createTxn, _, err := sb.Insert(driver.RelationTupleTransaction()).Values().ToSql()
-	if err != nil {
-		return nil, fmt.Errorf("NewMySQLDatastore: %w", err)
-	}
+	createTxn := sb.Insert(driver.RelationTupleTransaction()).Columns(colMetadata)
 
 	// used for seeding the initial relation_tuple_transaction. using INSERT IGNORE on a known
 	// ID value makes this idempotent (i.e. safe to execute concurrently).
 	createBaseTxn := fmt.Sprintf("INSERT IGNORE INTO %s (id, timestamp) VALUES (1, FROM_UNIXTIME(1))", driver.RelationTupleTransaction())
+
+	headMigration, err := migrations.Manager.HeadRevision()
+	if err != nil {
+		return nil, fmt.Errorf("invalid head migration found for mysql: %w", err)
+	}
 
 	gcCtx, cancelGc := context.WithCancel(context.Background())
 
@@ -180,12 +230,18 @@ func newMySQLDatastore(ctx context.Context, uri string, options ...Option) (*Dat
 		quantizationPeriodNanos = 1
 	}
 
+	followerReadDelayNanos := config.followerReadDelay.Nanoseconds()
+	if followerReadDelayNanos < 0 {
+		followerReadDelayNanos = 0
+	}
+
 	revisionQuery := fmt.Sprintf(
 		querySelectRevision,
 		colID,
 		driver.RelationTupleTransaction(),
 		colTimestamp,
 		quantizationPeriodNanos,
+		followerReadDelayNanos,
 	)
 
 	validTransactionQuery := fmt.Sprintf(
@@ -196,7 +252,27 @@ func newMySQLDatastore(ctx context.Context, uri string, options ...Option) (*Dat
 		-1*config.gcWindow.Seconds(),
 	)
 
+	schema := common.NewSchemaInformationWithOptions(
+		common.WithRelationshipTableName(driver.RelationTuple()),
+		common.WithColNamespace(colNamespace),
+		common.WithColObjectID(colObjectID),
+		common.WithColRelation(colRelation),
+		common.WithColUsersetNamespace(colUsersetNamespace),
+		common.WithColUsersetObjectID(colUsersetObjectID),
+		common.WithColUsersetRelation(colUsersetRelation),
+		common.WithColCaveatName(colCaveatName),
+		common.WithColCaveatContext(colCaveatContext),
+		common.WithColExpiration(colExpiration),
+		common.WithPaginationFilterType(common.ExpandedLogicComparison),
+		common.WithPlaceholderFormat(sq.Question),
+		common.WithNowFunction("NOW"),
+		common.WithColumnOptimization(config.columnOptimizationOption),
+		common.WithExpirationDisabled(config.expirationDisabled),
+		common.SetIndexes(indexes),
+	)
+
 	store := &Datastore{
+		MigrationValidator:      common.NewMigrationValidator(headMigration, config.allowedMigrations),
 		db:                      db,
 		driver:                  driver,
 		url:                     uri,
@@ -216,12 +292,14 @@ func newMySQLDatastore(ctx context.Context, uri string, options ...Option) (*Dat
 		readTxOptions:           &sql.TxOptions{Isolation: sql.LevelSerializable, ReadOnly: true},
 		maxRetries:              config.maxRetries,
 		analyzeBeforeStats:      config.analyzeBeforeStats,
+		schema:                  *schema,
 		CachedOptimizedRevisions: revisions.NewCachedOptimizedRevisions(
 			maxRevisionStaleness,
 		),
 		CommonDecoder: revisions.CommonDecoder{
 			Kind: revisions.TransactionID,
 		},
+		filterMaximumIDCount: config.filterMaximumIDCount,
 	}
 
 	store.SetOptimizedRevisionFunc(store.optimizedRevisionFunc)
@@ -234,22 +312,28 @@ func newMySQLDatastore(ctx context.Context, uri string, options ...Option) (*Dat
 	}
 
 	// Start a goroutine for garbage collection.
-	if store.gcInterval > 0*time.Minute && config.gcEnabled {
-		store.gcGroup, store.gcCtx = errgroup.WithContext(store.gcCtx)
-		store.gcGroup.Go(func() error {
-			return common.StartGarbageCollector(
-				store.gcCtx,
-				store,
-				store.gcInterval,
-				store.gcWindow,
-				store.gcTimeout,
-			)
-		})
-	} else {
-		log.Warn().Msg("datastore background garbage collection disabled")
+	if isPrimary {
+		if store.gcInterval > 0*time.Minute && config.gcEnabled {
+			store.gcGroup, store.gcCtx = errgroup.WithContext(store.gcCtx)
+			store.gcGroup.Go(func() error {
+				return common.StartGarbageCollector(
+					store.gcCtx,
+					store,
+					store.gcInterval,
+					store.gcWindow,
+					store.gcTimeout,
+				)
+			})
+		} else {
+			log.Warn().Msg("datastore background garbage collection disabled")
+		}
 	}
 
 	return store, nil
+}
+
+func (mds *Datastore) MetricsID() (string, error) {
+	return common.MetricsIDFromURL(mds.url)
 }
 
 func (mds *Datastore) SnapshotReader(rev datastore.Revision) datastore.Reader {
@@ -262,8 +346,8 @@ func (mds *Datastore) SnapshotReader(rev datastore.Revision) datastore.Reader {
 		return tx, tx.Rollback, nil
 	}
 
-	executor := common.QueryExecutor{
-		Executor: newMySQLExecutor(mds.db),
+	executor := common.QueryRelationshipsExecutor{
+		Executor: newMySQLExecutor(mds.db, mds),
 	}
 
 	return &mysqlReader{
@@ -271,6 +355,8 @@ func (mds *Datastore) SnapshotReader(rev datastore.Revision) datastore.Reader {
 		createTxFunc,
 		executor,
 		buildLivingObjectFilterForRevision(rev),
+		mds.filterMaximumIDCount,
+		mds.schema,
 	}
 }
 
@@ -289,7 +375,12 @@ func (mds *Datastore) ReadWriteTx(
 	for i := uint8(0); i <= mds.maxRetries; i++ {
 		var newTxnID uint64
 		if err = migrations.BeginTxFunc(ctx, mds.db, &sql.TxOptions{Isolation: sql.LevelSerializable}, func(tx *sql.Tx) error {
-			newTxnID, err = mds.createNewTransaction(ctx, tx)
+			var metadata map[string]any
+			if config.Metadata != nil {
+				metadata = config.Metadata.AsMap()
+			}
+
+			newTxnID, err = mds.createNewTransaction(ctx, tx, metadata)
 			if err != nil {
 				return fmt.Errorf("unable to create new txn ID: %w", err)
 			}
@@ -298,8 +389,8 @@ func (mds *Datastore) ReadWriteTx(
 				return tx, noCleanup, nil
 			}
 
-			executor := common.QueryExecutor{
-				Executor: newMySQLExecutor(tx),
+			executor := common.QueryRelationshipsExecutor{
+				Executor: newMySQLExecutor(tx, mds),
 			}
 
 			rwt := &mysqlReadWriteTXN{
@@ -308,6 +399,8 @@ func (mds *Datastore) ReadWriteTx(
 					longLivedTx,
 					executor,
 					currentlyLivingObjects,
+					mds.filterMaximumIDCount,
+					mds.schema,
 				},
 				mds.driver.RelationTuple(),
 				tx,
@@ -356,7 +449,24 @@ type querier interface {
 	QueryContext(context.Context, string, ...interface{}) (*sql.Rows, error)
 }
 
-func newMySQLExecutor(tx querier) common.ExecuteQueryFunc {
+type asQueryableTx struct {
+	tx querier
+}
+
+func (aqt asQueryableTx) QueryFunc(ctx context.Context, f func(context.Context, common.Rows) error, sql string, args ...any) error {
+	rows, err := aqt.tx.QueryContext(ctx, sql, args...)
+	if err != nil {
+		return err
+	}
+
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	return f(ctx, rows)
+}
+
+func newMySQLExecutor(tx querier, explainable datastore.Explainable) common.ExecuteReadRelsQueryFunc {
 	// This implementation does not create a transaction because it's redundant for single statements, and it avoids
 	// the network overhead and reduce contention on the connection pool. From MySQL docs:
 	//
@@ -372,57 +482,14 @@ func newMySQLExecutor(tx querier) common.ExecuteQueryFunc {
 	//
 	// Prepared statements are also not used given they perform poorly on environments where connections have
 	// short lifetime (e.g. to gracefully handle load-balancer connection drain)
-	return func(ctx context.Context, sqlQuery string, args []interface{}) ([]*core.RelationTuple, error) {
-		span := trace.SpanFromContext(ctx)
-
-		rows, err := tx.QueryContext(ctx, sqlQuery, args...)
-		if err != nil {
-			return nil, fmt.Errorf(errUnableToQueryTuples, err)
-		}
-		defer common.LogOnError(ctx, rows.Close)
-
-		span.AddEvent("Query issued to database")
-
-		var tuples []*core.RelationTuple
-		for rows.Next() {
-			nextTuple := &core.RelationTuple{
-				ResourceAndRelation: &core.ObjectAndRelation{},
-				Subject:             &core.ObjectAndRelation{},
-			}
-
-			var caveatName string
-			var caveatContext caveatContextWrapper
-			err := rows.Scan(
-				&nextTuple.ResourceAndRelation.Namespace,
-				&nextTuple.ResourceAndRelation.ObjectId,
-				&nextTuple.ResourceAndRelation.Relation,
-				&nextTuple.Subject.Namespace,
-				&nextTuple.Subject.ObjectId,
-				&nextTuple.Subject.Relation,
-				&caveatName,
-				&caveatContext,
-			)
-			if err != nil {
-				return nil, fmt.Errorf(errUnableToQueryTuples, err)
-			}
-
-			nextTuple.Caveat, err = common.ContextualizedCaveatFrom(caveatName, caveatContext)
-			if err != nil {
-				return nil, fmt.Errorf(errUnableToQueryTuples, err)
-			}
-
-			tuples = append(tuples, nextTuple)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf(errUnableToQueryTuples, err)
-		}
-		span.AddEvent("Tuples loaded", trace.WithAttributes(attribute.Int("tupleCount", len(tuples))))
-		return tuples, nil
+	return func(ctx context.Context, builder common.RelationshipsQueryBuilder) (datastore.RelationshipIterator, error) {
+		return common.QueryRelationships[common.Rows, structpbWrapper](ctx, builder, asQueryableTx{tx}, explainable)
 	}
 }
 
 // Datastore is a MySQL-based implementation of the datastore.Datastore interface
 type Datastore struct {
+	*common.MigrationValidator
 	db                 *sql.DB
 	driver             *migrations.MySQLDriver
 	readTxOptions      *sql.TxOptions
@@ -436,6 +503,8 @@ type Datastore struct {
 	watchBufferLength       uint16
 	watchBufferWriteTimeout time.Duration
 	maxRetries              uint8
+	filterMaximumIDCount    uint16
+	schema                  common.SchemaInformation
 
 	optimizedRevisionQuery string
 	validTransactionQuery  string
@@ -445,7 +514,7 @@ type Datastore struct {
 	cancelGc context.CancelFunc
 	gcHasRun atomic.Bool
 
-	createTxn     string
+	createTxn     sq.InsertBuilder
 	createBaseTxn string
 
 	*QueryBuilder
@@ -482,15 +551,9 @@ func (mds *Datastore) ReadyState(ctx context.Context) (datastore.ReadyState, err
 		return datastore.ReadyState{}, err
 	}
 
-	compatible, err := migrations.Manager.IsHeadCompatible(currentMigrationRevision)
-	if err != nil {
-		return datastore.ReadyState{}, err
-	}
-	if !compatible {
-		return datastore.ReadyState{
-			Message: "datastore is not at a currently compatible revision",
-			IsReady: false,
-		}, nil
+	state := mds.MigrationReadyState(currentMigrationRevision)
+	if !state.IsReady {
+		return state, nil
 	}
 
 	isSeeded, err := mds.isSeeded(ctx)
@@ -503,15 +566,28 @@ func (mds *Datastore) ReadyState(ctx context.Context) (datastore.ReadyState, err
 			IsReady: false,
 		}, nil
 	}
-
-	return datastore.ReadyState{
-		Message: "",
-		IsReady: true,
-	}, nil
+	return state, nil
 }
 
 func (mds *Datastore) Features(_ context.Context) (*datastore.Features, error) {
-	return &datastore.Features{Watch: datastore.Feature{Enabled: true}}, nil
+	return mds.OfflineFeatures()
+}
+
+func (mds *Datastore) OfflineFeatures() (*datastore.Features, error) {
+	return &datastore.Features{
+		Watch: datastore.Feature{
+			Status: datastore.FeatureSupported,
+		},
+		IntegrityData: datastore.Feature{
+			Status: datastore.FeatureUnsupported,
+		},
+		ContinuousCheckpointing: datastore.Feature{
+			Status: datastore.FeatureUnsupported,
+		},
+		WatchEmitsImmediately: datastore.Feature{
+			Status: datastore.FeatureUnsupported,
+		},
+	}, nil
 }
 
 // isSeeded determines if the backing database has been seeded
@@ -606,4 +682,10 @@ func buildLivingObjectFilterForRevision(revision datastore.Revision) queryFilter
 
 func currentlyLivingObjects(original sq.SelectBuilder) sq.SelectBuilder {
 	return original.Where(sq.Eq{colDeletedTxn: liveDeletedTxnID})
+}
+
+type debugLogger struct{}
+
+func (debugLogger) Print(v ...any) {
+	log.Logger.Debug().CallerSkipFrame(1).Str("datastore", "mysql").Msg(fmt.Sprint(v...))
 }

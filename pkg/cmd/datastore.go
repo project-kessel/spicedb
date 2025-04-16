@@ -12,6 +12,7 @@ import (
 	"github.com/authzed/spicedb/pkg/cmd/datastore"
 	"github.com/authzed/spicedb/pkg/cmd/server"
 	"github.com/authzed/spicedb/pkg/cmd/termination"
+	"github.com/authzed/spicedb/pkg/cmd/util"
 	dspkg "github.com/authzed/spicedb/pkg/datastore"
 )
 
@@ -29,18 +30,20 @@ func NewDatastoreCommand(programName string) (*cobra.Command, error) {
 	RegisterMigrateFlags(migrateCmd)
 	datastoreCmd.AddCommand(migrateCmd)
 
-	cfg := datastore.Config{}
+	cfg := datastore.NewConfigWithOptionsAndDefaults()
 
-	gcCmd := NewGCDatastoreCommand(programName, &cfg)
-	if err := datastore.RegisterDatastoreFlagsWithPrefix(gcCmd.Flags(), "", &cfg); err != nil {
+	gcCmd := NewGCDatastoreCommand(programName, cfg)
+	if err := datastore.RegisterDatastoreFlagsWithPrefix(gcCmd.Flags(), "", cfg); err != nil {
 		return nil, err
 	}
+	util.RegisterCommonFlags(gcCmd)
 	datastoreCmd.AddCommand(gcCmd)
 
-	repairCmd := NewRepairDatastoreCommand(programName, &cfg)
-	if err := datastore.RegisterDatastoreFlagsWithPrefix(repairCmd.Flags(), "", &cfg); err != nil {
+	repairCmd := NewRepairDatastoreCommand(programName, cfg)
+	if err := datastore.RegisterDatastoreFlagsWithPrefix(repairCmd.Flags(), "", cfg); err != nil {
 		return nil, err
 	}
+	util.RegisterCommonFlags(repairCmd)
 	datastoreCmd.AddCommand(repairCmd)
 
 	headCmd := NewHeadCommand(programName)

@@ -101,6 +101,18 @@ validation:
 	}
 }
 
+func TestDecodeValidationFileWithoutSchema(t *testing.T) {
+	_, err := DecodeValidationFile([]byte(`schemaFile: >-
+  someschemafilehere.zed
+
+relationships: >-
+  document:firstdoc#writer@user:tom
+`))
+	errWithSource, ok := spiceerrors.AsWithSourceError(err)
+	require.False(t, ok)
+	require.Nil(t, errWithSource)
+}
+
 func TestDecodeRelationshipsErrorLineNumber(t *testing.T) {
 	_, err := DecodeValidationFile([]byte(`schema: >-
   definition user {}
@@ -111,10 +123,10 @@ relationships: >-
   document:firstdoc#reader#user:fred
 `))
 
-	errWithSource, ok := spiceerrors.AsErrorWithSource(err)
+	errWithSource, ok := spiceerrors.AsWithSourceError(err)
 	require.True(t, ok)
 
-	require.Equal(t, err.Error(), "error parsing relationship `document:firstdocwriter@user:tom`")
+	require.Equal(t, err.Error(), "error parsing relationship `document:firstdocwriter@user:tom`: invalid relationship string")
 	require.Equal(t, uint64(5), errWithSource.LineNumber)
 }
 
@@ -128,10 +140,10 @@ relationships: >-
   document:firstdoc#readeruser:fred
 `))
 
-	errWithSource, ok := spiceerrors.AsErrorWithSource(err)
+	errWithSource, ok := spiceerrors.AsWithSourceError(err)
 	require.True(t, ok)
 
-	require.Equal(t, err.Error(), "error parsing relationship `document:firstdoc#readeruser:fred`")
+	require.Equal(t, err.Error(), "error parsing relationship `document:firstdoc#readeruser:fred`: invalid relationship string")
 	require.Equal(t, uint64(7), errWithSource.LineNumber)
 }
 
@@ -151,10 +163,10 @@ relationships: >-
   document:firstdoc#readeruser:fred
 `))
 
-	errWithSource, ok := spiceerrors.AsErrorWithSource(err)
+	errWithSource, ok := spiceerrors.AsWithSourceError(err)
 	require.True(t, ok)
 
-	require.Equal(t, err.Error(), "error parsing relationship `document:firstdoc#readeruser:fred`")
+	require.Equal(t, err.Error(), "error parsing relationship `document:firstdoc#readeruser:fred`: invalid relationship string")
 	require.Equal(t, uint64(13), errWithSource.LineNumber)
 }
 
@@ -175,7 +187,7 @@ assertions:
     - document:seconddoc#view@user:fred
 `))
 
-	errWithSource, ok := spiceerrors.AsErrorWithSource(err)
+	errWithSource, ok := spiceerrors.AsWithSourceError(err)
 	require.True(t, ok)
 
 	require.Equal(t, err.Error(), "unexpected value `asdkjha`")
@@ -199,7 +211,7 @@ assertions:
     - document:seconddoc#view@user:fred
 `))
 
-	errWithSource, ok := spiceerrors.AsErrorWithSource(err)
+	errWithSource, ok := spiceerrors.AsWithSourceError(err)
 	require.True(t, ok)
 
 	require.Equal(t, err.Error(), "unexpected value `asdk`")

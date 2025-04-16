@@ -7,10 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/authzed/spicedb/internal/datastore/memdb"
+	"github.com/authzed/spicedb/internal/datastore/dsfortesting"
 	"github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/pkg/cmd/datastore"
 	"github.com/authzed/spicedb/pkg/cmd/util"
+	"github.com/authzed/spicedb/pkg/testutil"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	"github.com/stretchr/testify/require"
@@ -22,10 +23,10 @@ import (
 )
 
 func TestServerGracefulTermination(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer goleak.VerifyNone(t, append(testutil.GoLeakIgnores(), goleak.IgnoreCurrent())...)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	ds, err := memdb.NewMemdbDatastore(0, 1*time.Second, 10*time.Second)
+	ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 1*time.Second, 10*time.Second)
 	require.NoError(t, err)
 
 	c := ConfigWithOptions(
@@ -59,7 +60,7 @@ func TestServerGracefulTermination(t *testing.T) {
 }
 
 func TestOTelReporting(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer goleak.VerifyNone(t, append(testutil.GoLeakIgnores(), goleak.IgnoreCurrent())...)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -160,10 +161,10 @@ func setupSpanRecorder() (*tracetest.SpanRecorder, func()) {
 }
 
 func TestServerGracefulTerminationOnError(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer goleak.VerifyNone(t, append(testutil.GoLeakIgnores(), goleak.IgnoreCurrent())...)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	ds, err := memdb.NewMemdbDatastore(0, 1*time.Second, 10*time.Second)
+	ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 1*time.Second, 10*time.Second)
 	require.NoError(t, err)
 
 	c := ConfigWithOptions(&Config{
@@ -230,7 +231,9 @@ func TestModifyUnaryMiddleware(t *testing.T) {
 		},
 	}}
 
-	opt := MiddlewareOption{logging.Logger, nil, false, nil, nil, false, false, false}
+	opt := MiddlewareOption{logging.Logger, nil, false, nil, false, false, false, "testing", nil, nil}
+	opt = opt.WithDatastore(nil)
+
 	defaultMw, err := DefaultUnaryMiddleware(opt)
 	require.NoError(t, err)
 
@@ -256,7 +259,9 @@ func TestModifyStreamingMiddleware(t *testing.T) {
 		},
 	}}
 
-	opt := MiddlewareOption{logging.Logger, nil, false, nil, nil, false, false, false}
+	opt := MiddlewareOption{logging.Logger, nil, false, nil, false, false, false, "testing", nil, nil}
+	opt = opt.WithDatastore(nil)
+
 	defaultMw, err := DefaultStreamingMiddleware(opt)
 	require.NoError(t, err)
 
@@ -266,4 +271,101 @@ func TestModifyStreamingMiddleware(t *testing.T) {
 
 	err = streaming[1](context.Background(), nil, nil, nil)
 	require.ErrorContains(t, err, "hi")
+}
+
+func TestSupportOldAndNewReadReplicaConnectionPoolFlags(t *testing.T) {
+	tests := []struct {
+		name     string
+		opts     Config
+		expected datastore.ConnPoolConfig
+	}{
+		{
+			name: "no flags set",
+			opts: Config{
+				DatastoreConfig: datastore.Config{
+					ReadReplicaConnPool:    *datastore.DefaultReadConnPool(),
+					OldReadReplicaConnPool: *datastore.DefaultReadConnPool(),
+				},
+			},
+			expected: *datastore.DefaultReadConnPool(),
+		},
+		{
+			name: "new flags set",
+			opts: Config{
+				DatastoreConfig: datastore.Config{
+					ReadReplicaConnPool: datastore.ConnPoolConfig{
+						MaxLifetime:         1 * time.Minute,
+						MaxIdleTime:         1 * time.Minute,
+						MaxOpenConns:        1,
+						MinOpenConns:        1,
+						HealthCheckInterval: 1 * time.Second,
+					},
+					OldReadReplicaConnPool: *datastore.DefaultReadConnPool(),
+				},
+			},
+			expected: datastore.ConnPoolConfig{
+				MaxLifetime:         1 * time.Minute,
+				MaxIdleTime:         1 * time.Minute,
+				MaxOpenConns:        1,
+				MinOpenConns:        1,
+				HealthCheckInterval: 1 * time.Second,
+			},
+		},
+		{
+			name: "old flags set",
+			opts: Config{
+				DatastoreConfig: datastore.Config{
+					ReadReplicaConnPool: *datastore.DefaultReadConnPool(),
+					OldReadReplicaConnPool: datastore.ConnPoolConfig{
+						MaxLifetime:         2 * time.Minute,
+						MaxIdleTime:         2 * time.Minute,
+						MaxOpenConns:        2,
+						MinOpenConns:        2,
+						HealthCheckInterval: 2 * time.Second,
+					},
+				},
+			},
+			expected: datastore.ConnPoolConfig{
+				MaxLifetime:         2 * time.Minute,
+				MaxIdleTime:         2 * time.Minute,
+				MaxOpenConns:        2,
+				MinOpenConns:        2,
+				HealthCheckInterval: 2 * time.Second,
+			},
+		},
+		{
+			name: "prefers new flags if both are set",
+			opts: Config{
+				DatastoreConfig: datastore.Config{
+					ReadReplicaConnPool: datastore.ConnPoolConfig{
+						MaxLifetime:         1 * time.Minute,
+						MaxIdleTime:         1 * time.Minute,
+						MaxOpenConns:        1,
+						MinOpenConns:        2,
+						HealthCheckInterval: 2 * time.Second,
+					},
+					OldReadReplicaConnPool: datastore.ConnPoolConfig{
+						MaxLifetime:         2 * time.Minute,
+						MaxIdleTime:         2 * time.Minute,
+						MaxOpenConns:        2,
+						MinOpenConns:        2,
+						HealthCheckInterval: 2 * time.Second,
+					},
+				},
+			},
+			expected: datastore.ConnPoolConfig{
+				MaxLifetime:         1 * time.Minute,
+				MaxIdleTime:         1 * time.Minute,
+				MaxOpenConns:        1,
+				MinOpenConns:        2,
+				HealthCheckInterval: 2 * time.Second,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.opts.supportOldAndNewReadReplicaConnectionPoolFlags()
+			require.Equal(t, tt.expected, tt.opts.DatastoreConfig.ReadReplicaConnPool)
+		})
+	}
 }

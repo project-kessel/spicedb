@@ -5,6 +5,36 @@ import (
 	"math"
 	"runtime"
 	"time"
+
+	"github.com/authzed/spicedb/internal/datastore/common"
+	log "github.com/authzed/spicedb/internal/logging"
+)
+
+// DatastoreMetricsOption is an option for configuring the metrics that are emitted
+// by the Spanner datastore.
+type DatastoreMetricsOption string
+
+const (
+	// DatastoreMetricsOptionNone disables all metrics.
+	DatastoreMetricsOptionNone DatastoreMetricsOption = "none"
+
+	// DatastoreMetricsOptionNative enables the native metrics that are emitted
+	// by the Spanner datastore. These metrics are emitted to GCP and require
+	// a ServiceAccount with the appropriate permissions to be configured.
+	// See: https://cloud.google.com/spanner/docs/view-manage-client-side-metrics
+	DatastoreMetricsOptionNative = "native"
+
+	// DatastoreMetricsOptionOpenTelemetry enables the OpenTelemetry metrics that are emitted
+	// by the Spanner datastore. These metrics are emitted to the configured
+	// OpenTelemetry collector.
+	// This option is enabled by default.
+	DatastoreMetricsOptionOpenTelemetry = "otel"
+
+	// DatastoreMetricsOptionLegacyPrometheus enables the legacy Prometheus metrics that are emitted
+	// by the Spanner datastore. These metrics are emitted to the configured
+	// Prometheus server.
+	// This option is deprecated and will be removed in a future release.
+	DatastoreMetricsOptionLegacyPrometheus = "deprecated-prometheus"
 )
 
 type spannerOptions struct {
@@ -14,6 +44,7 @@ type spannerOptions struct {
 	followerReadDelay           time.Duration
 	maxRevisionStalenessPercent float64
 	credentialsFilePath         string
+	credentialsJSON             []byte
 	emulatorHost                string
 	disableStats                bool
 	readMaxOpen                 int
@@ -21,6 +52,11 @@ type spannerOptions struct {
 	minSessions                 uint64
 	maxSessions                 uint64
 	migrationPhase              string
+	allowedMigrations           []string
+	filterMaximumIDCount        uint16
+	columnOptimizationOption    common.ColumnOptimizationOption
+	expirationDisabled          bool
+	datastoreMetricsOption      DatastoreMetricsOption
 }
 
 type migrationPhase uint8
@@ -43,6 +79,9 @@ const (
 	defaultWatchBufferWriteTimeout     = 1 * time.Second
 	defaultDisableStats                = false
 	maxRevisionQuantization            = 24 * time.Hour
+	defaultFilterMaximumIDCount        = 100
+	defaultColumnOptimizationOption    = common.ColumnOptimizationOptionNone
+	defaultExpirationDisabled          = false
 )
 
 // Option provides the facility to configure how clients within the Spanner
@@ -65,6 +104,9 @@ func generateConfig(options []Option) (spannerOptions, error) {
 		minSessions:                 100,
 		maxSessions:                 400,
 		migrationPhase:              "", // no migration
+		filterMaximumIDCount:        defaultFilterMaximumIDCount,
+		columnOptimizationOption:    defaultColumnOptimizationOption,
+		expirationDisabled:          defaultExpirationDisabled,
 	}
 
 	for _, option := range options {
@@ -82,6 +124,11 @@ func generateConfig(options []Option) (spannerOptions, error) {
 
 	if _, ok := migrationPhases[computed.migrationPhase]; !ok {
 		return computed, fmt.Errorf("unknown migration phase: %s", computed.migrationPhase)
+	}
+
+	if computed.filterMaximumIDCount == 0 {
+		computed.filterMaximumIDCount = 100
+		log.Warn().Msg("filterMaximumIDCount not set, defaulting to 100")
 	}
 
 	return computed, nil
@@ -113,7 +160,7 @@ func RevisionQuantization(bucketSize time.Duration) Option {
 	}
 }
 
-// FollowerReadDelay is the time delay to apply to enable historial reads.
+// FollowerReadDelay is the time delay to apply to enable historical reads.
 //
 // This value defaults to 0 seconds.
 func FollowerReadDelay(delay time.Duration) Option {
@@ -141,11 +188,26 @@ func CredentialsFile(path string) Option {
 	}
 }
 
+// CredentialsJSON is the json containing credentials for a service
+// account that can access the cloud spanner instance
+func CredentialsJSON(json []byte) Option {
+	return func(so *spannerOptions) {
+		so.credentialsJSON = json
+	}
+}
+
 // EmulatorHost is the URI of a Spanner emulator to connect to for
 // development and testing use
 func EmulatorHost(uri string) Option {
 	return func(so *spannerOptions) {
 		so.emulatorHost = uri
+	}
+}
+
+// WithDatastoreMetricsOption configures the metrics that are emitted by the Spanner datastore.
+func WithDatastoreMetricsOption(opt DatastoreMetricsOption) Option {
+	return func(po *spannerOptions) {
+		po.datastoreMetricsOption = opt
 	}
 }
 
@@ -192,4 +254,34 @@ func MaxSessionCount(maxSessions uint64) Option {
 // Steady-state configuration (e.g. fully migrated) by default
 func MigrationPhase(phase string) Option {
 	return func(po *spannerOptions) { po.migrationPhase = phase }
+}
+
+// AllowedMigrations configures a set of additional migrations that will pass
+// the health check (head migration is always allowed).
+func AllowedMigrations(allowedMigrations []string) Option {
+	return func(po *spannerOptions) { po.allowedMigrations = allowedMigrations }
+}
+
+// FilterMaximumIDCount is the maximum number of IDs that can be used to filter IDs in queries
+func FilterMaximumIDCount(filterMaximumIDCount uint16) Option {
+	return func(po *spannerOptions) { po.filterMaximumIDCount = filterMaximumIDCount }
+}
+
+// WithColumnOptimization configures the Spanner driver to optimize the columns
+// in the underlying tables.
+func WithColumnOptimization(isEnabled bool) Option {
+	return func(po *spannerOptions) {
+		if isEnabled {
+			po.columnOptimizationOption = common.ColumnOptimizationOptionStaticValues
+		} else {
+			po.columnOptimizationOption = common.ColumnOptimizationOptionNone
+		}
+	}
+}
+
+// WithExpirationDisabled disables relationship expiration support in the Spanner.
+func WithExpirationDisabled(isDisabled bool) Option {
+	return func(po *spannerOptions) {
+		po.expirationDisabled = isDisabled
+	}
 }

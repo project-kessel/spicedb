@@ -21,7 +21,7 @@ import (
 // via the supplied cache.
 type definitionCachingProxy struct {
 	datastore.Datastore
-	c         cache.Cache
+	c         cache.Cache[cache.StringKey, *cacheEntry]
 	readGroup singleflight.Group
 }
 
@@ -120,13 +120,21 @@ func listAndCache[T schemaDefinition](
 	foundDefs := make([]datastore.RevisionedDefinition[T], 0, len(names))
 	for _, name := range names {
 		cacheRevisionKey := prefix + ":" + name + "@" + r.rev.String()
-		loadedRaw, found := r.p.c.Get(cacheRevisionKey)
+		loaded, found := r.p.c.Get(cache.StringKey(cacheRevisionKey))
 		if !found {
 			continue
 		}
 
 		remainingToLoad.Delete(name)
-		loaded := loadedRaw.(*cacheEntry)
+
+		if loaded.notFound != nil {
+			// If the value was in the cache, but its notFound is defined (implying that
+			// it was not found on a previous lookup), we pass over it.
+			// We still remove it from the `remainingToLoad` set because
+			// we don't want to go to the datastore for it.
+			continue
+		}
+
 		foundDefs = append(foundDefs, datastore.RevisionedDefinition[T]{
 			Definition:          loaded.definition.(T),
 			LastWrittenRevision: loaded.updated,
@@ -146,7 +154,7 @@ func listAndCache[T schemaDefinition](
 			cacheRevisionKey := prefix + ":" + def.Definition.GetName() + "@" + r.rev.String()
 			estimatedDefinitionSize := estimator(def.Definition.SizeVT())
 			entry := &cacheEntry{def.Definition, def.LastWrittenRevision, estimatedDefinitionSize, err}
-			r.p.c.Set(cacheRevisionKey, entry, entry.Size())
+			r.p.c.Set(cache.StringKey(cacheRevisionKey), entry, entry.Size())
 		}
 
 		// We have to call wait here or else Ristretto may not have the key(s)
@@ -167,22 +175,22 @@ func readAndCache[T schemaDefinition](
 ) (T, datastore.Revision, error) {
 	// Check the cache.
 	cacheRevisionKey := prefix + ":" + name + "@" + r.rev.String()
-	loadedRaw, found := r.p.c.Get(cacheRevisionKey)
+	loaded, found := r.p.c.Get(cache.StringKey(cacheRevisionKey))
 	if !found {
 		// We couldn't use the cached entry, load one
 		var err error
-		loadedRaw, err, _ = r.p.readGroup.Do(cacheRevisionKey, func() (any, error) {
+		loadedRaw, err, _ := r.p.readGroup.Do(cacheRevisionKey, func() (any, error) {
 			// sever the context so that another branch doesn't cancel the
 			// single-flighted read
 			loaded, updatedRev, err := reader(internaldatastore.SeparateContextWithTracing(ctx), name)
-			if err != nil && !errors.As(err, &datastore.ErrNamespaceNotFound{}) && !errors.As(err, &datastore.ErrCaveatNameNotFound{}) {
+			if err != nil && !errors.As(err, &datastore.NamespaceNotFoundError{}) && !errors.As(err, &datastore.CaveatNameNotFoundError{}) {
 				// Propagate this error to the caller
 				return nil, err
 			}
 
 			estimatedDefinitionSize := estimator(loaded.SizeVT())
 			entry := &cacheEntry{loaded, updatedRev, estimatedDefinitionSize, err}
-			r.p.c.Set(cacheRevisionKey, entry, entry.Size())
+			r.p.c.Set(cache.StringKey(cacheRevisionKey), entry, entry.Size())
 
 			// We have to call wait here or else Ristretto may not have the key
 			// available to a subsequent caller.
@@ -192,9 +200,10 @@ func readAndCache[T schemaDefinition](
 		if err != nil {
 			return *new(T), datastore.NoRevision, err
 		}
+
+		loaded = loadedRaw.(*cacheEntry)
 	}
 
-	loaded := loadedRaw.(*cacheEntry)
 	return loaded.definition.(T), loaded.updated, loaded.notFound
 }
 
@@ -244,7 +253,7 @@ func readAndCacheInTransaction[T schemaDefinition](
 		entry = untypedEntry.(definitionEntry)
 	} else {
 		loaded, updatedRev, err := reader(ctx, name)
-		if err != nil && !errors.As(err, &datastore.ErrNamespaceNotFound{}) && !errors.As(err, &datastore.ErrCaveatNameNotFound{}) {
+		if err != nil && !errors.As(err, &datastore.NamespaceNotFoundError{}) && !errors.As(err, &datastore.CaveatNameNotFoundError{}) {
 			// Propagate this error to the caller
 			return *new(T), datastore.NoRevision, err
 		}

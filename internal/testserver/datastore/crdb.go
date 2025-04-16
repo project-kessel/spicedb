@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/ory/dockertest/v3"
+	"github.com/ory/dockertest/v3/docker"
 	"github.com/stretchr/testify/require"
 
 	crdbmigrations "github.com/authzed/spicedb/internal/datastore/crdb/migrations"
@@ -20,8 +21,6 @@ import (
 )
 
 const (
-	CRDBTestVersionTag = "v23.1.16"
-
 	enableRangefeeds = `SET CLUSTER SETTING kv.rangefeed.enabled = true;`
 )
 
@@ -33,7 +32,7 @@ type crdbTester struct {
 }
 
 // RunCRDBForTesting returns a RunningEngineForTest for CRDB
-func RunCRDBForTesting(t testing.TB, bridgeNetworkName string) RunningEngineForTest {
+func RunCRDBForTesting(t testing.TB, bridgeNetworkName string, crdbVersion string) RunningEngineForTest {
 	pool, err := dockertest.NewPool("")
 	require.NoError(t, err)
 
@@ -41,9 +40,13 @@ func RunCRDBForTesting(t testing.TB, bridgeNetworkName string) RunningEngineForT
 	resource, err := pool.RunWithOptions(&dockertest.RunOptions{
 		Name:       name,
 		Repository: "mirror.gcr.io/cockroachdb/cockroach",
-		Tag:        CRDBTestVersionTag,
+		Tag:        "v" + crdbVersion,
 		Cmd:        []string{"start-single-node", "--insecure", "--max-offset=50ms"},
 		NetworkID:  bridgeNetworkName,
+	}, func(config *docker.HostConfig) {
+		// set AutoRemove to true so that stopped container goes away by itself
+		config.AutoRemove = true
+		config.RestartPolicy = docker.RestartPolicy{Name: "no"}
 	})
 	require.NoError(t, err)
 
@@ -52,6 +55,7 @@ func RunCRDBForTesting(t testing.TB, bridgeNetworkName string) RunningEngineForT
 		creds:    "root:fake",
 	}
 	t.Cleanup(func() {
+		require.NoError(t, builder.conn.Close(context.Background()))
 		require.NoError(t, pool.Purge(resource))
 	})
 

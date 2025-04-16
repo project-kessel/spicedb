@@ -53,20 +53,12 @@ func (ds *dispatchServer) DispatchExpand(ctx context.Context, req *dispatchv1.Di
 	return resp, rewriteGraphError(ctx, err)
 }
 
-func (ds *dispatchServer) DispatchReachableResources(
-	req *dispatchv1.DispatchReachableResourcesRequest,
-	resp dispatchv1.DispatchService_DispatchReachableResourcesServer,
+func (ds *dispatchServer) DispatchLookupResources2(
+	req *dispatchv1.DispatchLookupResources2Request,
+	resp dispatchv1.DispatchService_DispatchLookupResources2Server,
 ) error {
-	return ds.localDispatch.DispatchReachableResources(req,
-		dispatch.WrapGRPCStream[*dispatchv1.DispatchReachableResourcesResponse](resp))
-}
-
-func (ds *dispatchServer) DispatchLookupResources(
-	req *dispatchv1.DispatchLookupResourcesRequest,
-	resp dispatchv1.DispatchService_DispatchLookupResourcesServer,
-) error {
-	return ds.localDispatch.DispatchLookupResources(req,
-		dispatch.WrapGRPCStream[*dispatchv1.DispatchLookupResourcesResponse](resp))
+	return ds.localDispatch.DispatchLookupResources2(req,
+		dispatch.WrapGRPCStream[*dispatchv1.DispatchLookupResources2Response](resp))
 }
 
 func (ds *dispatchServer) DispatchLookupSubjects(
@@ -97,7 +89,7 @@ func rewriteGraphError(ctx context.Context, err error) error {
 	case err == nil:
 		return nil
 
-	case errors.As(err, &graph.ErrAlwaysFail{}):
+	case errors.As(err, &graph.AlwaysFailError{}):
 		fallthrough
 	default:
 		log.Ctx(ctx).Err(err).Msg("unexpected dispatch graph error")

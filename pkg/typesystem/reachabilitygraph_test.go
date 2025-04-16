@@ -7,14 +7,626 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/authzed/spicedb/internal/datastore/dsfortesting"
 	"github.com/authzed/spicedb/internal/datastore/memdb"
 	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
+	"github.com/authzed/spicedb/pkg/datastore"
 	ns "github.com/authzed/spicedb/pkg/namespace"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	"github.com/authzed/spicedb/pkg/schemadsl/compiler"
 	"github.com/authzed/spicedb/pkg/schemadsl/input"
 	"github.com/authzed/spicedb/pkg/tuple"
 )
+
+func TestRelationsEncounteredForSubject(t *testing.T) {
+	tcs := []struct {
+		name                string
+		schema              string
+		subjectType         string
+		relation            string
+		expectedPermissions []string
+	}{
+		{
+			"simple permission",
+			`definition user {}
+
+			definition document {
+				relation viewer: user
+				permission view = viewer
+			}`,
+
+			"document",
+			"viewer",
+			[]string{"document#view"},
+		},
+		{
+			"simple permission and user",
+			`definition user {}
+
+			definition document {
+				relation viewer: user
+				permission view = viewer
+			}`,
+
+			"user",
+			"...",
+			[]string{"document#view", "document#viewer"},
+		},
+		{
+			"multiple permissions using the same relation",
+			`definition user {}
+
+			definition document {
+				relation viewer: user
+				relation editor: user
+
+				permission edit = editor
+				permission view = viewer + editor
+			}`,
+
+			"document",
+			"editor",
+			[]string{"document#view", "document#edit"},
+		},
+		{
+			"multiple permissions using the same relation indirectly",
+			`definition user {}
+
+			definition document {
+				relation viewer: user
+				relation editor: user
+
+				permission edit = editor
+				permission view = viewer + edit
+			}`,
+
+			"document",
+			"editor",
+			[]string{"document#view", "document#edit"},
+		},
+		{
+			"permission referencing subject relation",
+			`definition user {}
+
+			definition group {
+				relation member: user
+			}
+
+			definition document {
+				relation viewer: user | group#member
+				permission view = viewer
+			}`,
+			"group",
+			"member",
+			[]string{"document#view", "document#viewer"},
+		},
+		{
+			"simple arrow",
+			`definition user {}
+
+			definition organization {
+				relation admin: user
+			}
+
+			definition document {
+				relation org: organization
+				permission view = org->admin
+			}`,
+			"organization",
+			"admin",
+			[]string{"document#view"},
+		},
+		{
+			"simple any arrow",
+			`definition user {}
+
+			definition organization {
+				relation admin: user
+			}
+
+			definition document {
+				relation org: organization
+				permission view = org.any(admin)
+			}`,
+			"organization",
+			"admin",
+			[]string{"document#view"},
+		},
+		{
+			"simple all arrow",
+			`definition user {}
+
+			definition organization {
+				relation admin: user
+			}
+
+			definition document {
+				relation org: organization
+				permission view = org.all(admin)
+			}`,
+			"organization",
+			"admin",
+			[]string{"document#view"},
+		},
+		{
+			"complex schema",
+			`definition user {}
+
+			definition organization {
+				relation admin: user
+				relation direct_member: user
+
+				permission member = direct_member + admin
+			}
+
+			definition group {
+				relation admin: user
+				relation direct_member: user | group#member
+				permission member = direct_member + admin
+			}
+
+			definition document {
+				relation viewer: user | group#member
+				relation owner: user
+				relation org: organization
+
+				permission view = viewer + owner + org->admin
+			}`,
+			"user",
+			"...",
+			[]string{
+				"document#viewer", "document#owner", "document#view",
+				"group#admin", "group#direct_member", "group#member",
+				"organization#member", "organization#admin",
+				"organization#direct_member",
+			},
+		},
+		{
+			"schema with different user types",
+			`definition user {}
+
+			definition platformuser {}
+
+			definition document {
+				relation viewer: user | platformuser
+				relation editor: platformuser
+
+				permission edit = editor
+				permission view = viewer + edit
+			}`,
+
+			"user",
+			"...",
+
+			[]string{"document#view", "document#viewer"},
+		},
+	}
+
+	for _, tc := range tcs {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			require := require.New(t)
+
+			ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+			require.NoError(err)
+
+			ctx := datastoremw.ContextWithDatastore(context.Background(), ds)
+
+			compiled, err := compiler.Compile(compiler.InputSchema{
+				Source:       input.Source("schema"),
+				SchemaString: tc.schema,
+			}, compiler.AllowUnprefixedObjectType())
+			require.NoError(err)
+
+			// Write the schema.
+			_, err = ds.ReadWriteTx(context.Background(), func(ctx context.Context, tx datastore.ReadWriteTransaction) error {
+				for _, nsDef := range compiled.ObjectDefinitions {
+					if err := tx.WriteNamespaces(ctx, nsDef); err != nil {
+						return err
+					}
+				}
+
+				return nil
+			})
+			require.NoError(err)
+
+			lastRevision, err := ds.HeadRevision(context.Background())
+			require.NoError(err)
+
+			reader := ds.SnapshotReader(lastRevision)
+
+			_, vts, err := ReadNamespaceAndTypes(ctx, tc.subjectType, reader)
+			require.NoError(err)
+
+			rg := ReachabilityGraphFor(vts)
+
+			relations, err := rg.RelationsEncounteredForSubject(ctx, compiled.ObjectDefinitions, &core.RelationReference{
+				Namespace: tc.subjectType,
+				Relation:  tc.relation,
+			})
+			require.NoError(err)
+
+			relationStrs := make([]string, 0, len(relations))
+			for _, relation := range relations {
+				relationStrs = append(relationStrs, tuple.StringCoreRR(relation))
+			}
+
+			sort.Strings(relationStrs)
+			sort.Strings(tc.expectedPermissions)
+
+			require.Equal(tc.expectedPermissions, relationStrs)
+		})
+	}
+}
+
+func TestRelationsEncounteredForResource(t *testing.T) {
+	tcs := []struct {
+		name              string
+		schema            string
+		resourceType      string
+		permission        string
+		expectedRelations []string
+	}{
+		{
+			"simple relation",
+			`definition user {}
+
+			definition document {
+				relation viewer: user
+			}`,
+
+			"document",
+			"viewer",
+			[]string{"document#viewer"},
+		},
+		{
+			"simple permission",
+			`definition user {}
+
+			definition document {
+				relation viewer: user
+				permission view = viewer + nil
+			}`,
+			"document",
+			"view",
+			[]string{"document#viewer", "document#view"},
+		},
+		{
+			"permission with multiple relations",
+			`definition user {}
+
+			definition document {
+				relation viewer: user
+				relation editor: user
+				relation owner: user
+				permission view = viewer + editor + owner
+			}`,
+			"document",
+			"view",
+			[]string{"document#editor", "document#owner", "document#viewer", "document#view"},
+		},
+		{
+			"permission with multiple relations under intersection",
+			`definition user {}
+
+			definition document {
+				relation viewer: user
+				relation editor: user
+				relation owner: user
+
+				permission view = viewer & editor & owner
+			}`,
+			"document",
+			"view",
+			[]string{"document#viewer", "document#view", "document#editor", "document#owner"},
+		},
+		{
+			"permission with multiple relations under exclusion",
+			`definition user {}
+
+			definition document {
+				relation viewer: user
+				relation editor: user
+				relation owner: user
+
+				permission view = viewer - editor - owner
+			}`,
+			"document",
+			"view",
+			[]string{"document#viewer", "document#view", "document#editor", "document#owner"},
+		},
+		{
+			"permission with arrow",
+			`definition user {}
+
+			definition organization {
+				relation admin: user
+			}
+
+			definition document {
+				relation org: organization
+				relation viewer: user
+				relation owner: user
+
+				permission view = viewer + owner + org->admin
+			}`,
+			"document",
+			"view",
+			[]string{"document#viewer", "document#owner", "document#org", "document#view", "organization#admin"},
+		},
+		{
+			"permission with any arrow",
+			`definition user {}
+
+			definition organization {
+				relation admin: user
+			}
+
+			definition document {
+				relation org: organization
+				relation viewer: user
+				relation owner: user
+
+				permission view = viewer + owner + org.any(admin)
+			}`,
+			"document",
+			"view",
+			[]string{"document#viewer", "document#owner", "document#org", "document#view", "organization#admin"},
+		},
+		{
+			"permission with all arrow",
+			`definition user {}
+
+			definition organization {
+				relation admin: user
+			}
+
+			definition document {
+				relation org: organization
+				relation viewer: user
+				relation owner: user
+
+				permission view = viewer + owner + org.all(admin)
+			}`,
+			"document",
+			"view",
+			[]string{"document#viewer", "document#owner", "document#org", "document#view", "organization#admin"},
+		},
+		{
+			"permission with subrelation",
+			`definition user {}
+
+			definition group {
+				relation direct_member: user
+				relation admin: user
+
+				permission member = direct_member + admin
+			}
+
+			definition document {
+				relation viewer: user | group#member
+
+				permission view = viewer
+			}`,
+
+			"document",
+			"view",
+
+			[]string{"document#viewer", "document#view", "group#direct_member", "group#admin", "group#member"},
+		},
+		{
+			"permission with unused relation",
+			`definition user {}
+
+			definition resource {
+				relation viewer: user
+				relation editor: user
+				relation owner: user
+				relation unused: user
+
+				permission view = viewer + editor + owner
+			}`,
+
+			"resource",
+			"view",
+
+			[]string{"resource#viewer", "resource#editor", "resource#owner", "resource#view"},
+		},
+		{
+			"permission with multiple arrows",
+			`definition user {}
+
+			definition organization {
+				relation admin: user
+				relation banned: user
+				relation member: user
+
+				permission can_admin = admin - banned
+			}
+
+			definition group {
+				relation admin: user
+				relation direct_member: user | group#member
+				relation org: organization
+
+				permission member = direct_member + admin + org->can_admin
+			}
+
+			definition document {
+				relation viewer: user | group#member
+				relation owner: user
+				relation org: organization
+
+				permission view = viewer + owner + org->member
+			}`,
+
+			"document",
+			"view",
+
+			[]string{
+				"document#viewer", "document#owner", "document#org", "document#view",
+				"group#admin", "group#direct_member", "group#member", "organization#admin",
+				"organization#member", "organization#can_admin", "group#org", "organization#banned",
+			},
+		},
+		{
+			"permission with multiple arrows but only one used",
+			`definition user {}
+
+			definition organization {
+				relation admin: user
+				relation banned: user
+				relation member: user
+
+				permission can_admin = admin - banned
+			}
+
+			definition group {
+				relation admin: user
+				relation direct_member: user | group#member
+				relation org: organization
+
+				permission member = direct_member + admin + org->can_admin
+			}
+
+			definition document {
+				relation viewer: user | group#member
+				relation owner: user
+				relation org: organization
+
+				permission view = viewer + owner
+			}`,
+
+			"document",
+			"view",
+
+			[]string{
+				"document#viewer", "document#owner", "document#view",
+				"group#admin", "group#direct_member", "group#member", "organization#admin",
+				"organization#can_admin", "group#org", "organization#banned",
+			},
+		},
+		{
+			"permission with multiple items but only one path used",
+			`definition user {}
+
+			definition organization {
+				relation admin: user
+				relation banned: user
+				relation member: user
+
+				permission can_admin = admin - banned
+			}
+
+			definition group {
+				relation admin: user
+				relation direct_member: user | group#member
+				relation org: organization
+
+				permission member = direct_member + admin + org->can_admin
+			}
+
+			definition document {
+				relation viewer: user
+				relation owner: user
+				relation org: organization
+
+				permission view = viewer + owner
+			}`,
+
+			"document",
+			"view",
+
+			[]string{
+				"document#viewer", "document#owner", "document#view",
+			},
+		},
+		{
+			"permission with many indirect relations",
+			`definition user {}
+
+			definition first {
+				relation member: second#member
+			}
+
+			definition second {
+				relation member: third#member
+			}
+
+			definition third {
+				relation member: user
+			}
+
+			definition document {
+				relation viewer: user | first#member
+				permission view = viewer
+			}`,
+
+			"document",
+			"view",
+
+			[]string{
+				"document#viewer", "document#view", "first#member", "second#member", "third#member",
+			},
+		},
+	}
+
+	for _, tc := range tcs {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			require := require.New(t)
+
+			ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+			require.NoError(err)
+
+			ctx := datastoremw.ContextWithDatastore(context.Background(), ds)
+
+			compiled, err := compiler.Compile(compiler.InputSchema{
+				Source:       input.Source("schema"),
+				SchemaString: tc.schema,
+			}, compiler.AllowUnprefixedObjectType())
+			require.NoError(err)
+
+			// Write the schema.
+			_, err = ds.ReadWriteTx(context.Background(), func(ctx context.Context, tx datastore.ReadWriteTransaction) error {
+				for _, nsDef := range compiled.ObjectDefinitions {
+					if err := tx.WriteNamespaces(ctx, nsDef); err != nil {
+						return err
+					}
+				}
+
+				return nil
+			})
+			require.NoError(err)
+
+			lastRevision, err := ds.HeadRevision(context.Background())
+			require.NoError(err)
+
+			reader := ds.SnapshotReader(lastRevision)
+
+			_, vts, err := ReadNamespaceAndTypes(ctx, tc.resourceType, reader)
+			require.NoError(err)
+
+			rg := ReachabilityGraphFor(vts)
+
+			relations, err := rg.RelationsEncounteredForResource(ctx, &core.RelationReference{
+				Namespace: tc.resourceType,
+				Relation:  tc.permission,
+			})
+			require.NoError(err)
+
+			relationStrs := make([]string, 0, len(relations))
+			for _, relation := range relations {
+				relationStrs = append(relationStrs, tuple.StringCoreRR(relation))
+			}
+
+			sort.Strings(relationStrs)
+			sort.Strings(tc.expectedRelations)
+
+			require.Equal(tc.expectedRelations, relationStrs)
+		})
+	}
+}
 
 func TestReachabilityGraph(t *testing.T) {
 	testCases := []struct {
@@ -128,6 +740,60 @@ func TestReachabilityGraph(t *testing.T) {
 				relation viewer: user
 				relation owner: user
 				permission view = viewer + owner + org->admin
+			}`,
+			rr("document", "view"),
+			rr("user", "..."),
+			[]rrtStruct{
+				rrt("document", "owner", true),
+				rrt("document", "viewer", true),
+				rrt("organization", "admin", true),
+			},
+			[]rrtStruct{
+				rrt("document", "owner", true),
+				rrt("document", "viewer", true),
+				rrt("organization", "admin", true),
+			},
+		},
+		{
+			"permission with any arrow",
+			`definition user {}
+
+			definition organization {
+				relation admin: user
+			}
+
+			definition document {
+				relation org: organization
+				relation viewer: user
+				relation owner: user
+				permission view = viewer + owner + org.any(admin)
+			}`,
+			rr("document", "view"),
+			rr("user", "..."),
+			[]rrtStruct{
+				rrt("document", "owner", true),
+				rrt("document", "viewer", true),
+				rrt("organization", "admin", true),
+			},
+			[]rrtStruct{
+				rrt("document", "owner", true),
+				rrt("document", "viewer", true),
+				rrt("organization", "admin", true),
+			},
+		},
+		{
+			"permission with all arrow",
+			`definition user {}
+
+			definition organization {
+				relation admin: user
+			}
+
+			definition document {
+				relation org: organization
+				relation viewer: user
+				relation owner: user
+				permission view = viewer + owner + org.all(admin)
 			}`,
 			rr("document", "view"),
 			rr("user", "..."),
@@ -472,6 +1138,48 @@ func TestReachabilityGraph(t *testing.T) {
 				rrt("organization", "viewer", true),
 			},
 		},
+		{
+			"optimized reachability with any arrow",
+			`definition user {}
+
+			definition organization {
+				relation admin: user
+			}
+
+			definition document {
+				relation org: organization
+				permission view = org.any(admin)
+			}`,
+			rr("document", "view"),
+			rr("organization", "admin"),
+			[]rrtStruct{
+				rrt("document", "view", true),
+			},
+			[]rrtStruct{
+				rrt("document", "view", true),
+			},
+		},
+		{
+			"optimized reachability with all arrow",
+			`definition user {}
+
+			definition organization {
+				relation admin: user
+			}
+
+			definition document {
+				relation org: organization
+				permission view = org.all(admin)
+			}`,
+			rr("document", "view"),
+			rr("organization", "admin"),
+			[]rrtStruct{
+				rrt("document", "view", false),
+			},
+			[]rrtStruct{
+				rrt("document", "view", false),
+			},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -479,7 +1187,7 @@ func TestReachabilityGraph(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			require := require.New(t)
 
-			ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
+			ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
 			require.NoError(err)
 
 			ctx := datastoremw.ContextWithDatastore(context.Background(), ds)
@@ -527,14 +1235,14 @@ func verifyEntrypoints(require *require.Assertions, foundEntrypoints []Reachabil
 	expectedEntrypointRelations := make([]string, 0, len(expectedEntrypoints))
 	isDirectMap := map[string]bool{}
 	for _, expected := range expectedEntrypoints {
-		expectedEntrypointRelations = append(expectedEntrypointRelations, tuple.StringRR(expected.relationRef))
-		isDirectMap[tuple.StringRR(expected.relationRef)] = expected.isDirect
+		expectedEntrypointRelations = append(expectedEntrypointRelations, tuple.StringCoreRR(expected.relationRef))
+		isDirectMap[tuple.StringCoreRR(expected.relationRef)] = expected.isDirect
 	}
 
 	foundRelations := make([]string, 0, len(foundEntrypoints))
 	for _, entrypoint := range foundEntrypoints {
-		foundRelations = append(foundRelations, tuple.StringRR(entrypoint.ContainingRelationOrPermission()))
-		if isDirect, ok := isDirectMap[tuple.StringRR(entrypoint.ContainingRelationOrPermission())]; ok {
+		foundRelations = append(foundRelations, tuple.StringCoreRR(entrypoint.ContainingRelationOrPermission()))
+		if isDirect, ok := isDirectMap[tuple.StringCoreRR(entrypoint.ContainingRelationOrPermission())]; ok {
 			require.Equal(isDirect, entrypoint.IsDirectResult(), "found mismatch for whether a direct result for entrypoint for %s", entrypoint.parentRelation.Relation)
 		}
 	}

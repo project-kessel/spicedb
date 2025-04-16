@@ -11,16 +11,16 @@ import (
 	nsdiff "github.com/authzed/spicedb/pkg/diff/namespace"
 	"github.com/authzed/spicedb/pkg/genutil/mapz"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
+	"github.com/authzed/spicedb/pkg/schema"
 	"github.com/authzed/spicedb/pkg/schemadsl/compiler"
 	"github.com/authzed/spicedb/pkg/spiceerrors"
 	"github.com/authzed/spicedb/pkg/tuple"
-	"github.com/authzed/spicedb/pkg/typesystem"
 )
 
 // ValidatedSchemaChanges is a set of validated schema changes that can be applied to the datastore.
 type ValidatedSchemaChanges struct {
 	compiled             *compiler.CompiledSchema
-	validatedTypeSystems map[string]*typesystem.ValidatedNamespaceTypeSystem
+	validatedTypeSystems map[string]*schema.ValidatedDefinition
 	newCaveatDefNames    *mapz.Set[string]
 	newObjectDefNames    *mapz.Set[string]
 	additiveOnly         bool
@@ -41,19 +41,15 @@ func ValidateSchemaChanges(ctx context.Context, compiled *compiler.CompiledSchem
 
 	// 2) Validate the namespaces defined.
 	newObjectDefNames := mapz.NewSet[string]()
-	validatedTypeSystems := make(map[string]*typesystem.ValidatedNamespaceTypeSystem, len(compiled.ObjectDefinitions))
+	validatedTypeSystems := make(map[string]*schema.ValidatedDefinition, len(compiled.ObjectDefinitions))
+	res := schema.ResolverForPredefinedDefinitions(schema.PredefinedElements{
+		Definitions: compiled.ObjectDefinitions,
+		Caveats:     compiled.CaveatDefinitions,
+	})
+	ts := schema.NewTypeSystem(res)
 
 	for _, nsdef := range compiled.ObjectDefinitions {
-		ts, err := typesystem.NewNamespaceTypeSystem(nsdef,
-			typesystem.ResolverForPredefinedDefinitions(typesystem.PredefinedElements{
-				Namespaces: compiled.ObjectDefinitions,
-				Caveats:    compiled.CaveatDefinitions,
-			}))
-		if err != nil {
-			return nil, err
-		}
-
-		vts, err := ts.Validate(ctx)
+		vts, err := ts.GetValidatedDefinition(ctx, nsdef.GetName())
 		if err != nil {
 			return nil, err
 		}
@@ -292,7 +288,6 @@ func ensureNoRelationshipsExist(ctx context.Context, rwt datastore.ReadWriteTran
 		"cannot delete object definition `%s`, as a relationship references it",
 		namespaceName,
 	)
-	qy.Close()
 	if err != nil {
 		return err
 	}
@@ -319,10 +314,46 @@ func sanityCheckNamespaceChanges(
 	for _, delta := range diff.Deltas() {
 		switch delta.Type {
 		case nsdiff.RemovedRelation:
+			// NOTE: We add the subject filters here to ensure the reverse relationship index is used
+			// by the datastores. As there is no index that has {namespace, relation} directly, but there
+			// *is* an index that has {subject_namespace, subject_relation, namespace, relation}, we can
+			// force the datastore to use the reverse index by adding the subject filters.
+			var previousRelation *core.Relation
+			for _, relation := range existing.Relation {
+				if relation.Name == delta.RelationName {
+					previousRelation = relation
+					break
+				}
+			}
+
+			if previousRelation == nil {
+				return nil, spiceerrors.MustBugf("relation `%s` not found in existing namespace definition", delta.RelationName)
+			}
+
+			subjectSelectors := make([]datastore.SubjectsSelector, 0, len(previousRelation.TypeInformation.AllowedDirectRelations))
+			for _, allowedType := range previousRelation.TypeInformation.AllowedDirectRelations {
+				if allowedType.GetRelation() == datastore.Ellipsis {
+					subjectSelectors = append(subjectSelectors, datastore.SubjectsSelector{
+						OptionalSubjectType: allowedType.Namespace,
+						RelationFilter: datastore.SubjectRelationFilter{
+							IncludeEllipsisRelation: true,
+						},
+					})
+				} else {
+					subjectSelectors = append(subjectSelectors, datastore.SubjectsSelector{
+						OptionalSubjectType: allowedType.Namespace,
+						RelationFilter: datastore.SubjectRelationFilter{
+							NonEllipsisRelation: allowedType.GetRelation(),
+						},
+					})
+				}
+			}
+
 			qy, qyErr := rwt.QueryRelationships(ctx, datastore.RelationshipsFilter{
-				OptionalResourceType:     nsdef.Name,
-				OptionalResourceRelation: delta.RelationName,
-			})
+				OptionalResourceType:      nsdef.Name,
+				OptionalResourceRelation:  delta.RelationName,
+				OptionalSubjectsSelectors: subjectSelectors,
+			}, options.WithLimit(options.LimitOne))
 
 			err = errorIfTupleIteratorReturnsTuples(
 				ctx,
@@ -345,7 +376,6 @@ func sanityCheckNamespaceChanges(
 				qy,
 				qyErr,
 				"cannot delete relation `%s` in object definition `%s`, as a relationship references it", delta.RelationName, nsdef.Name)
-			qy.Close()
 			if err != nil {
 				return diff, err
 			}
@@ -367,6 +397,11 @@ func sanityCheckNamespaceChanges(
 				optionalCaveatName = delta.AllowedType.GetRequiredCaveat().CaveatName
 			}
 
+			expirationOption := datastore.ExpirationFilterOptionNoExpiration
+			if delta.AllowedType.RequiredExpiration != nil {
+				expirationOption = datastore.ExpirationFilterOptionHasExpiration
+			}
+
 			qyr, qyrErr := rwt.QueryRelationships(
 				ctx,
 				datastore.RelationshipsFilter{
@@ -379,7 +414,8 @@ func sanityCheckNamespaceChanges(
 							RelationFilter:      relationFilter,
 						},
 					},
-					OptionalCaveatName: optionalCaveatName,
+					OptionalCaveatName:       optionalCaveatName,
+					OptionalExpirationOption: expirationOption,
 				},
 				options.WithLimit(options.LimitOne),
 			)
@@ -388,8 +424,7 @@ func sanityCheckNamespaceChanges(
 				qyr,
 				qyrErr,
 				"cannot remove allowed type `%s` from relation `%s` in object definition `%s`, as a relationship exists with it",
-				typesystem.SourceForAllowedRelation(delta.AllowedType), delta.RelationName, nsdef.Name)
-			qyr.Close()
+				schema.SourceForAllowedRelation(delta.AllowedType), delta.RelationName, nsdef.Name)
 			if err != nil {
 				return diff, err
 			}
@@ -404,14 +439,13 @@ func errorIfTupleIteratorReturnsTuples(_ context.Context, qy datastore.Relations
 	if qyErr != nil {
 		return qyErr
 	}
-	defer qy.Close()
 
-	if rt := qy.Next(); rt != nil {
-		if qy.Err() != nil {
-			return qy.Err()
+	for _, err := range qy {
+		if err != nil {
+			return err
 		}
-
 		return NewSchemaWriteDataValidationError(message, args...)
 	}
+
 	return nil
 }

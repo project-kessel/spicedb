@@ -8,8 +8,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
-	"github.com/authzed/spicedb/pkg/typesystem"
+	"github.com/authzed/spicedb/pkg/schema"
 
+	"github.com/authzed/spicedb/internal/datastore/dsfortesting"
 	"github.com/authzed/spicedb/internal/datastore/memdb"
 	ns "github.com/authzed/spicedb/pkg/namespace"
 	"github.com/authzed/spicedb/pkg/schemadsl/compiler"
@@ -375,6 +376,49 @@ func TestCanonicalization(t *testing.T) {
 				"second": computedKeyPrefix + "bfc8d945d7030961",
 			},
 		},
+		{
+			"canonicalization with functioned arrow expressions",
+			ns.Namespace(
+				"document",
+				ns.MustRelation("owner", nil),
+				ns.MustRelation("viewer", nil),
+				ns.MustRelation("first", ns.Union(
+					ns.TupleToUserset("owner", "something"),
+				)),
+				ns.MustRelation("second", ns.Union(
+					ns.TupleToUserset("owner", "something"),
+				)),
+				ns.MustRelation("difftuple", ns.Union(
+					ns.TupleToUserset("viewer", "something"),
+				)),
+				ns.MustRelation("third", ns.Union(
+					ns.MustFunctionedTupleToUserset("owner", "any", "something"),
+				)),
+				ns.MustRelation("thirdwithall", ns.Union(
+					ns.MustFunctionedTupleToUserset("owner", "all", "something"),
+				)),
+				ns.MustRelation("allplusanother", ns.Union(
+					ns.MustFunctionedTupleToUserset("owner", "all", "something"),
+					ns.ComputedUserset("owner"),
+				)),
+				ns.MustRelation("anotherplusall", ns.Union(
+					ns.ComputedUserset("owner"),
+					ns.MustFunctionedTupleToUserset("owner", "all", "something"),
+				)),
+			),
+			"",
+			map[string]string{
+				"owner":          "owner",
+				"viewer":         "viewer",
+				"first":          computedKeyPrefix + "9fd2b03cabeb2e42",
+				"second":         computedKeyPrefix + "9fd2b03cabeb2e42",
+				"third":          computedKeyPrefix + "9fd2b03cabeb2e42",
+				"thirdwithall":   computedKeyPrefix + "eafa2f3f2d970680",
+				"difftuple":      computedKeyPrefix + "dddc650e89a7bf1a",
+				"allplusanother": computedKeyPrefix + "8b68ba1711b32ca4",
+				"anotherplusall": computedKeyPrefix + "8b68ba1711b32ca4",
+			},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -382,7 +426,7 @@ func TestCanonicalization(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			require := require.New(t)
 
-			ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
+			ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
 			require.NoError(err)
 
 			ctx := context.Background()
@@ -390,16 +434,18 @@ func TestCanonicalization(t *testing.T) {
 			lastRevision, err := ds.HeadRevision(context.Background())
 			require.NoError(err)
 
-			ts, err := typesystem.NewNamespaceTypeSystem(tc.toCheck, typesystem.ResolverForDatastoreReader(ds.SnapshotReader(lastRevision)))
+			ts := schema.NewTypeSystem(schema.ResolverForDatastoreReader(ds.SnapshotReader(lastRevision)))
+
+			def, err := schema.NewDefinition(ts, tc.toCheck)
 			require.NoError(err)
 
-			vts, terr := ts.Validate(ctx)
-			require.NoError(terr)
+			vdef, derr := def.Validate(ctx)
+			require.NoError(derr)
 
-			aliases, aerr := computePermissionAliases(vts)
+			aliases, aerr := computePermissionAliases(vdef)
 			require.NoError(aerr)
 
-			cacheKeys, cerr := computeCanonicalCacheKeys(vts, aliases)
+			cacheKeys, cerr := computeCanonicalCacheKeys(vdef, aliases)
 			require.NoError(cerr)
 			require.Equal(tc.expectedCacheMap, cacheKeys)
 		})
@@ -509,7 +555,7 @@ func TestCanonicalizationComparison(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			require := require.New(t)
 
-			ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
+			ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
 			require.NoError(err)
 
 			ctx := context.Background()
@@ -524,10 +570,11 @@ func TestCanonicalizationComparison(t *testing.T) {
 			lastRevision, err := ds.HeadRevision(context.Background())
 			require.NoError(err)
 
-			ts, err := typesystem.NewNamespaceTypeSystem(compiled.ObjectDefinitions[0], typesystem.ResolverForDatastoreReader(ds.SnapshotReader(lastRevision)))
+			ts := schema.NewTypeSystem(schema.ResolverForDatastoreReader(ds.SnapshotReader(lastRevision)))
+			def, err := schema.NewDefinition(ts, compiled.ObjectDefinitions[0])
 			require.NoError(err)
 
-			vts, terr := ts.Validate(ctx)
+			vts, terr := def.Validate(ctx)
 			require.NoError(terr)
 
 			aliases, aerr := computePermissionAliases(vts)

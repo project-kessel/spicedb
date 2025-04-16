@@ -5,7 +5,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/authzed/spicedb/internal/datastore/memdb"
+	"github.com/authzed/spicedb/internal/datastore/dsfortesting"
 	"github.com/authzed/spicedb/internal/datastore/proxy/proxy_test"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/datastore/options"
@@ -89,6 +89,15 @@ func TestPopulateFromFiles(t *testing.T) {
 			expectedError: "",
 		},
 		{
+			name:      "caveat order",
+			filePaths: []string{"testdata/caveat_order.yaml"},
+			want: []string{
+				"resource:first#reader@user:sarah[some_caveat:{\"somecondition\":42}]",
+				"resource:first#reader@user:tom[some_caveat]",
+			},
+			expectedError: "",
+		},
+		{
 			name:          "invalid caveat",
 			filePaths:     []string{"testdata/invalid_caveat.yaml"},
 			want:          nil,
@@ -118,16 +127,16 @@ func TestPopulateFromFiles(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			require := require.New(t)
-			ds, err := memdb.NewMemdbDatastore(0, 0, 0)
+			ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, 0)
 			require.NoError(err)
 
 			parsed, _, err := PopulateFromFiles(context.Background(), ds, tt.filePaths)
 			if tt.expectedError == "" {
 				require.NoError(err)
 
-				foundRelationships := make([]string, 0, len(parsed.Tuples))
-				for _, tpl := range parsed.Tuples {
-					foundRelationships = append(foundRelationships, tuple.MustString(tpl))
+				foundRelationships := make([]string, 0, len(parsed.Relationships))
+				for _, rel := range parsed.Relationships {
+					foundRelationships = append(foundRelationships, tuple.MustString(rel))
 				}
 
 				sort.Strings(tt.want)
@@ -144,7 +153,7 @@ func TestPopulateFromFiles(t *testing.T) {
 func TestPopulationChunking(t *testing.T) {
 	require := require.New(t)
 
-	ds, err := memdb.NewMemdbDatastore(0, 0, 0)
+	ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, 0)
 	require.NoError(err)
 
 	cs := txCountingDatastore{delegate: ds}

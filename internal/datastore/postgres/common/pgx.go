@@ -2,11 +2,10 @@ package common
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"fmt"
 	"time"
 
+	"github.com/ccoveille/go-safecast"
 	"github.com/exaring/otelpgx"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/retry"
 	zerologadapter "github.com/jackc/pgx-zerolog"
@@ -15,69 +14,17 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/tracelog"
 	"github.com/rs/zerolog"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/authzed/spicedb/internal/datastore/common"
 	log "github.com/authzed/spicedb/internal/logging"
-	corev1 "github.com/authzed/spicedb/pkg/proto/core/v1"
+	"github.com/authzed/spicedb/pkg/datastore"
 )
 
-const errUnableToQueryTuples = "unable to query tuples: %w"
-
-// NewPGXExecutor creates an executor that uses the pgx library to make the specified queries.
-func NewPGXExecutor(querier DBFuncQuerier) common.ExecuteQueryFunc {
-	return func(ctx context.Context, sql string, args []any) ([]*corev1.RelationTuple, error) {
-		span := trace.SpanFromContext(ctx)
-		return queryTuples(ctx, sql, args, span, querier)
+// NewPGXQueryRelationshipsExecutor creates an executor that uses the pgx library to make the specified queries.
+func NewPGXQueryRelationshipsExecutor(querier DBFuncQuerier, explainable datastore.Explainable) common.ExecuteReadRelsQueryFunc {
+	return func(ctx context.Context, builder common.RelationshipsQueryBuilder) (datastore.RelationshipIterator, error) {
+		return common.QueryRelationships[pgx.Rows, map[string]any](ctx, builder, querier, explainable)
 	}
-}
-
-// queryTuples queries tuples for the given query and transaction.
-func queryTuples(ctx context.Context, sqlStatement string, args []any, span trace.Span, tx DBFuncQuerier) ([]*corev1.RelationTuple, error) {
-	var tuples []*corev1.RelationTuple
-	err := tx.QueryFunc(ctx, func(ctx context.Context, rows pgx.Rows) error {
-		span.AddEvent("Query issued to database")
-
-		for rows.Next() {
-			nextTuple := &corev1.RelationTuple{
-				ResourceAndRelation: &corev1.ObjectAndRelation{},
-				Subject:             &corev1.ObjectAndRelation{},
-			}
-			var caveatName sql.NullString
-			var caveatCtx map[string]any
-			err := rows.Scan(
-				&nextTuple.ResourceAndRelation.Namespace,
-				&nextTuple.ResourceAndRelation.ObjectId,
-				&nextTuple.ResourceAndRelation.Relation,
-				&nextTuple.Subject.Namespace,
-				&nextTuple.Subject.ObjectId,
-				&nextTuple.Subject.Relation,
-				&caveatName,
-				&caveatCtx,
-			)
-			if err != nil {
-				return fmt.Errorf(errUnableToQueryTuples, fmt.Errorf("scan err: %w", err))
-			}
-
-			nextTuple.Caveat, err = common.ContextualizedCaveatFrom(caveatName.String, caveatCtx)
-			if err != nil {
-				return fmt.Errorf(errUnableToQueryTuples, fmt.Errorf("unable to fetch caveat context: %w", err))
-			}
-			tuples = append(tuples, nextTuple)
-		}
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf(errUnableToQueryTuples, fmt.Errorf("rows err: %w", err))
-		}
-
-		span.AddEvent("Tuples loaded", trace.WithAttributes(attribute.Int("tupleCount", len(tuples))))
-		return nil
-	}, sqlStatement, args...)
-	if err != nil {
-		return nil, err
-	}
-
-	return tuples, nil
 }
 
 // ParseConfigWithInstrumentation returns a pgx.ConnConfig that has been instrumented for observability
@@ -88,7 +35,7 @@ func ParseConfigWithInstrumentation(url string) (*pgx.ConnConfig, error) {
 	}
 
 	ConfigurePGXLogger(connConfig)
-	ConfigureOTELTracer(connConfig)
+	ConfigureOTELTracer(connConfig, false)
 
 	return connConfig, nil
 }
@@ -100,6 +47,17 @@ func ConnectWithInstrumentation(ctx context.Context, url string) (*pgx.Conn, err
 		return nil, err
 	}
 
+	return pgx.ConnectConfig(ctx, connConfig)
+}
+
+// ConnectWithInstrumentationAndTimeout returns a pgx.Conn that has been instrumented for observability
+func ConnectWithInstrumentationAndTimeout(ctx context.Context, url string, connectTimeout time.Duration) (*pgx.Conn, error) {
+	connConfig, err := ParseConfigWithInstrumentation(url)
+	if err != nil {
+		return nil, err
+	}
+
+	connConfig.ConnectTimeout = connectTimeout
 	return pgx.ConnectConfig(ctx, connConfig)
 }
 
@@ -115,9 +73,10 @@ func ConfigurePGXLogger(connConfig *pgx.ConnConfig) {
 			truncateLargeSQL(data)
 
 			// log cancellation and serialization errors at debug level
+			// log revision not available errors at debug level
 			if errArg, ok := data["err"]; ok {
 				err, ok := errArg.(error)
-				if ok && (IsCancellationError(err) || IsSerializationError(err)) {
+				if ok && (common.IsCancellationError(err) || IsSerializationError(err) || IsReplicationLagError(err)) {
 					logger.Log(ctx, tracelog.LogLevelDebug, msg, data)
 					return
 				}
@@ -162,16 +121,6 @@ func truncateLargeSQL(data map[string]any) {
 	}
 }
 
-// IsCancellationError determines if an error returned by pgx has been caused by context cancellation.
-func IsCancellationError(err error) bool {
-	if errors.Is(err, context.Canceled) ||
-		errors.Is(err, context.DeadlineExceeded) ||
-		err.Error() == "conn closed" { // conns are sometimes closed async upon cancellation
-		return true
-	}
-	return false
-}
-
 func IsSerializationError(err error) bool {
 	var pgerr *pgconn.PgError
 	if errors.As(err, &pgerr) &&
@@ -190,8 +139,16 @@ func IsSerializationError(err error) bool {
 }
 
 // ConfigureOTELTracer adds OTEL tracing to a pgx.ConnConfig
-func ConfigureOTELTracer(connConfig *pgx.ConnConfig) {
-	addTracer(connConfig, otelpgx.NewTracer(otelpgx.WithTrimSQLInSpanName()))
+func ConfigureOTELTracer(connConfig *pgx.ConnConfig, includeQueryParameters bool) {
+	options := []otelpgx.Option{
+		otelpgx.WithTrimSQLInSpanName(),
+	}
+
+	if includeQueryParameters {
+		options = append(options, otelpgx.WithIncludeQueryParameters())
+	}
+
+	addTracer(connConfig, otelpgx.NewTracer(options...))
 }
 
 func addTracer(connConfig *pgx.ConnConfig, tracer pgx.QueryTracer) {
@@ -252,15 +209,23 @@ type PoolOptions struct {
 }
 
 // ConfigurePgx applies PoolOptions to a pgx connection pool confiugration.
-func (opts PoolOptions) ConfigurePgx(pgxConfig *pgxpool.Config) {
+func (opts PoolOptions) ConfigurePgx(pgxConfig *pgxpool.Config, includeQueryParametersInTraces bool) error {
 	if opts.MaxOpenConns != nil {
-		pgxConfig.MaxConns = int32(*opts.MaxOpenConns)
+		maxConns, err := safecast.ToInt32(*opts.MaxOpenConns)
+		if err != nil {
+			return err
+		}
+		pgxConfig.MaxConns = maxConns
 	}
 
 	// Default to keeping the pool maxed out at all times.
 	pgxConfig.MinConns = pgxConfig.MaxConns
 	if opts.MinOpenConns != nil {
-		pgxConfig.MinConns = int32(*opts.MinOpenConns)
+		minConns, err := safecast.ToInt32(*opts.MinOpenConns)
+		if err != nil {
+			return err
+		}
+		pgxConfig.MinConns = minConns
 	}
 
 	if pgxConfig.MaxConns > 0 && pgxConfig.MinConns > 0 && pgxConfig.MaxConns < pgxConfig.MinConns {
@@ -286,7 +251,8 @@ func (opts PoolOptions) ConfigurePgx(pgxConfig *pgxpool.Config) {
 	}
 
 	ConfigurePGXLogger(pgxConfig.ConnConfig)
-	ConfigureOTELTracer(pgxConfig.ConnConfig)
+	ConfigureOTELTracer(pgxConfig.ConnConfig, includeQueryParametersInTraces)
+	return nil
 }
 
 type QuerierFuncs struct {

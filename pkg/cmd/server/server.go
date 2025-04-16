@@ -31,6 +31,7 @@ import (
 	clusterdispatch "github.com/authzed/spicedb/internal/dispatch/cluster"
 	combineddispatch "github.com/authzed/spicedb/internal/dispatch/combined"
 	"github.com/authzed/spicedb/internal/dispatch/graph"
+	"github.com/authzed/spicedb/internal/dispatch/keys"
 	"github.com/authzed/spicedb/internal/gateway"
 	log "github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/internal/services"
@@ -38,6 +39,7 @@ import (
 	"github.com/authzed/spicedb/internal/services/health"
 	v1svc "github.com/authzed/spicedb/internal/services/v1"
 	"github.com/authzed/spicedb/internal/telemetry"
+	"github.com/authzed/spicedb/pkg/cache"
 	datastorecfg "github.com/authzed/spicedb/pkg/cmd/datastore"
 	"github.com/authzed/spicedb/pkg/cmd/util"
 	"github.com/authzed/spicedb/pkg/datastore"
@@ -57,6 +59,7 @@ type Config struct {
 	PresharedSecureKey     []string              `debugmap:"sensitive"`
 	ShutdownGracePeriod    time.Duration         `debugmap:"visible"`
 	DisableVersionResponse bool                  `debugmap:"visible"`
+	ServerName             string                `debugmap:"visible"`
 
 	// GRPC Gateway config
 	HTTPGateway                    util.HTTPServerConfig `debugmap:"visible"`
@@ -96,21 +99,30 @@ type Config struct {
 	Dispatcher                        dispatch.Dispatcher     `debugmap:"visible"`
 	DispatchHashringReplicationFactor uint16                  `debugmap:"visible"`
 	DispatchHashringSpread            uint8                   `debugmap:"visible"`
+	DispatchChunkSize                 uint16                  `debugmap:"visible" default:"100"`
 
 	DispatchSecondaryUpstreamAddrs map[string]string `debugmap:"visible"`
 	DispatchSecondaryUpstreamExprs map[string]string `debugmap:"visible"`
+	DispatchPrimaryDelayForTesting time.Duration     `debugmap:"hidden"`
 
 	DispatchCacheConfig        CacheConfig `debugmap:"visible"`
 	ClusterDispatchCacheConfig CacheConfig `debugmap:"visible"`
 
 	// API Behavior
-	DisableV1SchemaAPI       bool          `debugmap:"visible"`
-	V1SchemaAdditiveOnly     bool          `debugmap:"visible"`
-	MaximumUpdatesPerWrite   uint16        `debugmap:"visible"`
-	MaximumPreconditionCount uint16        `debugmap:"visible"`
-	MaxDatastoreReadPageSize uint64        `debugmap:"visible"`
-	StreamingAPITimeout      time.Duration `debugmap:"visible"`
-	WatchHeartbeat           time.Duration `debugmap:"visible"`
+	DisableV1SchemaAPI                       bool          `debugmap:"visible"`
+	V1SchemaAdditiveOnly                     bool          `debugmap:"visible"`
+	MaximumUpdatesPerWrite                   uint16        `debugmap:"visible"`
+	MaximumPreconditionCount                 uint16        `debugmap:"visible"`
+	MaxDatastoreReadPageSize                 uint64        `debugmap:"visible"`
+	StreamingAPITimeout                      time.Duration `debugmap:"visible"`
+	WatchHeartbeat                           time.Duration `debugmap:"visible"`
+	MaxReadRelationshipsLimit                uint32        `debugmap:"visible"`
+	MaxDeleteRelationshipsLimit              uint32        `debugmap:"visible"`
+	MaxLookupResourcesLimit                  uint32        `debugmap:"visible"`
+	MaxBulkExportRelationshipsLimit          uint32        `debugmap:"visible"`
+	EnableExperimentalLookupResources        bool          `debugmap:"visible"`
+	EnableExperimentalRelationshipExpiration bool          `debugmap:"visible"`
+	EnableRevisionHeartbeat                  bool          `debugmap:"visible"`
 
 	// Additional Services
 	MetricsAPI util.HTTPServerConfig `debugmap:"visible"`
@@ -180,8 +192,6 @@ func (c *closeableStack) CloseIfError(err error) error {
 // if there is no error, a completedServerConfig (with limited options for
 // mutation) is returned.
 func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
-	log.Ctx(ctx).Info().Fields(helpers.Flatten(c.DebugMap())).Msg("configuration")
-
 	closeables := closeableStack{}
 	var err error
 	defer func() {
@@ -213,7 +223,14 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 	ds := c.Datastore
 	if ds == nil {
 		var err error
-		ds, err = datastorecfg.NewDatastore(context.Background(), c.DatastoreConfig.ToOption())
+		c.supportOldAndNewReadReplicaConnectionPoolFlags()
+		ds, err = datastorecfg.NewDatastore(context.Background(), c.DatastoreConfig.ToOption(),
+			// Datastore's filter maximum ID count is set to the max size, since the number of elements to be dispatched
+			// are at most the number of elements returned from a datastore query
+			datastorecfg.WithFilterMaximumIDCount(c.DispatchChunkSize),
+			datastorecfg.WithEnableExperimentalRelationshipExpiration(c.EnableExperimentalRelationshipExpiration),
+			datastorecfg.WithEnableRevisionHeartbeat(c.EnableRevisionHeartbeat),
+		)
 		if err != nil {
 			return nil, spiceerrors.NewTerminationErrorBuilder(fmt.Errorf("failed to create datastore: %w", err)).
 				Component("datastore").
@@ -223,7 +240,7 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 	}
 	closeables.AddWithError(ds.Close)
 
-	nscc, err := c.NamespaceCacheConfig.Complete()
+	nscc, err := CompleteCache[cache.StringKey, schemacaching.CacheEntry](&c.NamespaceCacheConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create namespace cache: %w", err)
 	}
@@ -244,11 +261,11 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 
 	dispatcher := c.Dispatcher
 	if dispatcher == nil {
-		cc, err := c.DispatchCacheConfig.WithRevisionParameters(
+		cc, err := CompleteCache[keys.DispatchCacheKey, any](c.DispatchCacheConfig.WithRevisionParameters(
 			c.DatastoreConfig.RevisionQuantization,
 			c.DatastoreConfig.FollowerReadDelay,
 			c.DatastoreConfig.MaxRevisionStalenessPercent,
-		).Complete()
+		))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create dispatcher: %w", err)
 		}
@@ -288,6 +305,8 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 			combineddispatch.PrometheusSubsystem(c.DispatchClientMetricsPrefix),
 			combineddispatch.Cache(cc),
 			combineddispatch.ConcurrencyLimits(concurrencyLimits),
+			combineddispatch.DispatchChunkSize(c.DispatchChunkSize),
+			combineddispatch.StartingPrimaryHedgingDelay(c.DispatchPrimaryDelayForTesting),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create dispatcher: %w", err)
@@ -307,11 +326,11 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 
 	var cachingClusterDispatch dispatch.Dispatcher
 	if c.DispatchServer.Enabled {
-		cdcc, err := c.ClusterDispatchCacheConfig.WithRevisionParameters(
+		cdcc, err := CompleteCache[keys.DispatchCacheKey, any](c.ClusterDispatchCacheConfig.WithRevisionParameters(
 			c.DatastoreConfig.RevisionQuantization,
 			c.DatastoreConfig.FollowerReadDelay,
 			c.DatastoreConfig.MaxRevisionStalenessPercent,
-		).Complete()
+		))
 		if err != nil {
 			return nil, fmt.Errorf("failed to configure cluster dispatch: %w", err)
 		}
@@ -325,6 +344,7 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 			clusterdispatch.Cache(cdcc),
 			clusterdispatch.RemoteDispatchTimeout(c.DispatchUpstreamTimeout),
 			clusterdispatch.ConcurrencyLimits(concurrencyLimits),
+			clusterdispatch.DispatchChunkSize(c.DispatchChunkSize),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to configure cluster dispatch: %w", err)
@@ -358,9 +378,14 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 	}
 
 	watchServiceOption := services.WatchServiceEnabled
-	if !datastoreFeatures.Watch.Enabled {
+	if datastoreFeatures.Watch.Status != datastore.FeatureSupported {
 		log.Ctx(ctx).Warn().Str("reason", datastoreFeatures.Watch.Reason).Msg("watch api disabled; underlying datastore does not support it")
 		watchServiceOption = services.WatchServiceDisabled
+	}
+
+	serverName := c.ServerName
+	if serverName == "" {
+		serverName = "spicedb"
 	}
 
 	opts := MiddlewareOption{
@@ -368,11 +393,15 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 		c.GRPCAuthFunc,
 		!c.DisableVersionResponse,
 		dispatcher,
-		ds,
 		c.EnableRequestLogs,
 		c.EnableResponseLogs,
 		c.DisableGRPCLatencyHistogram,
+		serverName,
+		nil,
+		nil,
 	}
+	opts = opts.WithDatastore(ds)
+
 	defaultUnaryMiddlewareChain, err := DefaultUnaryMiddleware(opts)
 	if err != nil {
 		return nil, fmt.Errorf("error building default middlewares: %w", err)
@@ -402,13 +431,19 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 	}
 
 	permSysConfig := v1svc.PermissionsServerConfig{
-		MaxPreconditionsCount:      c.MaximumPreconditionCount,
-		MaxUpdatesPerWrite:         c.MaximumUpdatesPerWrite,
-		MaximumAPIDepth:            c.DispatchMaxDepth,
-		MaxCaveatContextSize:       c.MaxCaveatContextSize,
-		MaxRelationshipContextSize: c.MaxRelationshipContextSize,
-		MaxDatastoreReadPageSize:   c.MaxDatastoreReadPageSize,
-		StreamingAPITimeout:        c.StreamingAPITimeout,
+		MaxPreconditionsCount:           c.MaximumPreconditionCount,
+		MaxUpdatesPerWrite:              c.MaximumUpdatesPerWrite,
+		MaximumAPIDepth:                 c.DispatchMaxDepth,
+		MaxCaveatContextSize:            c.MaxCaveatContextSize,
+		MaxRelationshipContextSize:      c.MaxRelationshipContextSize,
+		MaxDatastoreReadPageSize:        c.MaxDatastoreReadPageSize,
+		StreamingAPITimeout:             c.StreamingAPITimeout,
+		MaxReadRelationshipsLimit:       c.MaxReadRelationshipsLimit,
+		MaxDeleteRelationshipsLimit:     c.MaxDeleteRelationshipsLimit,
+		MaxLookupResourcesLimit:         c.MaxLookupResourcesLimit,
+		MaxBulkExportRelationshipsLimit: c.MaxBulkExportRelationshipsLimit,
+		DispatchChunkSize:               c.DispatchChunkSize,
+		ExpiringRelationshipsEnabled:    c.EnableExperimentalRelationshipExpiration,
 	}
 
 	healthManager := health.NewHealthManager(dispatcher, ds)
@@ -436,6 +471,15 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 	}
 	closeables.AddCloser(gatewayCloser)
 	closeables.AddWithoutError(gatewayServer.Close)
+
+	infoCollector, err := telemetry.SpiceDBClusterInfoCollector(ctx, "environment", c.DatastoreConfig.Engine, ds)
+	if err != nil {
+		log.Warn().Err(err).Msg("unable to initialize info collector")
+	} else {
+		if err := prometheus.Register(infoCollector); err != nil {
+			log.Warn().Err(err).Msg("unable to initialize info collector")
+		}
+	}
 
 	var telemetryRegistry *prometheus.Registry
 
@@ -468,6 +512,8 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 	}
 	closeables.AddWithoutError(metricsServer.Close)
 
+	log.Ctx(ctx).Info().Fields(helpers.Flatten(c.DebugMap())).Msg("configuration")
+
 	return &completedServerConfig{
 		ds:                  ds,
 		gRPCServer:          grpcServer,
@@ -481,6 +527,47 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 		healthManager:       healthManager,
 		closeFunc:           closeables.Close,
 	}, nil
+}
+
+func (c *Config) supportOldAndNewReadReplicaConnectionPoolFlags() {
+	defaultReadConnPoolCfg := *datastorecfg.DefaultReadConnPool()
+	if c.DatastoreConfig.ReadReplicaConnPool.MaxOpenConns == defaultReadConnPoolCfg.MaxOpenConns && c.DatastoreConfig.
+		OldReadReplicaConnPool.MaxOpenConns != defaultReadConnPoolCfg.MaxOpenConns {
+		c.DatastoreConfig.
+			ReadReplicaConnPool.MaxOpenConns = c.DatastoreConfig.
+			OldReadReplicaConnPool.MaxOpenConns
+	}
+	if c.DatastoreConfig.
+		ReadReplicaConnPool.MinOpenConns == defaultReadConnPoolCfg.MinOpenConns && c.DatastoreConfig.
+		OldReadReplicaConnPool.MinOpenConns != defaultReadConnPoolCfg.MinOpenConns {
+		c.DatastoreConfig.
+			ReadReplicaConnPool.MinOpenConns = c.DatastoreConfig.
+			OldReadReplicaConnPool.MinOpenConns
+	}
+	if c.DatastoreConfig.
+		ReadReplicaConnPool.MaxLifetime == defaultReadConnPoolCfg.MaxLifetime && c.DatastoreConfig.
+		OldReadReplicaConnPool.MaxLifetime != defaultReadConnPoolCfg.MaxLifetime {
+		c.DatastoreConfig.
+			ReadReplicaConnPool.MaxLifetime = c.DatastoreConfig.
+			OldReadReplicaConnPool.MaxLifetime
+	}
+	if c.DatastoreConfig.
+		ReadReplicaConnPool.MaxLifetimeJitter == defaultReadConnPoolCfg.MaxLifetimeJitter && c.DatastoreConfig.
+		OldReadReplicaConnPool.MaxLifetimeJitter != defaultReadConnPoolCfg.MaxLifetimeJitter {
+		c.DatastoreConfig.
+			ReadReplicaConnPool.MaxLifetimeJitter = c.DatastoreConfig.
+			OldReadReplicaConnPool.MaxLifetimeJitter
+	}
+	if c.DatastoreConfig.
+		ReadReplicaConnPool.MaxIdleTime == defaultReadConnPoolCfg.MaxIdleTime && c.DatastoreConfig.
+		OldReadReplicaConnPool.MaxIdleTime != defaultReadConnPoolCfg.MaxIdleTime {
+		c.DatastoreConfig.
+			ReadReplicaConnPool.MaxIdleTime = c.DatastoreConfig.OldReadReplicaConnPool.MaxIdleTime
+	}
+	if c.DatastoreConfig.ReadReplicaConnPool.HealthCheckInterval == defaultReadConnPoolCfg.HealthCheckInterval &&
+		c.DatastoreConfig.OldReadReplicaConnPool.HealthCheckInterval != defaultReadConnPoolCfg.HealthCheckInterval {
+		c.DatastoreConfig.ReadReplicaConnPool.HealthCheckInterval = c.DatastoreConfig.OldReadReplicaConnPool.HealthCheckInterval
+	}
 }
 
 func (c *Config) buildUnaryMiddleware(defaultMiddleware *MiddlewareChain[grpc.UnaryServerInterceptor]) ([]grpc.UnaryServerInterceptor, error) {

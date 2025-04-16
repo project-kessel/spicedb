@@ -7,7 +7,9 @@ import (
 	"time"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
+	"github.com/ccoveille/go-safecast"
 	humanize "github.com/dustin/go-humanize"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -18,20 +20,21 @@ import (
 	"github.com/authzed/spicedb/internal/dispatch"
 	"github.com/authzed/spicedb/internal/dispatch/graph"
 	maingraph "github.com/authzed/spicedb/internal/graph"
+	"github.com/authzed/spicedb/internal/grpchelpers"
 	log "github.com/authzed/spicedb/internal/logging"
-	"github.com/authzed/spicedb/internal/middleware/consistency"
 	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/namespace"
 	"github.com/authzed/spicedb/internal/relationships"
 	v1svc "github.com/authzed/spicedb/internal/services/v1"
 	"github.com/authzed/spicedb/internal/sharederrors"
 	"github.com/authzed/spicedb/pkg/datastore"
+	"github.com/authzed/spicedb/pkg/middleware/consistency"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	devinterface "github.com/authzed/spicedb/pkg/proto/developer/v1"
+	"github.com/authzed/spicedb/pkg/schema"
 	"github.com/authzed/spicedb/pkg/schemadsl/compiler"
 	"github.com/authzed/spicedb/pkg/spiceerrors"
 	"github.com/authzed/spicedb/pkg/tuple"
-	"github.com/authzed/spicedb/pkg/typesystem"
 )
 
 const defaultConnBufferSize = humanize.MiByte
@@ -85,14 +88,45 @@ func newDevContextWithDatastore(ctx context.Context, requestContext *devinterfac
 		if err != nil || len(inputErrors) > 0 {
 			return err
 		}
+
 		// Load the test relationships into the datastore.
-		inputErrors, err = loadTuples(ctx, requestContext.Relationships, rwt)
-		if err != nil || len(inputErrors) > 0 {
-			return err
+		relationships := make([]tuple.Relationship, 0, len(requestContext.Relationships))
+		for _, rel := range requestContext.Relationships {
+			if err := rel.Validate(); err != nil {
+				inputErrors = append(inputErrors, &devinterface.DeveloperError{
+					Message: err.Error(),
+					Source:  devinterface.DeveloperError_RELATIONSHIP,
+					Kind:    devinterface.DeveloperError_PARSE_ERROR,
+					Context: tuple.CoreRelationToStringWithoutCaveatOrExpiration(rel),
+				})
+			}
+
+			convertedRel := tuple.FromCoreRelationTuple(rel)
+			if err := convertedRel.Validate(); err != nil {
+				tplString, serr := tuple.String(convertedRel)
+				if serr != nil {
+					return serr
+				}
+
+				inputErrors = append(inputErrors, &devinterface.DeveloperError{
+					Message: err.Error(),
+					Source:  devinterface.DeveloperError_RELATIONSHIP,
+					Kind:    devinterface.DeveloperError_PARSE_ERROR,
+					Context: tplString,
+				})
+			}
+
+			relationships = append(relationships, convertedRel)
 		}
 
-		return nil
+		ie, lerr := loadsRels(ctx, relationships, rwt)
+		if len(ie) > 0 {
+			inputErrors = append(inputErrors, ie...)
+		}
+
+		return lerr
 	})
+
 	if err != nil || len(inputErrors) > 0 {
 		return nil, &devinterface.DeveloperErrors{InputErrors: inputErrors}, err
 	}
@@ -110,7 +144,7 @@ func newDevContextWithDatastore(ctx context.Context, requestContext *devinterfac
 		Datastore:      ds,
 		CompiledSchema: compiled,
 		Revision:       currentRevision,
-		Dispatcher:     graph.NewLocalOnlyDispatcher(10),
+		Dispatcher:     graph.NewLocalOnlyDispatcher(10, 100),
 	}, nil, nil
 }
 
@@ -124,20 +158,21 @@ func (dc *DevContext) RunV1InMemoryService() (*grpc.ClientConn, func(), error) {
 	s := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
 			datastoremw.UnaryServerInterceptor(dc.Datastore),
-			consistency.UnaryServerInterceptor(),
+			consistency.UnaryServerInterceptor("development"),
 		),
 		grpc.ChainStreamInterceptor(
 			datastoremw.StreamServerInterceptor(dc.Datastore),
-			consistency.StreamServerInterceptor(),
+			consistency.StreamServerInterceptor("development"),
 		),
 	)
 	ps := v1svc.NewPermissionsServer(dc.Dispatcher, v1svc.PermissionsServerConfig{
-		MaxUpdatesPerWrite:    50,
-		MaxPreconditionsCount: 50,
-		MaximumAPIDepth:       50,
-		MaxCaveatContextSize:  0,
+		MaxUpdatesPerWrite:           50,
+		MaxPreconditionsCount:        50,
+		MaximumAPIDepth:              50,
+		MaxCaveatContextSize:         0,
+		ExpiringRelationshipsEnabled: true,
 	})
-	ss := v1svc.NewSchemaServer(false)
+	ss := v1svc.NewSchemaServer(false, true)
 
 	v1.RegisterPermissionsServiceServer(s, ps)
 	v1.RegisterSchemaServiceServer(s, ss)
@@ -148,14 +183,13 @@ func (dc *DevContext) RunV1InMemoryService() (*grpc.ClientConn, func(), error) {
 		}
 	}()
 
-	conn, err := grpc.DialContext(
+	conn, err := grpchelpers.DialAndWait(
 		context.Background(),
 		"",
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
 			return listener.Dial()
 		}),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
 	)
 	return conn, func() {
 		conn.Close()
@@ -182,42 +216,30 @@ func (dc *DevContext) Dispose() {
 	}
 }
 
-func loadTuples(ctx context.Context, tuples []*core.RelationTuple, rwt datastore.ReadWriteTransaction) ([]*devinterface.DeveloperError, error) {
-	devErrors := make([]*devinterface.DeveloperError, 0, len(tuples))
-	updates := make([]*core.RelationTupleUpdate, 0, len(tuples))
-	for _, tpl := range tuples {
-		tplString, err := tuple.String(tpl)
-		if err != nil {
-			return nil, err
-		}
-
-		verr := tpl.Validate()
-		if verr != nil {
-			devErrors = append(devErrors, &devinterface.DeveloperError{
-				Message: verr.Error(),
-				Source:  devinterface.DeveloperError_RELATIONSHIP,
-				Kind:    devinterface.DeveloperError_PARSE_ERROR,
-				Context: tplString,
-			})
-			continue
-		}
-
-		err = relationships.ValidateRelationshipsForCreateOrTouch(ctx, rwt, []*core.RelationTuple{tpl})
-		if err != nil {
-			devErr, wireErr := distinguishGraphError(ctx, err, devinterface.DeveloperError_RELATIONSHIP, 0, 0, tplString)
-			if devErr != nil {
-				devErrors = append(devErrors, devErr)
-				continue
+func loadsRels(ctx context.Context, rels []tuple.Relationship, rwt datastore.ReadWriteTransaction) ([]*devinterface.DeveloperError, error) {
+	devErrors := make([]*devinterface.DeveloperError, 0, len(rels))
+	updates := make([]tuple.RelationshipUpdate, 0, len(rels))
+	for _, rel := range rels {
+		if err := relationships.ValidateRelationshipsForCreateOrTouch(ctx, rwt, rel); err != nil {
+			relString, serr := tuple.String(rel)
+			if serr != nil {
+				return nil, serr
 			}
 
-			return devErrors, wireErr
+			devErr, wireErr := distinguishGraphError(ctx, err, devinterface.DeveloperError_RELATIONSHIP, 0, 0, relString)
+			if wireErr != nil {
+				return devErrors, wireErr
+			}
+
+			if devErr != nil {
+				devErrors = append(devErrors, devErr)
+			}
 		}
 
-		updates = append(updates, tuple.Touch(tpl))
+		updates = append(updates, tuple.Touch(rel))
 	}
 
 	err := rwt.WriteRelationships(ctx, updates)
-
 	return devErrors, err
 }
 
@@ -227,10 +249,7 @@ func loadCompiled(
 	rwt datastore.ReadWriteTransaction,
 ) ([]*devinterface.DeveloperError, error) {
 	errors := make([]*devinterface.DeveloperError, 0, len(compiled.OrderedDefinitions))
-	resolver := typesystem.ResolverForPredefinedDefinitions(typesystem.PredefinedElements{
-		Namespaces: compiled.ObjectDefinitions,
-		Caveats:    compiled.CaveatDefinitions,
-	})
+	ts := schema.NewTypeSystem(schema.ResolverForCompiledSchema(*compiled))
 
 	for _, caveatDef := range compiled.CaveatDefinitions {
 		cverr := namespace.ValidateCaveatDefinition(caveatDef)
@@ -241,15 +260,24 @@ func loadCompiled(
 			continue
 		}
 
-		errWithSource, ok := spiceerrors.AsErrorWithSource(cverr)
+		errWithSource, ok := spiceerrors.AsWithSourceError(cverr)
 		if ok {
+			// NOTE: zeroes are fine here to mean "unknown"
+			lineNumber, err := safecast.ToUint32(errWithSource.LineNumber)
+			if err != nil {
+				log.Err(err).Msg("could not cast lineNumber to uint32")
+			}
+			columnPosition, err := safecast.ToUint32(errWithSource.ColumnPosition)
+			if err != nil {
+				log.Err(err).Msg("could not cast columnPosition to uint32")
+			}
 			errors = append(errors, &devinterface.DeveloperError{
 				Message: cverr.Error(),
 				Kind:    devinterface.DeveloperError_SCHEMA_ISSUE,
 				Source:  devinterface.DeveloperError_SCHEMA,
 				Context: errWithSource.SourceCodeString,
-				Line:    uint32(errWithSource.LineNumber),
-				Column:  uint32(errWithSource.ColumnPosition),
+				Line:    lineNumber,
+				Column:  columnPosition,
 			})
 		} else {
 			errors = append(errors, &devinterface.DeveloperError{
@@ -262,17 +290,26 @@ func loadCompiled(
 	}
 
 	for _, nsDef := range compiled.ObjectDefinitions {
-		ts, terr := typesystem.NewNamespaceTypeSystem(nsDef, resolver)
+		def, terr := schema.NewDefinition(ts, nsDef)
 		if terr != nil {
-			errWithSource, ok := spiceerrors.AsErrorWithSource(terr)
+			errWithSource, ok := spiceerrors.AsWithSourceError(terr)
+			// NOTE: zeroes are fine here to mean "unknown"
+			lineNumber, err := safecast.ToUint32(errWithSource.LineNumber)
+			if err != nil {
+				log.Err(err).Msg("could not cast lineNumber to uint32")
+			}
+			columnPosition, err := safecast.ToUint32(errWithSource.ColumnPosition)
+			if err != nil {
+				log.Err(err).Msg("could not cast columnPosition to uint32")
+			}
 			if ok {
 				errors = append(errors, &devinterface.DeveloperError{
 					Message: terr.Error(),
 					Kind:    devinterface.DeveloperError_SCHEMA_ISSUE,
 					Source:  devinterface.DeveloperError_SCHEMA,
 					Context: errWithSource.SourceCodeString,
-					Line:    uint32(errWithSource.LineNumber),
-					Column:  uint32(errWithSource.ColumnPosition),
+					Line:    lineNumber,
+					Column:  columnPosition,
 				})
 				continue
 			}
@@ -286,7 +323,7 @@ func loadCompiled(
 			continue
 		}
 
-		_, tverr := ts.Validate(ctx)
+		_, tverr := def.Validate(ctx)
 		if tverr == nil {
 			if err := rwt.WriteNamespaces(ctx, nsDef); err != nil {
 				return errors, err
@@ -294,15 +331,24 @@ func loadCompiled(
 			continue
 		}
 
-		errWithSource, ok := spiceerrors.AsErrorWithSource(tverr)
+		errWithSource, ok := spiceerrors.AsWithSourceError(tverr)
 		if ok {
+			// NOTE: zeroes are fine here to mean "unknown"
+			lineNumber, err := safecast.ToUint32(errWithSource.LineNumber)
+			if err != nil {
+				log.Err(err).Msg("could not cast lineNumber to uint32")
+			}
+			columnPosition, err := safecast.ToUint32(errWithSource.ColumnPosition)
+			if err != nil {
+				log.Err(err).Msg("could not cast columnPosition to uint32")
+			}
 			errors = append(errors, &devinterface.DeveloperError{
 				Message: tverr.Error(),
 				Kind:    devinterface.DeveloperError_SCHEMA_ISSUE,
 				Source:  devinterface.DeveloperError_SCHEMA,
 				Context: errWithSource.SourceCodeString,
-				Line:    uint32(errWithSource.LineNumber),
-				Column:  uint32(errWithSource.ColumnPosition),
+				Line:    lineNumber,
+				Column:  columnPosition,
 			})
 		} else {
 			errors = append(errors, &devinterface.DeveloperError{
@@ -326,12 +372,25 @@ func DistinguishGraphError(devContext *DevContext, dispatchError error, source d
 func distinguishGraphError(ctx context.Context, dispatchError error, source devinterface.DeveloperError_Source, line uint32, column uint32, context string) (*devinterface.DeveloperError, error) {
 	var nsNotFoundError sharederrors.UnknownNamespaceError
 	var relNotFoundError sharederrors.UnknownRelationError
-	var invalidRelError relationships.ErrInvalidSubjectType
+	var invalidRelError relationships.InvalidSubjectTypeError
 	var maxDepthErr dispatch.MaxDepthExceededError
 
 	if errors.As(dispatchError, &maxDepthErr) {
 		return &devinterface.DeveloperError{
 			Message: dispatchError.Error(),
+			Source:  source,
+			Kind:    devinterface.DeveloperError_MAXIMUM_RECURSION,
+			Line:    line,
+			Column:  column,
+			Context: context,
+		}, nil
+	}
+
+	details, ok := spiceerrors.GetDetails[*errdetails.ErrorInfo](dispatchError)
+	if ok && details.Reason == "ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED" {
+		status, _ := status.FromError(dispatchError)
+		return &devinterface.DeveloperError{
+			Message: status.Message(),
 			Source:  source,
 			Kind:    devinterface.DeveloperError_MAXIMUM_RECURSION,
 			Line:    line,
@@ -386,16 +445,13 @@ func rewriteACLError(ctx context.Context, err error) error {
 	case errors.As(err, &relNotFoundError):
 		fallthrough
 
-	case errors.As(err, &maingraph.ErrInvalidArgument{}):
-		return status.Errorf(codes.InvalidArgument, "%s", err)
-
-	case errors.As(err, &datastore.ErrInvalidRevision{}):
+	case errors.As(err, &datastore.InvalidRevisionError{}):
 		return status.Errorf(codes.OutOfRange, "invalid zookie: %s", err)
 
-	case errors.As(err, &maingraph.ErrRelationMissingTypeInfo{}):
+	case errors.As(err, &maingraph.RelationMissingTypeInfoError{}):
 		return status.Errorf(codes.FailedPrecondition, "failed precondition: %s", err)
 
-	case errors.As(err, &maingraph.ErrAlwaysFail{}):
+	case errors.As(err, &maingraph.AlwaysFailError{}):
 		log.Ctx(ctx).Err(err).Msg("internal graph error in devcontext")
 		return status.Errorf(codes.Internal, "internal error: %s", err)
 

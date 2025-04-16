@@ -4,28 +4,27 @@
 package postgres
 
 import (
+	"os"
 	"testing"
 
-	pgversion "github.com/authzed/spicedb/internal/datastore/postgres/version"
-
-	"github.com/samber/lo"
+	"github.com/authzed/spicedb/internal/datastore/postgres/version"
 )
 
-var pgbouncerConfigs = lo.Map(
-	[]string{pgversion.MinimumSupportedPostgresVersion, "14", "15", "16"},
-	func(postgresVersion string, _ int) postgresConfig {
-		return postgresConfig{"head", "", postgresVersion, true}
-	},
-)
+func pgbouncerTestVersion() string {
+	ver := os.Getenv("POSTGRES_TEST_VERSION")
+	if ver != "" {
+		return ver
+	}
+
+	return version.LatestTestedPostgresVersion
+}
+
+var pgbouncerConfig = postgresTestConfig{"head", "", pgbouncerTestVersion(), true}
 
 func TestPostgresWithPgBouncerDatastore(t *testing.T) {
-	t.Parallel()
-
-	testPostgresDatastore(t, pgbouncerConfigs)
+	testPostgresDatastore(t, pgbouncerConfig)
 }
 
 func TestPostgresDatastoreWithPgBouncerWithoutCommitTimestamps(t *testing.T) {
-	t.Parallel()
-
-	testPostgresDatastoreWithoutCommitTimestamps(t, pgbouncerConfigs)
+	testPostgresDatastoreWithoutCommitTimestamps(t, pgbouncerConfig)
 }

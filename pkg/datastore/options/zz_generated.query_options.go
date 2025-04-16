@@ -2,8 +2,10 @@
 package options
 
 import (
+	queryshape "github.com/authzed/spicedb/pkg/datastore/queryshape"
 	defaults "github.com/creasty/defaults"
 	helpers "github.com/ecordell/optgen/helpers"
+	structpb "google.golang.org/protobuf/types/known/structpb"
 )
 
 type QueryOptionsOption func(q *QueryOptions)
@@ -33,6 +35,11 @@ func (q *QueryOptions) ToOption() QueryOptionsOption {
 		to.Limit = q.Limit
 		to.Sort = q.Sort
 		to.After = q.After
+		to.SkipCaveats = q.SkipCaveats
+		to.SkipExpiration = q.SkipExpiration
+		to.SQLCheckAssertionForTest = q.SQLCheckAssertionForTest
+		to.SQLExplainCallbackForTest = q.SQLExplainCallbackForTest
+		to.QueryShape = q.QueryShape
 	}
 }
 
@@ -42,6 +49,11 @@ func (q QueryOptions) DebugMap() map[string]any {
 	debugMap["Limit"] = helpers.DebugValue(q.Limit, false)
 	debugMap["Sort"] = helpers.DebugValue(q.Sort, false)
 	debugMap["After"] = helpers.DebugValue(q.After, false)
+	debugMap["SkipCaveats"] = helpers.DebugValue(q.SkipCaveats, false)
+	debugMap["SkipExpiration"] = helpers.DebugValue(q.SkipExpiration, false)
+	debugMap["SQLCheckAssertionForTest"] = helpers.DebugValue(q.SQLCheckAssertionForTest, false)
+	debugMap["SQLExplainCallbackForTest"] = helpers.DebugValue(q.SQLExplainCallbackForTest, false)
+	debugMap["QueryShape"] = helpers.DebugValue(q.QueryShape, false)
 	return debugMap
 }
 
@@ -82,6 +94,41 @@ func WithAfter(after Cursor) QueryOptionsOption {
 	}
 }
 
+// WithSkipCaveats returns an option that can set SkipCaveats on a QueryOptions
+func WithSkipCaveats(skipCaveats bool) QueryOptionsOption {
+	return func(q *QueryOptions) {
+		q.SkipCaveats = skipCaveats
+	}
+}
+
+// WithSkipExpiration returns an option that can set SkipExpiration on a QueryOptions
+func WithSkipExpiration(skipExpiration bool) QueryOptionsOption {
+	return func(q *QueryOptions) {
+		q.SkipExpiration = skipExpiration
+	}
+}
+
+// WithSQLCheckAssertionForTest returns an option that can set SQLCheckAssertionForTest on a QueryOptions
+func WithSQLCheckAssertionForTest(sQLCheckAssertionForTest SQLCheckAssertionForTest) QueryOptionsOption {
+	return func(q *QueryOptions) {
+		q.SQLCheckAssertionForTest = sQLCheckAssertionForTest
+	}
+}
+
+// WithSQLExplainCallbackForTest returns an option that can set SQLExplainCallbackForTest on a QueryOptions
+func WithSQLExplainCallbackForTest(sQLExplainCallbackForTest SQLExplainCallbackForTest) QueryOptionsOption {
+	return func(q *QueryOptions) {
+		q.SQLExplainCallbackForTest = sQLExplainCallbackForTest
+	}
+}
+
+// WithQueryShape returns an option that can set QueryShape on a QueryOptions
+func WithQueryShape(queryShape queryshape.Shape) QueryOptionsOption {
+	return func(q *QueryOptions) {
+		q.QueryShape = queryShape
+	}
+}
+
 type ReverseQueryOptionsOption func(r *ReverseQueryOptions)
 
 // NewReverseQueryOptionsWithOptions creates a new ReverseQueryOptions with the passed in options set
@@ -110,6 +157,8 @@ func (r *ReverseQueryOptions) ToOption() ReverseQueryOptionsOption {
 		to.LimitForReverse = r.LimitForReverse
 		to.SortForReverse = r.SortForReverse
 		to.AfterForReverse = r.AfterForReverse
+		to.SQLExplainCallbackForTestForReverse = r.SQLExplainCallbackForTestForReverse
+		to.QueryShapeForReverse = r.QueryShapeForReverse
 	}
 }
 
@@ -120,6 +169,8 @@ func (r ReverseQueryOptions) DebugMap() map[string]any {
 	debugMap["LimitForReverse"] = helpers.DebugValue(r.LimitForReverse, false)
 	debugMap["SortForReverse"] = helpers.DebugValue(r.SortForReverse, false)
 	debugMap["AfterForReverse"] = helpers.DebugValue(r.AfterForReverse, false)
+	debugMap["SQLExplainCallbackForTestForReverse"] = helpers.DebugValue(r.SQLExplainCallbackForTestForReverse, false)
+	debugMap["QueryShapeForReverse"] = helpers.DebugValue(r.QueryShapeForReverse, false)
 	return debugMap
 }
 
@@ -167,6 +218,20 @@ func WithAfterForReverse(afterForReverse Cursor) ReverseQueryOptionsOption {
 	}
 }
 
+// WithSQLExplainCallbackForTestForReverse returns an option that can set SQLExplainCallbackForTestForReverse on a ReverseQueryOptions
+func WithSQLExplainCallbackForTestForReverse(sQLExplainCallbackForTestForReverse SQLExplainCallbackForTest) ReverseQueryOptionsOption {
+	return func(r *ReverseQueryOptions) {
+		r.SQLExplainCallbackForTestForReverse = sQLExplainCallbackForTestForReverse
+	}
+}
+
+// WithQueryShapeForReverse returns an option that can set QueryShapeForReverse on a ReverseQueryOptions
+func WithQueryShapeForReverse(queryShapeForReverse queryshape.Shape) ReverseQueryOptionsOption {
+	return func(r *ReverseQueryOptions) {
+		r.QueryShapeForReverse = queryShapeForReverse
+	}
+}
+
 type RWTOptionsOption func(r *RWTOptions)
 
 // NewRWTOptionsWithOptions creates a new RWTOptions with the passed in options set
@@ -192,6 +257,7 @@ func NewRWTOptionsWithOptionsAndDefaults(opts ...RWTOptionsOption) *RWTOptions {
 func (r *RWTOptions) ToOption() RWTOptionsOption {
 	return func(to *RWTOptions) {
 		to.DisableRetries = r.DisableRetries
+		to.Metadata = r.Metadata
 	}
 }
 
@@ -199,6 +265,7 @@ func (r *RWTOptions) ToOption() RWTOptionsOption {
 func (r RWTOptions) DebugMap() map[string]any {
 	debugMap := map[string]any{}
 	debugMap["DisableRetries"] = helpers.DebugValue(r.DisableRetries, false)
+	debugMap["Metadata"] = helpers.DebugValue(r.Metadata, false)
 	return debugMap
 }
 
@@ -222,5 +289,12 @@ func (r *RWTOptions) WithOptions(opts ...RWTOptionsOption) *RWTOptions {
 func WithDisableRetries(disableRetries bool) RWTOptionsOption {
 	return func(r *RWTOptions) {
 		r.DisableRetries = disableRetries
+	}
+}
+
+// WithMetadata returns an option that can set Metadata on a RWTOptions
+func WithMetadata(metadata *structpb.Struct) RWTOptionsOption {
+	return func(r *RWTOptions) {
+		r.Metadata = metadata
 	}
 }

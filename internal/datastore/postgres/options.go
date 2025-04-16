@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/authzed/spicedb/internal/datastore/common"
 	pgxcommon "github.com/authzed/spicedb/internal/datastore/postgres/common"
+	log "github.com/authzed/spicedb/internal/logging"
 )
 
 type postgresOptions struct {
@@ -12,19 +14,29 @@ type postgresOptions struct {
 
 	maxRevisionStalenessPercent float64
 
+	credentialsProviderName string
+
 	watchBufferLength       uint16
 	watchBufferWriteTimeout time.Duration
 	revisionQuantization    time.Duration
+	followerReadDelay       time.Duration
 	gcWindow                time.Duration
 	gcInterval              time.Duration
 	gcMaxOperationTime      time.Duration
 	maxRetries              uint8
+	filterMaximumIDCount    uint16
 
-	enablePrometheusStats   bool
-	analyzeBeforeStatistics bool
-	gcEnabled               bool
+	enablePrometheusStats          bool
+	analyzeBeforeStatistics        bool
+	gcEnabled                      bool
+	readStrictMode                 bool
+	expirationDisabled             bool
+	columnOptimizationOption       common.ColumnOptimizationOption
+	includeQueryParametersInTraces bool
+	revisionHeartbeatEnabled       bool
 
-	migrationPhase string
+	migrationPhase    string
+	allowedMigrations []string
 
 	logger *tracingLogger
 
@@ -58,6 +70,15 @@ const (
 	defaultEnablePrometheusStats             = false
 	defaultMaxRetries                        = 10
 	defaultGCEnabled                         = true
+	defaultCredentialsProviderName           = ""
+	defaultReadStrictMode                    = false
+	defaultFilterMaximumIDCount              = 100
+	defaultColumnOptimizationOption          = common.ColumnOptimizationOptionNone
+	defaultIncludeQueryParametersInTraces    = false
+	defaultExpirationDisabled                = false
+	// no follower delay by default, it should only be set if using read replicas
+	defaultFollowerReadDelay = 0
+	defaultRevisionHeartbeat = true
 )
 
 // Option provides the facility to configure how clients within the
@@ -66,17 +87,25 @@ type Option func(*postgresOptions)
 
 func generateConfig(options []Option) (postgresOptions, error) {
 	computed := postgresOptions{
-		gcWindow:                    defaultGarbageCollectionWindow,
-		gcInterval:                  defaultGarbageCollectionInterval,
-		gcMaxOperationTime:          defaultGarbageCollectionMaxOperationTime,
-		watchBufferLength:           defaultWatchBufferLength,
-		watchBufferWriteTimeout:     defaultWatchBufferWriteTimeout,
-		revisionQuantization:        defaultQuantization,
-		maxRevisionStalenessPercent: defaultMaxRevisionStalenessPercent,
-		enablePrometheusStats:       defaultEnablePrometheusStats,
-		maxRetries:                  defaultMaxRetries,
-		gcEnabled:                   defaultGCEnabled,
-		queryInterceptor:            nil,
+		gcWindow:                       defaultGarbageCollectionWindow,
+		gcInterval:                     defaultGarbageCollectionInterval,
+		gcMaxOperationTime:             defaultGarbageCollectionMaxOperationTime,
+		watchBufferLength:              defaultWatchBufferLength,
+		watchBufferWriteTimeout:        defaultWatchBufferWriteTimeout,
+		revisionQuantization:           defaultQuantization,
+		maxRevisionStalenessPercent:    defaultMaxRevisionStalenessPercent,
+		enablePrometheusStats:          defaultEnablePrometheusStats,
+		maxRetries:                     defaultMaxRetries,
+		gcEnabled:                      defaultGCEnabled,
+		credentialsProviderName:        defaultCredentialsProviderName,
+		readStrictMode:                 defaultReadStrictMode,
+		queryInterceptor:               nil,
+		filterMaximumIDCount:           defaultFilterMaximumIDCount,
+		columnOptimizationOption:       defaultColumnOptimizationOption,
+		includeQueryParametersInTraces: defaultIncludeQueryParametersInTraces,
+		expirationDisabled:             defaultExpirationDisabled,
+		followerReadDelay:              defaultFollowerReadDelay,
+		revisionHeartbeatEnabled:       defaultRevisionHeartbeat,
 	}
 
 	for _, option := range options {
@@ -96,7 +125,21 @@ func generateConfig(options []Option) (postgresOptions, error) {
 		return computed, fmt.Errorf("unknown migration phase: %s", computed.migrationPhase)
 	}
 
+	if computed.filterMaximumIDCount == 0 {
+		computed.filterMaximumIDCount = 100
+		log.Warn().Msg("filterMaximumIDCount not set, defaulting to 100")
+	}
+
 	return computed, nil
+}
+
+// ReadStrictMode sets whether strict mode is used for reads in the Postgres reader. If enabled,
+// an assertion is added into the WHERE clause of all read queries to ensure that the revision
+// being read is available on the read connection.
+//
+// Strict mode is disabled by default, as the default behavior is to read from the primary.
+func ReadStrictMode(readStrictMode bool) Option {
+	return func(po *postgresOptions) { po.readStrictMode = readStrictMode }
 }
 
 // ReadConnHealthCheckInterval is the frequency at which both idle and max
@@ -245,6 +288,14 @@ func RevisionQuantization(quantization time.Duration) Option {
 	return func(po *postgresOptions) { po.revisionQuantization = quantization }
 }
 
+// FollowerReadDelay is the amount of time to round down the current time when
+// reading from a read replica is expected.
+//
+// This value defaults to 0 seconds.
+func FollowerReadDelay(delay time.Duration) Option {
+	return func(po *postgresOptions) { po.followerReadDelay = delay }
+}
+
 // MaxRevisionStalenessPercent is the amount of time, expressed as a percentage of
 // the revision quantization window, that a previously computed rounded revision
 // can still be advertised after the next rounded revision would otherwise be ready.
@@ -331,4 +382,49 @@ func WithQueryInterceptor(interceptor pgxcommon.QueryInterceptor) Option {
 // Steady-state configuration (e.g. fully migrated) by default
 func MigrationPhase(phase string) Option {
 	return func(po *postgresOptions) { po.migrationPhase = phase }
+}
+
+// AllowedMigrations configures a set of additional migrations that will pass
+// the health check (head migration is always allowed).
+func AllowedMigrations(allowedMigrations []string) Option {
+	return func(po *postgresOptions) { po.allowedMigrations = allowedMigrations }
+}
+
+// CredentialsProviderName is the name of the CredentialsProvider implementation to use
+// for dynamically retrieving the datastore credentials at runtime
+//
+// Empty by default.
+func CredentialsProviderName(credentialsProviderName string) Option {
+	return func(po *postgresOptions) { po.credentialsProviderName = credentialsProviderName }
+}
+
+// FilterMaximumIDCount is the maximum number of IDs that can be used to filter IDs in queries
+func FilterMaximumIDCount(filterMaximumIDCount uint16) Option {
+	return func(po *postgresOptions) { po.filterMaximumIDCount = filterMaximumIDCount }
+}
+
+// IncludeQueryParametersInTraces is a flag to set whether to include query parameters in OTEL traces
+func IncludeQueryParametersInTraces(includeQueryParametersInTraces bool) Option {
+	return func(po *postgresOptions) { po.includeQueryParametersInTraces = includeQueryParametersInTraces }
+}
+
+// WithColumnOptimization sets the column optimization option for the datastore.
+func WithColumnOptimization(isEnabled bool) Option {
+	return func(po *postgresOptions) {
+		if isEnabled {
+			po.columnOptimizationOption = common.ColumnOptimizationOptionStaticValues
+		} else {
+			po.columnOptimizationOption = common.ColumnOptimizationOptionNone
+		}
+	}
+}
+
+// WithExpirationDisabled disables support for relationship expiration.
+func WithExpirationDisabled(isDisabled bool) Option {
+	return func(po *postgresOptions) { po.expirationDisabled = isDisabled }
+}
+
+// WithRevisionHeartbeat enables the revision heartbeat.
+func WithRevisionHeartbeat(isEnabled bool) Option {
+	return func(po *postgresOptions) { po.revisionHeartbeatEnabled = isEnabled }
 }

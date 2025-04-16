@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"google.golang.org/protobuf/proto"
+	"k8s.io/utils/strings/slices"
 
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	"github.com/authzed/spicedb/pkg/schemadsl/dslshape"
@@ -52,6 +53,7 @@ func (cs CompiledSchema) SourcePositionToRunePosition(source input.Source, posit
 type config struct {
 	skipValidation   bool
 	objectTypePrefix *string
+	allowedFlags     []string
 }
 
 func SkipValidation() Option { return func(cfg *config) { cfg.skipValidation = true } }
@@ -68,13 +70,29 @@ func AllowUnprefixedObjectType() ObjectPrefixOption {
 	return func(cfg *config) { cfg.objectTypePrefix = new(string) }
 }
 
+const expirationFlag = "expiration"
+
+func DisallowExpirationFlag() Option {
+	return func(cfg *config) {
+		cfg.allowedFlags = slices.Filter([]string{}, cfg.allowedFlags, func(s string) bool {
+			return s != expirationFlag
+		})
+	}
+}
+
 type Option func(*config)
 
 type ObjectPrefixOption func(*config)
 
 // Compile compilers the input schema into a set of namespace definition protos.
 func Compile(schema InputSchema, prefix ObjectPrefixOption, opts ...Option) (*CompiledSchema, error) {
-	cfg := &config{}
+	cfg := &config{
+		allowedFlags: make([]string, 0, 1),
+	}
+
+	// Enable `expiration` flag by default.
+	cfg.allowedFlags = append(cfg.allowedFlags, expirationFlag)
+
 	prefix(cfg) // required option
 
 	for _, fn := range opts {
@@ -89,16 +107,17 @@ func Compile(schema InputSchema, prefix ObjectPrefixOption, opts ...Option) (*Co
 		return nil, err
 	}
 
-	compiled, err := translate(translationContext{
+	compiled, err := translate(&translationContext{
 		objectTypePrefix: cfg.objectTypePrefix,
 		mapper:           mapper,
 		schemaString:     schema.SchemaString,
 		skipValidate:     cfg.skipValidation,
+		allowedFlags:     cfg.allowedFlags,
 	}, root)
 	if err != nil {
-		var errorWithNode errorWithNode
-		if errors.As(err, &errorWithNode) {
-			err = toContextError(errorWithNode.error.Error(), errorWithNode.errorSourceCode, errorWithNode.node, mapper)
+		var withNodeError withNodeError
+		if errors.As(err, &withNodeError) {
+			err = toContextError(withNodeError.error.Error(), withNodeError.errorSourceCode, withNodeError.node, mapper)
 		}
 
 		return nil, err
@@ -146,7 +165,7 @@ func toContextError(errMessage string, errorSourceCode string, node *dslNode, ma
 		return fmt.Errorf("missing source for node: %w", err)
 	}
 
-	return ErrorWithContext{
+	return WithContextError{
 		BaseCompilerError: BaseCompilerError{
 			error:       fmt.Errorf("parse error in %s: %s", formattedRange, errMessage),
 			BaseMessage: errMessage,

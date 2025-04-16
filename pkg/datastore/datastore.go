@@ -3,12 +3,14 @@ package datastore
 import (
 	"context"
 	"fmt"
+	"iter"
 	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/authzed/spicedb/pkg/tuple"
 
@@ -41,16 +43,12 @@ func EngineOptions() string {
 // hand side of a tuple.
 const Ellipsis = "..."
 
-// FilterMaximumIDCount is the maximum number of resource IDs or subject IDs that can be sent into
-// a filter.
-const FilterMaximumIDCount uint16 = 100
-
 // RevisionChanges represents the changes in a single transaction.
 type RevisionChanges struct {
 	Revision Revision
 
 	// RelationshipChanges are any relationships that were changed at this revision.
-	RelationshipChanges []*core.RelationTupleUpdate
+	RelationshipChanges []tuple.RelationshipUpdate
 
 	// ChangedDefinitions are any definitions that were added or changed at this revision.
 	ChangedDefinitions []SchemaDefinition
@@ -65,9 +63,38 @@ type RevisionChanges struct {
 	// up until and including the Revision and that no additional schema updates can
 	// have occurred before this point.
 	IsCheckpoint bool
+
+	// Metadata is the metadata associated with the revision, if any.
+	Metadata *structpb.Struct
 }
 
-func (rc *RevisionChanges) MarshalZerologObject(e *zerolog.Event) {
+func (rc RevisionChanges) DebugString() string {
+	if rc.IsCheckpoint {
+		return "[checkpoint]"
+	}
+
+	debugString := ""
+
+	for _, relChange := range rc.RelationshipChanges {
+		debugString += relChange.DebugString() + "\n"
+	}
+
+	for _, def := range rc.ChangedDefinitions {
+		debugString += fmt.Sprintf("Definition: %T:%s\n", def, def.GetName())
+	}
+
+	for _, ns := range rc.DeletedNamespaces {
+		debugString += fmt.Sprintf("DeletedNamespace: %s\n", ns)
+	}
+
+	for _, caveat := range rc.DeletedCaveats {
+		debugString += fmt.Sprintf("DeletedCaveat: %s\n", caveat)
+	}
+
+	return debugString
+}
+
+func (rc RevisionChanges) MarshalZerologObject(e *zerolog.Event) {
 	e.Str("revision", rc.Revision.String())
 	e.Bool("is-checkpoint", rc.IsCheckpoint)
 	e.Array("deleted-namespaces", strArray(rc.DeletedNamespaces))
@@ -81,6 +108,23 @@ func (rc *RevisionChanges) MarshalZerologObject(e *zerolog.Event) {
 	e.Array("changed-definitions", strArray(changedNames))
 	e.Int("num-changed-relationships", len(rc.RelationshipChanges))
 }
+
+// ExpirationFilterOption is the filter option for the expiration field on relationships.
+type ExpirationFilterOption int
+
+const (
+	// ExpirationFilterOptionNone indicates that the expiration filter should not be used:
+	// relationships both with and without expiration will be returned.
+	ExpirationFilterOptionNone ExpirationFilterOption = iota
+
+	// ExpirationFilterOptionHasExpiration indicates that the expiration filter should only
+	// return relationships with an expiration.
+	ExpirationFilterOptionHasExpiration
+
+	// ExpirationFilterOptionNoExpiration indicates that the expiration filter should only
+	// return relationships without an expiration.
+	ExpirationFilterOptionNoExpiration
+)
 
 // RelationshipsFilter is a filter for relationships.
 type RelationshipsFilter struct {
@@ -105,23 +149,26 @@ type RelationshipsFilter struct {
 	// OptionalCaveatName is the filter to use for caveated relationships, filtering by a specific caveat name.
 	// If nil, all caveated and non-caveated relationships are allowed
 	OptionalCaveatName string
+
+	// OptionalExpirationOption is the filter to use for relationships with or without an expiration.
+	OptionalExpirationOption ExpirationFilterOption
 }
 
 // Test returns true iff the given relationship is matched by this filter.
-func (rf RelationshipsFilter) Test(relationship *core.RelationTuple) bool {
-	if rf.OptionalResourceType != "" && rf.OptionalResourceType != relationship.ResourceAndRelation.Namespace {
+func (rf RelationshipsFilter) Test(relationship tuple.Relationship) bool {
+	if rf.OptionalResourceType != "" && rf.OptionalResourceType != relationship.Resource.ObjectType {
 		return false
 	}
 
-	if len(rf.OptionalResourceIds) > 0 && !slices.Contains(rf.OptionalResourceIds, relationship.ResourceAndRelation.ObjectId) {
+	if len(rf.OptionalResourceIds) > 0 && !slices.Contains(rf.OptionalResourceIds, relationship.Resource.ObjectID) {
 		return false
 	}
 
-	if rf.OptionalResourceIDPrefix != "" && !strings.HasPrefix(relationship.ResourceAndRelation.ObjectId, rf.OptionalResourceIDPrefix) {
+	if rf.OptionalResourceIDPrefix != "" && !strings.HasPrefix(relationship.Resource.ObjectID, rf.OptionalResourceIDPrefix) {
 		return false
 	}
 
-	if rf.OptionalResourceRelation != "" && rf.OptionalResourceRelation != relationship.ResourceAndRelation.Relation {
+	if rf.OptionalResourceRelation != "" && rf.OptionalResourceRelation != relationship.Resource.Relation {
 		return false
 	}
 
@@ -135,12 +182,102 @@ func (rf RelationshipsFilter) Test(relationship *core.RelationTuple) bool {
 	}
 
 	if rf.OptionalCaveatName != "" {
-		if relationship.Caveat == nil || relationship.Caveat.CaveatName != rf.OptionalCaveatName {
+		if relationship.OptionalCaveat == nil || relationship.OptionalCaveat.CaveatName != rf.OptionalCaveatName {
 			return false
 		}
 	}
 
+	if rf.OptionalExpirationOption == ExpirationFilterOptionHasExpiration && relationship.OptionalExpiration == nil {
+		return false
+	}
+
+	if rf.OptionalExpirationOption == ExpirationFilterOptionNoExpiration && relationship.OptionalExpiration != nil {
+		return false
+	}
+
 	return true
+}
+
+// CoreFilterFromRelationshipFilter constructs a core RelationshipFilter from a V1 RelationshipsFilter.
+func CoreFilterFromRelationshipFilter(filter *v1.RelationshipFilter) *core.RelationshipFilter {
+	return &core.RelationshipFilter{
+		ResourceType:             filter.ResourceType,
+		OptionalResourceId:       filter.OptionalResourceId,
+		OptionalResourceIdPrefix: filter.OptionalResourceIdPrefix,
+		OptionalRelation:         filter.OptionalRelation,
+		OptionalSubjectFilter:    coreFilterFromSubjectsFilter(filter.OptionalSubjectFilter),
+	}
+}
+
+func coreFilterFromSubjectsFilter(filter *v1.SubjectFilter) *core.SubjectFilter {
+	if filter == nil {
+		return nil
+	}
+
+	return &core.SubjectFilter{
+		SubjectType:       filter.SubjectType,
+		OptionalSubjectId: filter.OptionalSubjectId,
+		OptionalRelation:  coreFilterFromSubjectRelationFilter(filter.OptionalRelation),
+	}
+}
+
+func coreFilterFromSubjectRelationFilter(filter *v1.SubjectFilter_RelationFilter) *core.SubjectFilter_RelationFilter {
+	if filter == nil {
+		return nil
+	}
+
+	return &core.SubjectFilter_RelationFilter{
+		Relation: filter.Relation,
+	}
+}
+
+// RelationshipsFilterFromCoreFilter constructs a datastore RelationshipsFilter from a core RelationshipFilter.
+func RelationshipsFilterFromCoreFilter(filter *core.RelationshipFilter) (RelationshipsFilter, error) {
+	var resourceIds []string
+	if filter.OptionalResourceId != "" {
+		resourceIds = []string{filter.OptionalResourceId}
+	}
+
+	var subjectsSelectors []SubjectsSelector
+	if filter.OptionalSubjectFilter != nil {
+		var subjectIds []string
+		if filter.OptionalSubjectFilter.OptionalSubjectId != "" {
+			subjectIds = []string{filter.OptionalSubjectFilter.OptionalSubjectId}
+		}
+
+		relationFilter := SubjectRelationFilter{}
+
+		if filter.OptionalSubjectFilter.OptionalRelation != nil {
+			relation := filter.OptionalSubjectFilter.OptionalRelation.GetRelation()
+			if relation != "" {
+				relationFilter = relationFilter.WithNonEllipsisRelation(relation)
+			} else {
+				relationFilter = relationFilter.WithEllipsisRelation()
+			}
+		}
+
+		subjectsSelectors = append(subjectsSelectors, SubjectsSelector{
+			OptionalSubjectType: filter.OptionalSubjectFilter.SubjectType,
+			OptionalSubjectIds:  subjectIds,
+			RelationFilter:      relationFilter,
+		})
+	}
+
+	if filter.OptionalResourceId != "" && filter.OptionalResourceIdPrefix != "" {
+		return RelationshipsFilter{}, fmt.Errorf("cannot specify both OptionalResourceId and OptionalResourceIDPrefix")
+	}
+
+	if filter.ResourceType == "" && filter.OptionalRelation == "" && len(resourceIds) == 0 && filter.OptionalResourceIdPrefix == "" && len(subjectsSelectors) == 0 {
+		return RelationshipsFilter{}, fmt.Errorf("at least one filter field must be set")
+	}
+
+	return RelationshipsFilter{
+		OptionalResourceType:      filter.ResourceType,
+		OptionalResourceIds:       resourceIds,
+		OptionalResourceIDPrefix:  filter.OptionalResourceIdPrefix,
+		OptionalResourceRelation:  filter.OptionalRelation,
+		OptionalSubjectsSelectors: subjectsSelectors,
+	}, nil
 }
 
 // RelationshipsFilterFromPublicFilter constructs a datastore RelationshipsFilter from an API-defined RelationshipFilter.
@@ -206,12 +343,12 @@ type SubjectsSelector struct {
 }
 
 // Test returns true iff the given subject is matched by this filter.
-func (ss SubjectsSelector) Test(subject *core.ObjectAndRelation) bool {
-	if ss.OptionalSubjectType != "" && ss.OptionalSubjectType != subject.Namespace {
+func (ss SubjectsSelector) Test(subject tuple.ObjectAndRelation) bool {
+	if ss.OptionalSubjectType != "" && ss.OptionalSubjectType != subject.ObjectType {
 		return false
 	}
 
-	if len(ss.OptionalSubjectIds) > 0 && !slices.Contains(ss.OptionalSubjectIds, subject.ObjectId) {
+	if len(ss.OptionalSubjectIds) > 0 && !slices.Contains(ss.OptionalSubjectIds, subject.ObjectID) {
 		return false
 	}
 
@@ -309,6 +446,7 @@ func (sf SubjectsFilter) AsSelector() SubjectsSelector {
 // SchemaDefinition represents a namespace or caveat definition under a schema.
 type SchemaDefinition interface {
 	GetName() string
+	SizeVT() int
 }
 
 // RevisionedDefinition holds a schema definition and its last updated revision.
@@ -330,6 +468,7 @@ type RevisionedNamespace = RevisionedDefinition[*core.NamespaceDefinition]
 // Reader is an interface for reading relationships from the datastore.
 type Reader interface {
 	CaveatReader
+	CounterReader
 
 	// QueryRelationships reads relationships, starting from the resource side.
 	QueryRelationships(
@@ -346,7 +485,7 @@ type Reader interface {
 	) (RelationshipIterator, error)
 
 	// ReadNamespaceByName reads a namespace definition and the revision at which it was created or
-	// last written. It returns an instance of ErrNamespaceNotFound if not found.
+	// last written. It returns an instance of NamespaceNotFoundError if not found.
 	ReadNamespaceByName(ctx context.Context, nsName string) (ns *core.NamespaceDefinition, lastWritten Revision, err error)
 
 	// ListAllNamespaces lists all namespaces defined.
@@ -359,16 +498,18 @@ type Reader interface {
 type ReadWriteTransaction interface {
 	Reader
 	CaveatStorer
+	CounterRegisterer
 
 	// WriteRelationships takes a list of tuple mutations and applies them to the datastore.
-	WriteRelationships(ctx context.Context, mutations []*core.RelationTupleUpdate) error
+	WriteRelationships(ctx context.Context, mutations []tuple.RelationshipUpdate) error
 
 	// DeleteRelationships deletes relationships that match the provided filter, with
-	// the optional limit. If a limit is provided and reached, the method will return
-	// true as the first return value. Otherwise, the boolean can be ignored.
+	// the optional limit. Returns the number of deleted relationships. If a limit
+	// is provided and reached, the method will return true as the second return value.
+	// Otherwise, the boolean can be ignored.
 	DeleteRelationships(ctx context.Context, filter *v1.RelationshipFilter,
 		options ...options.DeleteOptionsOption,
-	) (bool, error)
+	) (uint64, bool, error)
 
 	// WriteNamespaces takes proto namespace definitions and persists them.
 	WriteNamespaces(ctx context.Context, newConfigs ...*core.NamespaceDefinition) error
@@ -404,7 +545,7 @@ type BulkWriteRelationshipSource interface {
 	//
 	// Note: sources may re-use the same memory address for every tuple, data
 	// may change on every call to next even if the pointer has not changed.
-	Next(ctx context.Context) (*core.RelationTuple, error)
+	Next(ctx context.Context) (*tuple.Relationship, error)
 }
 
 type WatchContent int
@@ -432,7 +573,36 @@ type WatchOptions struct {
 	// WatchBufferWriteTimeout is the timeout for writing to the watch channel.
 	// If given the zero value, the datastore's default will be used.
 	WatchBufferWriteTimeout time.Duration
+
+	// WatchConnectTimeout is the timeout for connecting to the watch channel.
+	// If given the zero value, the datastore's default will be used.
+	// May not be supported by the datastore.
+	WatchConnectTimeout time.Duration
+
+	// MaximumBufferedChangesByteSize is the maximum byte size of the buffered changes struct.
+	// If unspecified, no maximum will be enforced. If the maximum is reached before
+	// the changes can be sent, the watch will be closed with an error.
+	MaximumBufferedChangesByteSize uint64
+
+	// EmissionStrategy defines when are changes streamed to the client. If unspecified, changes will be buffered until
+	// they can be checkpointed, which is the default behavior.
+	EmissionStrategy EmissionStrategy
 }
+
+// EmissionStrategy describes when changes are emitted to the client.
+type EmissionStrategy int
+
+const (
+	// EmitWhenCheckpointedStrategy will buffer changes until a checkpoint is reached. This also means that
+	// changes will be deduplicated and revisions will be sorted before emission as soon as they can be checkpointed.
+	EmitWhenCheckpointedStrategy = iota
+
+	// EmitImmediatelyStrategy emits changes as soon as they are available. This means changes will not be buffered,
+	// and thus will be emitted as soon as they are available, but clients are responsible for buffering, deduplication,
+	// and sorting revisions. In practical terms that can only happens if Checkpoints have been requested, so enabling
+	// EmitImmediatelyStrategy without Checkpoints will return an error.
+	EmitImmediatelyStrategy
+)
 
 // WatchJustRelationships returns watch options for just relationships.
 func WatchJustRelationships() WatchOptions {
@@ -457,15 +627,16 @@ func (wo WatchOptions) WithCheckpointInterval(interval time.Duration) WatchOptio
 	}
 }
 
-// Datastore represents tuple access for a single namespace.
-type Datastore interface {
+// ReadOnlyDatastore is an interface for reading relationships from the datastore.
+type ReadOnlyDatastore interface {
+	// MetricsID returns an identifier for the datastore for use in metrics.
+	// This identifier is typically the hostname of the datastore (where applicable)
+	// and may not be unique; callers should not rely on uniqueness.
+	MetricsID() (string, error)
+
 	// SnapshotReader creates a read-only handle that reads the datastore at the specified revision.
 	// Any errors establishing the reader will be returned by subsequent calls.
 	SnapshotReader(Revision) Reader
-
-	// ReadWriteTx starts a read/write transaction, which will be committed if no error is
-	// returned and rolled back if an error is returned.
-	ReadWriteTx(context.Context, TxUserFunc, ...options.RWTOptionsOption) (Revision, error)
 
 	// OptimizedRevision gets a revision that will likely already be replicated
 	// and will likely be shared amongst many queries.
@@ -486,7 +657,16 @@ type Datastore interface {
 	// Watch notifies the caller about changes to the datastore, based on the specified options.
 	//
 	// All events following afterRevision will be sent to the caller.
-	Watch(ctx context.Context, afterRevision Revision, options WatchOptions) (<-chan *RevisionChanges, <-chan error)
+	//
+	// Errors returned will fall into a few classes:
+	// - WatchDisconnectedError - the watch has fallen too far behind and has been disconnected.
+	// - WatchCanceledError     - the watch was canceled by the caller.
+	// - WatchDisabledError     - the watch is disabled by being unsupported by the datastore.
+	// - WatchRetryableError    - the watch is retryable, and the caller may retry after some backoff time.
+	// - InvalidRevisionError   - the revision specified has passed the datastore's watch history window and
+	//                            the watch cannot be retried.
+	// - Other errors 			- the watch should not be retried due to a fatal error.
+	Watch(ctx context.Context, afterRevision Revision, options WatchOptions) (<-chan RevisionChanges, <-chan error)
 
 	// ReadyState returns a state indicating whether the datastore is ready to accept data.
 	// Datastores that require database schema creation will return not-ready until the migrations
@@ -494,14 +674,60 @@ type Datastore interface {
 	ReadyState(ctx context.Context) (ReadyState, error)
 
 	// Features returns an object representing what features this
-	// datastore can support.
+	// datastore can support. Can make calls to the database, so should
+	// only be used when a connection is allowed.
 	Features(ctx context.Context) (*Features, error)
+
+	// OfflineFeatures returns an object representing what features this
+	// datastore supports code-wise, without making any calls to the database.
+	OfflineFeatures() (*Features, error)
 
 	// Statistics returns relevant values about the data contained in this cluster.
 	Statistics(ctx context.Context) (Stats, error)
 
 	// Close closes the data store.
 	Close() error
+}
+
+// Datastore represents tuple access for a single namespace.
+type Datastore interface {
+	ReadOnlyDatastore
+
+	// ReadWriteTx starts a read/write transaction, which will be committed if no error is
+	// returned and rolled back if an error is returned.
+	ReadWriteTx(context.Context, TxUserFunc, ...options.RWTOptionsOption) (Revision, error)
+}
+
+// ParsedExplain represents the parsed output of an EXPLAIN statement.
+type ParsedExplain struct {
+	// IndexesUsed is the list of indexes used in the query.
+	IndexesUsed []string
+}
+
+// Explainable is an interface for datastores that support EXPLAIN statements.
+type Explainable interface {
+	// BuildExplainQuery builds an EXPLAIN statement for the given SQL and arguments.
+	BuildExplainQuery(sql string, args []any) (string, []any, error)
+
+	// ParseExplain parses the output of an EXPLAIN statement.
+	ParseExplain(explain string) (ParsedExplain, error)
+
+	// PreExplainStatements returns any statements that should be run before the EXPLAIN statement.
+	PreExplainStatements() []string
+}
+
+// SQLDatastore is an interface for datastores that support SQL-based operations.
+type SQLDatastore interface {
+	Datastore
+	Explainable
+}
+
+// StrictReadDatastore is an interface for datastores that support strict read mode.
+type StrictReadDatastore interface {
+	Datastore
+
+	// IsStrictReadModeEnabled returns whether the datastore is in strict read mode.
+	IsStrictReadModeEnabled() bool
 }
 
 type strArray []string
@@ -576,17 +802,47 @@ func UnwrapAs[T any](datastore Datastore) T {
 	return ds
 }
 
+// FeatureStatus are the possible statuses for a feature in the datastore.
+type FeatureStatus int
+
+const (
+	// FeatureStatusUnknown indicates that the status of the feature is unknown.
+	// This can be returned, for example, when a call is made to OfflineFeatures
+	// but the feature requires a call to the database to determine its status.
+	FeatureStatusUnknown FeatureStatus = iota
+
+	// FeatureSupported indicates that the feature is supported by the datastore.
+	FeatureSupported
+
+	// FeatureUnsupported indicates that the feature is not supported by the datastore.
+	FeatureUnsupported
+)
+
 // Feature represents a capability that a datastore can support, plus an
 // optional message explaining the feature is available (or not).
 type Feature struct {
-	Enabled bool
-	Reason  string
+	Status FeatureStatus
+	Reason string
 }
 
 // Features holds values that represent what features a database can support.
 type Features struct {
 	// Watch is enabled if the underlying datastore can support the Watch api.
 	Watch Feature
+
+	// ContinuousCheckpointing is enabled if the underlying datastore supports continuous checkpointing
+	// via the Watch API. If not supported, clients of the Watch API may expect checkpoints only when
+	// new transactions are committed.
+	ContinuousCheckpointing Feature
+
+	// WatchEmitsImmediately indicates if the datastore supports the EmitImmediatelyStrategy EmissionStrategy.
+	// If not supported, clients of the Watch API will receive an error when calling Watch API with
+	// EmitImmediatelyStrategy option.
+	WatchEmitsImmediately Feature
+
+	// IntegrityData is enabled if the underlying datastore supports retrieving and storing
+	// integrity information.
+	IntegrityData Feature
 }
 
 // ObjectTypeStat represents statistics for a single object type (namespace).
@@ -613,21 +869,32 @@ type Stats struct {
 	ObjectTypeStatistics []ObjectTypeStat
 }
 
-// RelationshipIterator is an iterator over matched tuples.
-type RelationshipIterator interface {
-	// Next returns the next tuple in the result set.
-	Next() *core.RelationTuple
+// RelationshipIterator is an iterator over matched tuples. It is a single use
+// iterator.
+type RelationshipIterator iter.Seq2[tuple.Relationship, error]
 
-	// Cursor returns a cursor that can be used to resume reading of relationships
-	// from the last relationship returned. Only applies if a sort ordering was
-	// requested.
-	Cursor() (options.Cursor, error)
+func IteratorToSlice(iter RelationshipIterator) ([]tuple.Relationship, error) {
+	results := make([]tuple.Relationship, 0)
+	for rel, err := range iter {
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, rel)
+	}
+	return results, nil
+}
 
-	// Err after receiving a nil response, the caller must check for an error.
-	Err() error
+// FirstRelationshipIn returns the first relationship found via the iterator, if any.
+func FirstRelationshipIn(iter RelationshipIterator) (tuple.Relationship, bool, error) {
+	for rel, err := range iter {
+		if err != nil {
+			return tuple.Relationship{}, false, err
+		}
 
-	// Close cancels the query and closes any open connections.
-	Close()
+		return rel, true, nil
+	}
+
+	return tuple.Relationship{}, false, nil
 }
 
 // Revision is an interface for a comparable revision type that can be different for
@@ -643,9 +910,16 @@ type Revision interface {
 
 	// LessThan returns whether the receiver is probably less than the right hand side.
 	LessThan(Revision) bool
+
+	// ByteSortable returns true if the string representation of the Revision is byte sortable, false otherwise.
+	ByteSortable() bool
 }
 
 type nilRevision struct{}
+
+func (nilRevision) ByteSortable() bool {
+	return false
+}
 
 func (nilRevision) Equal(rhs Revision) bool {
 	return rhs == NoRevision

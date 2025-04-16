@@ -9,16 +9,35 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ccoveille/go-safecast"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/authzed/spicedb/internal/datastore/postgres/common"
+	"github.com/authzed/spicedb/internal/datastore/postgres/schema"
 	"github.com/authzed/spicedb/pkg/datastore"
 	implv1 "github.com/authzed/spicedb/pkg/proto/impl/v1"
+	"github.com/authzed/spicedb/pkg/spiceerrors"
 )
 
 const (
 	errRevision       = "unable to find revision: %w"
 	errCheckRevision  = "unable to check revision: %w"
 	errRevisionFormat = "invalid revision format: %w"
+
+	//   %[1] Name of xid column
+	//   %[2] Relationship tuple transaction table
+	//   %[3] Name of timestamp column
+	//   %[4] Quantization period (in nanoseconds)
+	//   %[5] Name of snapshot column
+	insertHeartBeatRevision = `
+	INSERT INTO %[2]s (%[1]s, %[5]s)
+	SELECT pg_current_xact_id(), pg_current_snapshot()
+	WHERE NOT EXISTS (
+		SELECT 1
+		FROM %[2]s rtt
+		WHERE rtt.%[3]s >= TO_TIMESTAMP(FLOOR((EXTRACT(EPOCH FROM NOW() AT TIME ZONE 'utc') * 1000000000)/ %[4]d) * %[4]d / 1000000000) AT TIME ZONE 'utc'
+        LIMIT 1
+	);`
 
 	// querySelectRevision will round the database's timestamp down to the nearest
 	// quantization period, and then find the first transaction (and its active xmin)
@@ -32,10 +51,10 @@ const (
 	//   %[3] Name of timestamp column
 	//   %[4] Quantization period (in nanoseconds)
 	//   %[5] Name of snapshot column
+	//   %[6] Follower read delay (in nanoseconds)
 	querySelectRevision = `
-	WITH selected AS (SELECT COALESCE(
-		(SELECT %[1]s FROM %[2]s WHERE %[3]s >= TO_TIMESTAMP(FLOOR(EXTRACT(EPOCH FROM NOW() AT TIME ZONE 'utc') * 1000000000 / %[4]d) * %[4]d / 1000000000) AT TIME ZONE 'utc' ORDER BY %[3]s ASC LIMIT 1),
-		NULL
+	WITH selected AS (SELECT (
+		(SELECT %[1]s FROM %[2]s WHERE %[3]s >= TO_TIMESTAMP(FLOOR((EXTRACT(EPOCH FROM NOW() AT TIME ZONE 'utc') * 1000000000 - %[6]d)/ %[4]d) * %[4]d / 1000000000) AT TIME ZONE 'utc' ORDER BY %[3]s ASC LIMIT 1)
 	) as xid)
 	SELECT selected.xid,
 	COALESCE((SELECT %[5]s FROM %[2]s WHERE %[1]s = selected.xid), (SELECT pg_current_snapshot())),
@@ -69,7 +88,7 @@ const (
 	queryCurrentSnapshot = `SELECT pg_current_snapshot();`
 
 	queryCurrentTransactionID = `SELECT pg_current_xact_id()::text::integer;`
-	queryLatestXID            = `SELECT max(xid) FROM relation_tuple_transaction;`
+	queryLatestXID            = `SELECT max(xid)::text::integer FROM relation_tuple_transaction;`
 )
 
 func (pgd *pgDatastore) optimizedRevisionFunc(ctx context.Context) (datastore.Revision, time.Duration, error) {
@@ -83,22 +102,35 @@ func (pgd *pgDatastore) optimizedRevisionFunc(ctx context.Context) (datastore.Re
 
 	snapshot = snapshot.markComplete(revision.Uint64)
 
-	return postgresRevision{snapshot}, validForNanos, nil
+	return postgresRevision{snapshot: snapshot, optionalTxID: revision}, validForNanos, nil
 }
 
 func (pgd *pgDatastore) HeadRevision(ctx context.Context) (datastore.Revision, error) {
 	ctx, span := tracer.Start(ctx, "HeadRevision")
 	defer span.End()
 
-	var snapshot pgSnapshot
-	if err := pgd.readPool.QueryRow(ctx, queryCurrentSnapshot).Scan(&snapshot); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return datastore.NoRevision, nil
-		}
-		return datastore.NoRevision, fmt.Errorf(errRevision, err)
+	result, err := pgd.getHeadRevision(ctx, pgd.readPool)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return datastore.NoRevision, nil
 	}
 
-	return postgresRevision{snapshot}, nil
+	return *result, nil
+}
+
+func (pgd *pgDatastore) getHeadRevision(ctx context.Context, querier common.Querier) (*postgresRevision, error) {
+	var snapshot pgSnapshot
+	if err := querier.QueryRow(ctx, queryCurrentSnapshot).Scan(&snapshot); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+
+		return nil, fmt.Errorf(errRevision, err)
+	}
+
+	return &postgresRevision{snapshot: snapshot}, nil
 }
 
 func (pgd *pgDatastore) CheckRevision(ctx context.Context, revisionRaw datastore.Revision) error {
@@ -114,7 +146,7 @@ func (pgd *pgDatastore) CheckRevision(ctx context.Context, revisionRaw datastore
 		return fmt.Errorf(errCheckRevision, err)
 	}
 
-	if revisionRaw.GreaterThan(postgresRevision{currentSnapshot}) {
+	if revisionRaw.GreaterThan(postgresRevision{snapshot: currentSnapshot}) {
 		return datastore.NewInvalidRevisionErr(revision, datastore.CouldNotDetermineRevision)
 	}
 	if minSnapshot.markComplete(minXid.Uint64).GreaterThan(revision.snapshot) {
@@ -154,22 +186,37 @@ func parseRevisionProto(revisionStr string) (datastore.Revision, error) {
 		return datastore.NoRevision, fmt.Errorf(errRevisionFormat, err)
 	}
 
-	xminInt := int64(decoded.Xmin)
+	xminInt, err := safecast.ToInt64(decoded.Xmin)
+	if err != nil {
+		return datastore.NoRevision, spiceerrors.MustBugf("could not cast xmin to int64")
+	}
 
 	var xips []uint64
 	if len(decoded.RelativeXips) > 0 {
 		xips = make([]uint64, len(decoded.RelativeXips))
 		for i, relativeXip := range decoded.RelativeXips {
-			xips[i] = uint64(xminInt + relativeXip)
+			xip := xminInt + relativeXip
+			uintXip, err := safecast.ToUint64(xip)
+			if err != nil {
+				return datastore.NoRevision, spiceerrors.MustBugf("could not cast xip to int64")
+			}
+			xips[i] = uintXip
 		}
 	}
 
+	xmax, err := safecast.ToUint64(xminInt + decoded.RelativeXmax)
+	if err != nil {
+		return datastore.NoRevision, spiceerrors.MustBugf("could not cast xmax to int64")
+	}
+
 	return postgresRevision{
-		pgSnapshot{
+		snapshot: pgSnapshot{
 			xmin:    decoded.Xmin,
-			xmax:    uint64(xminInt + decoded.RelativeXmax),
+			xmax:    xmax,
 			xipList: xips,
 		},
+		optionalTxID:           xid8{Uint64: decoded.OptionalTxid, Valid: decoded.OptionalTxid != 0},
+		optionalNanosTimestamp: decoded.OptionalTimestamp,
 	}, nil
 }
 
@@ -227,18 +274,29 @@ func parseRevisionDecimal(revisionStr string) (datastore.Revision, error) {
 		}
 	}
 
-	return postgresRevision{pgSnapshot{
+	return postgresRevision{snapshot: pgSnapshot{
 		xmin:    xmin,
 		xmax:    xmax,
 		xipList: xipList,
 	}}, nil
 }
 
-func createNewTransaction(ctx context.Context, tx pgx.Tx) (newXID xid8, newSnapshot pgSnapshot, err error) {
+var emptyMetadata = map[string]any{}
+
+func createNewTransaction(ctx context.Context, tx pgx.Tx, metadata map[string]any) (newXID xid8, newSnapshot pgSnapshot, err error) {
 	ctx, span := tracer.Start(ctx, "createNewTransaction")
 	defer span.End()
 
-	cterr := tx.QueryRow(ctx, createTxn).Scan(&newXID, &newSnapshot)
+	if metadata == nil {
+		metadata = emptyMetadata
+	}
+
+	sql, args, err := createTxn.Values(metadata).Suffix("RETURNING " + schema.ColXID + ", " + schema.ColSnapshot).ToSql()
+	if err != nil {
+		return
+	}
+
+	cterr := tx.QueryRow(ctx, sql, args...).Scan(&newXID, &newSnapshot)
 	if cterr != nil {
 		err = fmt.Errorf("error when trying to create a new transaction: %w", cterr)
 	}
@@ -246,7 +304,14 @@ func createNewTransaction(ctx context.Context, tx pgx.Tx) (newXID xid8, newSnaps
 }
 
 type postgresRevision struct {
-	snapshot pgSnapshot
+	snapshot               pgSnapshot
+	optionalTxID           xid8
+	optionalNanosTimestamp uint64
+	optionalMetadata       map[string]any
+}
+
+func (pr postgresRevision) ByteSortable() bool {
+	return false
 }
 
 func (pr postgresRevision) Equal(rhsRaw datastore.Revision) bool {
@@ -284,19 +349,50 @@ func (pr postgresRevision) mustMarshalBinary() []byte {
 	return serialized
 }
 
+// OptionalTransactionID returns the transaction ID at which this revision happened. This value is optionally
+// loaded from the database and may not be present.
+func (pr postgresRevision) OptionalTransactionID() (xid8, bool) {
+	if !pr.optionalTxID.Valid {
+		return xid8{}, false
+	}
+
+	return pr.optionalTxID, true
+}
+
+// OptionalNanosTimestamp returns a unix epoch timestamp in nanos representing the time at which the transaction committed
+// as defined by the Postgres primary. This is not guaranteed to be monotonically increasing
+func (pr postgresRevision) OptionalNanosTimestamp() (uint64, bool) {
+	if pr.optionalNanosTimestamp == 0 {
+		return 0, false
+	}
+
+	return pr.optionalNanosTimestamp, true
+}
+
 // MarshalBinary creates a version of the snapshot that uses relative encoding
 // for xmax and xip list values to save bytes when encoded as varint protos.
 // For example, snapshot 1001:1004:1001,1003 becomes 1000:3:0,2.
 func (pr postgresRevision) MarshalBinary() ([]byte, error) {
-	xminInt := int64(pr.snapshot.xmin)
+	xminInt, err := safecast.ToInt64(pr.snapshot.xmin)
+	if err != nil {
+		return nil, spiceerrors.MustBugf("could not safely cast snapshot xip to int64: %v", err)
+	}
 	relativeXips := make([]int64, len(pr.snapshot.xipList))
 	for i, xip := range pr.snapshot.xipList {
-		relativeXips[i] = int64(xip) - xminInt
+		intXip, err := safecast.ToInt64(xip)
+		if err != nil {
+			return nil, spiceerrors.MustBugf("could not safely cast snapshot xip to int64: %v", err)
+		}
+		relativeXips[i] = intXip - xminInt
 	}
 
+	relativeXmax, err := safecast.ToInt64(pr.snapshot.xmax)
+	if err != nil {
+		return nil, spiceerrors.MustBugf("could not safely cast snapshot xmax to int64: %v", err)
+	}
 	protoRevision := implv1.PostgresRevision{
 		Xmin:         pr.snapshot.xmin,
-		RelativeXmax: int64(pr.snapshot.xmax) - xminInt,
+		RelativeXmax: relativeXmax - xminInt,
 		RelativeXips: relativeXips,
 	}
 
@@ -305,6 +401,6 @@ func (pr postgresRevision) MarshalBinary() ([]byte, error) {
 
 var _ datastore.Revision = postgresRevision{}
 
-func revisionKeyFunc(rev revisionWithXid) uint64 {
-	return rev.tx.Uint64
+func revisionKeyFunc(rev postgresRevision) uint64 {
+	return rev.optionalTxID.Uint64
 }

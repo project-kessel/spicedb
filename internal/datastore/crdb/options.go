@@ -4,26 +4,34 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/authzed/spicedb/internal/datastore/common"
 	pgxcommon "github.com/authzed/spicedb/internal/datastore/postgres/common"
+	log "github.com/authzed/spicedb/internal/logging"
 )
 
 type crdbOptions struct {
 	readPoolOpts, writePoolOpts pgxcommon.PoolOptions
 	connectRate                 time.Duration
 
-	watchBufferLength           uint16
-	watchBufferWriteTimeout     time.Duration
-	revisionQuantization        time.Duration
-	followerReadDelay           time.Duration
-	maxRevisionStalenessPercent float64
-	gcWindow                    time.Duration
-	maxRetries                  uint8
-	overlapStrategy             string
-	overlapKey                  string
-	enableConnectionBalancing   bool
-	analyzeBeforeStatistics     bool
-
-	enablePrometheusStats bool
+	watchBufferLength              uint16
+	watchBufferWriteTimeout        time.Duration
+	watchConnectTimeout            time.Duration
+	revisionQuantization           time.Duration
+	followerReadDelay              time.Duration
+	maxRevisionStalenessPercent    float64
+	gcWindow                       time.Duration
+	maxRetries                     uint8
+	overlapStrategy                string
+	overlapKey                     string
+	enableConnectionBalancing      bool
+	analyzeBeforeStatistics        bool
+	filterMaximumIDCount           uint16
+	enablePrometheusStats          bool
+	withIntegrity                  bool
+	allowedMigrations              []string
+	columnOptimizationOption       common.ColumnOptimizationOption
+	includeQueryParametersInTraces bool
+	expirationDisabled             bool
 }
 
 const (
@@ -39,15 +47,21 @@ const (
 	defaultMaxRevisionStalenessPercent = 0.1
 	defaultWatchBufferLength           = 128
 	defaultWatchBufferWriteTimeout     = 1 * time.Second
+	defaultWatchConnectTimeout         = 1 * time.Second
 	defaultSplitSize                   = 1024
 
 	defaultMaxRetries      = 5
 	defaultOverlapKey      = "defaultsynckey"
 	defaultOverlapStrategy = overlapStrategyStatic
 
-	defaultEnablePrometheusStats     = false
-	defaultEnableConnectionBalancing = true
-	defaultConnectRate               = 100 * time.Millisecond
+	defaultEnablePrometheusStats          = false
+	defaultEnableConnectionBalancing      = true
+	defaultConnectRate                    = 100 * time.Millisecond
+	defaultFilterMaximumIDCount           = 100
+	defaultWithIntegrity                  = false
+	defaultColumnOptimizationOption       = common.ColumnOptimizationOptionNone
+	defaultIncludeQueryParametersInTraces = false
+	defaultExpirationDisabled             = false
 )
 
 // Option provides the facility to configure how clients within the CRDB
@@ -56,18 +70,24 @@ type Option func(*crdbOptions)
 
 func generateConfig(options []Option) (crdbOptions, error) {
 	computed := crdbOptions{
-		gcWindow:                    24 * time.Hour,
-		watchBufferLength:           defaultWatchBufferLength,
-		watchBufferWriteTimeout:     defaultWatchBufferWriteTimeout,
-		revisionQuantization:        defaultRevisionQuantization,
-		followerReadDelay:           defaultFollowerReadDelay,
-		maxRevisionStalenessPercent: defaultMaxRevisionStalenessPercent,
-		maxRetries:                  defaultMaxRetries,
-		overlapKey:                  defaultOverlapKey,
-		overlapStrategy:             defaultOverlapStrategy,
-		enablePrometheusStats:       defaultEnablePrometheusStats,
-		enableConnectionBalancing:   defaultEnableConnectionBalancing,
-		connectRate:                 defaultConnectRate,
+		gcWindow:                       24 * time.Hour,
+		watchBufferLength:              defaultWatchBufferLength,
+		watchBufferWriteTimeout:        defaultWatchBufferWriteTimeout,
+		watchConnectTimeout:            defaultWatchConnectTimeout,
+		revisionQuantization:           defaultRevisionQuantization,
+		followerReadDelay:              defaultFollowerReadDelay,
+		maxRevisionStalenessPercent:    defaultMaxRevisionStalenessPercent,
+		maxRetries:                     defaultMaxRetries,
+		overlapKey:                     defaultOverlapKey,
+		overlapStrategy:                defaultOverlapStrategy,
+		enablePrometheusStats:          defaultEnablePrometheusStats,
+		enableConnectionBalancing:      defaultEnableConnectionBalancing,
+		connectRate:                    defaultConnectRate,
+		filterMaximumIDCount:           defaultFilterMaximumIDCount,
+		withIntegrity:                  defaultWithIntegrity,
+		columnOptimizationOption:       defaultColumnOptimizationOption,
+		includeQueryParametersInTraces: defaultIncludeQueryParametersInTraces,
+		expirationDisabled:             defaultExpirationDisabled,
 	}
 
 	for _, option := range options {
@@ -81,6 +101,11 @@ func generateConfig(options []Option) (crdbOptions, error) {
 			computed.revisionQuantization,
 			computed.gcWindow,
 		)
+	}
+
+	if computed.filterMaximumIDCount == 0 {
+		computed.filterMaximumIDCount = 100
+		log.Warn().Msg("filterMaximumIDCount not set, defaulting to 100")
 	}
 
 	return computed, nil
@@ -224,6 +249,14 @@ func WatchBufferWriteTimeout(watchBufferWriteTimeout time.Duration) Option {
 	return func(po *crdbOptions) { po.watchBufferWriteTimeout = watchBufferWriteTimeout }
 }
 
+// WatchConnectTimeout is the maximum timeout for connecting the watch stream
+// to the datastore.
+//
+// This value defaults to 1 second.
+func WatchConnectTimeout(watchConnectTimeout time.Duration) Option {
+	return func(po *crdbOptions) { po.watchConnectTimeout = watchConnectTimeout }
+}
+
 // RevisionQuantization is the time bucket size to which advertised revisions
 // will be rounded.
 //
@@ -305,4 +338,41 @@ func WithEnableConnectionBalancing(connectionBalancing bool) Option {
 // Disabled by default.
 func DebugAnalyzeBeforeStatistics() Option {
 	return func(po *crdbOptions) { po.analyzeBeforeStatistics = true }
+}
+
+// FilterMaximumIDCount is the maximum number of IDs that can be used to filter IDs in queries
+func FilterMaximumIDCount(filterMaximumIDCount uint16) Option {
+	return func(po *crdbOptions) { po.filterMaximumIDCount = filterMaximumIDCount }
+}
+
+// WithIntegrity marks whether the datastore should store and return integrity information.
+func WithIntegrity(withIntegrity bool) Option {
+	return func(po *crdbOptions) { po.withIntegrity = withIntegrity }
+}
+
+// AllowedMigrations configures a set of additional migrations that will pass
+// the health check (head migration is always allowed).
+func AllowedMigrations(allowedMigrations []string) Option {
+	return func(po *crdbOptions) { po.allowedMigrations = allowedMigrations }
+}
+
+// IncludeQueryParametersInTraces marks whether query parameters should be included in traces.
+func IncludeQueryParametersInTraces(includeQueryParametersInTraces bool) Option {
+	return func(po *crdbOptions) { po.includeQueryParametersInTraces = includeQueryParametersInTraces }
+}
+
+// WithColumnOptimization configures the column optimization option for the datastore.
+func WithColumnOptimization(isEnabled bool) Option {
+	return func(po *crdbOptions) {
+		if isEnabled {
+			po.columnOptimizationOption = common.ColumnOptimizationOptionStaticValues
+		} else {
+			po.columnOptimizationOption = common.ColumnOptimizationOptionNone
+		}
+	}
+}
+
+// WithExpirationDisabled configures the datastore to disable relationship expiration.
+func WithExpirationDisabled(isDisabled bool) Option {
+	return func(po *crdbOptions) { po.expirationDisabled = isDisabled }
 }

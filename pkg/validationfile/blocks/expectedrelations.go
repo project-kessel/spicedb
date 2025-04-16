@@ -8,7 +8,7 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
-	core "github.com/authzed/spicedb/pkg/proto/core/v1"
+	"github.com/ccoveille/go-safecast"
 
 	"github.com/authzed/spicedb/pkg/spiceerrors"
 	"github.com/authzed/spicedb/pkg/tuple"
@@ -46,7 +46,7 @@ type ObjectRelation struct {
 	ObjectRelationString string
 
 	// ObjectAndRelation is the parsed object and relation.
-	ObjectAndRelation *core.ObjectAndRelation
+	ObjectAndRelation tuple.ObjectAndRelation
 
 	// SourcePosition is the position of the expected relations in the file.
 	SourcePosition spiceerrors.SourcePosition
@@ -59,13 +59,22 @@ func (ors *ObjectRelation) UnmarshalYAML(node *yamlv3.Node) error {
 		return convertYamlError(err)
 	}
 
-	parsed := tuple.ParseONR(ors.ObjectRelationString)
-	if parsed == nil {
-		return spiceerrors.NewErrorWithSource(
-			fmt.Errorf("could not parse %s", ors.ObjectRelationString),
+	line, err := safecast.ToUint64(node.Line)
+	if err != nil {
+		return err
+	}
+	column, err := safecast.ToUint64(node.Column)
+	if err != nil {
+		return err
+	}
+
+	parsed, err := tuple.ParseONR(ors.ObjectRelationString)
+	if err != nil {
+		return spiceerrors.NewWithSourceError(
+			fmt.Errorf("could not parse %s: %w", ors.ObjectRelationString, err),
 			ors.ObjectRelationString,
-			uint64(node.Line),
-			uint64(node.Column),
+			line,
+			column,
 		)
 	}
 
@@ -91,7 +100,7 @@ type ExpectedSubject struct {
 	SubjectWithExceptions *SubjectWithExceptions
 
 	// Resources are the resources under which the subject is found.
-	Resources []*core.ObjectAndRelation
+	Resources []tuple.ObjectAndRelation
 
 	// SourcePosition is the position of the expected subject in the file.
 	SourcePosition spiceerrors.SourcePosition
@@ -100,7 +109,7 @@ type ExpectedSubject struct {
 // SubjectAndCaveat returns a subject and whether it is caveated.
 type SubjectAndCaveat struct {
 	// Subject is the subject found.
-	Subject *core.ObjectAndRelation
+	Subject tuple.ObjectAndRelation
 
 	// IsCaveated indicates whether the subject is caveated.
 	IsCaveated bool
@@ -122,23 +131,32 @@ func (es *ExpectedSubject) UnmarshalYAML(node *yamlv3.Node) error {
 		return convertYamlError(err)
 	}
 
+	line, err := safecast.ToUint64(node.Line)
+	if err != nil {
+		return err
+	}
+	column, err := safecast.ToUint64(node.Column)
+	if err != nil {
+		return err
+	}
+
 	subjectWithExceptions, subErr := es.ValidationString.Subject()
 	if subErr != nil {
-		return spiceerrors.NewErrorWithSource(
+		return spiceerrors.NewWithSourceError(
 			subErr,
 			subErr.SourceCodeString,
-			uint64(node.Line)+subErr.LineNumber,
-			uint64(node.Column)+subErr.ColumnPosition,
+			line+subErr.LineNumber,
+			column+subErr.ColumnPosition,
 		)
 	}
 
 	onrs, onrErr := es.ValidationString.ONRS()
 	if onrErr != nil {
-		return spiceerrors.NewErrorWithSource(
+		return spiceerrors.NewWithSourceError(
 			onrErr,
 			onrErr.SourceCodeString,
-			uint64(node.Line)+onrErr.LineNumber,
-			uint64(node.Column)+onrErr.ColumnPosition,
+			line+onrErr.LineNumber,
+			column+onrErr.ColumnPosition,
 		)
 	}
 
@@ -165,7 +183,7 @@ func (vs ValidationString) SubjectString() (string, bool) {
 
 // Subject returns the subject contained in the ValidationString, if any. If
 // none, returns nil.
-func (vs ValidationString) Subject() (*SubjectWithExceptions, *spiceerrors.ErrorWithSource) {
+func (vs ValidationString) Subject() (*SubjectWithExceptions, *spiceerrors.WithSourceError) {
 	subjectStr, ok := vs.SubjectString()
 	if !ok {
 		return nil, nil
@@ -175,13 +193,13 @@ func (vs ValidationString) Subject() (*SubjectWithExceptions, *spiceerrors.Error
 	groups := vsSubjectWithExceptionsOrCaveatRegex.FindStringSubmatch(subjectStr)
 	if len(groups) == 0 {
 		bracketedSubjectString := "[" + subjectStr + "]"
-		return nil, spiceerrors.NewErrorWithSource(fmt.Errorf("invalid subject: `%s`", subjectStr), bracketedSubjectString, 0, 0)
+		return nil, spiceerrors.NewWithSourceError(fmt.Errorf("invalid subject: `%s`", subjectStr), bracketedSubjectString, 0, 0)
 	}
 
 	subjectONRString := groups[slices.Index(vsSubjectWithExceptionsOrCaveatRegex.SubexpNames(), "subject_onr")]
-	subjectONR := tuple.ParseSubjectONR(subjectONRString)
-	if subjectONR == nil {
-		return nil, spiceerrors.NewErrorWithSource(fmt.Errorf("invalid subject: `%s`", subjectONRString), subjectONRString, 0, 0)
+	subjectONR, err := tuple.ParseSubjectONR(subjectONRString)
+	if err != nil {
+		return nil, spiceerrors.NewWithSourceError(fmt.Errorf("invalid subject: `%s`: %w", subjectONRString, err), subjectONRString, 0, 0)
 	}
 
 	exceptionsString := strings.TrimSpace(groups[slices.Index(vsSubjectWithExceptionsOrCaveatRegex.SubexpNames(), "exceptions")])
@@ -197,9 +215,9 @@ func (vs ValidationString) Subject() (*SubjectWithExceptions, *spiceerrors.Error
 				isCaveated = true
 			}
 
-			exceptionONR := tuple.ParseSubjectONR(strings.TrimSpace(exceptionString))
-			if exceptionONR == nil {
-				return nil, spiceerrors.NewErrorWithSource(fmt.Errorf("invalid subject: `%s`", exceptionString), exceptionString, 0, 0)
+			exceptionONR, err := tuple.ParseSubjectONR(strings.TrimSpace(exceptionString))
+			if err != nil {
+				return nil, spiceerrors.NewWithSourceError(fmt.Errorf("invalid subject: `%s`: %w", exceptionString, err), exceptionString, 0, 0)
 			}
 
 			exceptions = append(exceptions, SubjectAndCaveat{exceptionONR, isCaveated})
@@ -221,13 +239,13 @@ func (vs ValidationString) ONRStrings() []string {
 }
 
 // ONRS returns the subject ONRs in the ValidationString, if any.
-func (vs ValidationString) ONRS() ([]*core.ObjectAndRelation, *spiceerrors.ErrorWithSource) {
+func (vs ValidationString) ONRS() ([]tuple.ObjectAndRelation, *spiceerrors.WithSourceError) {
 	onrStrings := vs.ONRStrings()
-	onrs := []*core.ObjectAndRelation{}
+	onrs := []tuple.ObjectAndRelation{}
 	for _, onrString := range onrStrings {
-		found := tuple.ParseONR(onrString)
-		if found == nil {
-			return nil, spiceerrors.NewErrorWithSource(fmt.Errorf("invalid resource and relation: `%s`", onrString), onrString, 0, 0)
+		found, err := tuple.ParseONR(onrString)
+		if err != nil {
+			return nil, spiceerrors.NewWithSourceError(fmt.Errorf("invalid resource and relation: `%s`: %w", onrString, err), onrString, 0, 0)
 		}
 
 		onrs = append(onrs, found)

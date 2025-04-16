@@ -10,8 +10,10 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"math"
 	"math/big"
 	"net"
 	"os"
@@ -24,14 +26,27 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/ory/dockertest/v3"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	crdbmigrations "github.com/authzed/spicedb/internal/datastore/crdb/migrations"
 	"github.com/authzed/spicedb/internal/datastore/crdb/pool"
+	"github.com/authzed/spicedb/internal/datastore/crdb/schema"
+	"github.com/authzed/spicedb/internal/datastore/crdb/version"
+	"github.com/authzed/spicedb/internal/datastore/proxy"
 	"github.com/authzed/spicedb/internal/datastore/revisions"
+	"github.com/authzed/spicedb/internal/testfixtures"
 	testdatastore "github.com/authzed/spicedb/internal/testserver/datastore"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/datastore/test"
+	"github.com/authzed/spicedb/pkg/genutil/mapz"
 	"github.com/authzed/spicedb/pkg/migrate"
+	core "github.com/authzed/spicedb/pkg/proto/core/v1"
+	"github.com/authzed/spicedb/pkg/tuple"
+)
+
+const (
+	veryLargeGCWindow   = 90000 * time.Second
+	veryLargeGCInterval = 90000 * time.Second
 )
 
 // Implement the TestableDatastore interface
@@ -41,8 +56,18 @@ func (cds *crdbDatastore) ExampleRetryableError() error {
 	}
 }
 
-func TestCRDBDatastore(t *testing.T) {
-	b := testdatastore.RunCRDBForTesting(t, "")
+func crdbTestVersion() string {
+	ver := os.Getenv("CRDB_TEST_VERSION")
+	if ver != "" {
+		return ver
+	}
+
+	return version.LatestTestedCockroachDBVersion
+}
+
+func TestCRDBDatastoreWithoutIntegrity(t *testing.T) {
+	t.Parallel()
+	b := testdatastore.RunCRDBForTesting(t, "", crdbTestVersion())
 	test.All(t, test.DatastoreTesterFunc(func(revisionQuantization, gcInterval, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
 		ctx := context.Background()
 		ds := b.NewDatastore(t, func(engine, uri string) datastore.Datastore {
@@ -60,14 +85,38 @@ func TestCRDBDatastore(t *testing.T) {
 		})
 
 		return ds, nil
-	}))
+	}), false)
+
+	t.Run("TestWatchStreaming", createDatastoreTest(
+		b,
+		StreamingWatchTest,
+		RevisionQuantization(0),
+		GCWindow(veryLargeGCWindow),
+	))
+}
+
+type datastoreTestFunc func(t *testing.T, ds datastore.Datastore)
+
+func createDatastoreTest(b testdatastore.RunningEngineForTest, tf datastoreTestFunc, options ...Option) func(*testing.T) {
+	return func(t *testing.T) {
+		ctx := context.Background()
+		ds := b.NewDatastore(t, func(engine, uri string) datastore.Datastore {
+			ds, err := NewCRDBDatastore(ctx, uri, options...)
+			require.NoError(t, err)
+			return ds
+		})
+		defer ds.Close()
+
+		tf(t, ds)
+	}
 }
 
 func TestCRDBDatastoreWithFollowerReads(t *testing.T) {
+	t.Parallel()
 	followerReadDelay := time.Duration(4.8 * float64(time.Second))
 	gcWindow := 100 * time.Second
 
-	engine := testdatastore.RunCRDBForTesting(t, "")
+	engine := testdatastore.RunCRDBForTesting(t, "", crdbTestVersion())
 
 	quantizationDurations := []time.Duration{
 		0 * time.Second,
@@ -111,7 +160,72 @@ func TestCRDBDatastoreWithFollowerReads(t *testing.T) {
 	}
 }
 
+var defaultKeyForTesting = proxy.KeyConfig{
+	ID: "defaultfortest",
+	Bytes: (func() []byte {
+		b, err := hex.DecodeString("000102030405060708090A0B0C0D0E0FF0E0D0C0B0A090807060504030201000")
+		if err != nil {
+			panic(err)
+		}
+		return b
+	})(),
+	ExpiredAt: nil,
+}
+
+func TestCRDBDatastoreWithIntegrity(t *testing.T) {
+	t.Parallel()
+	b := testdatastore.RunCRDBForTesting(t, "", crdbTestVersion())
+
+	test.All(t, test.DatastoreTesterFunc(func(revisionQuantization, gcInterval, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
+		ctx := context.Background()
+		ds := b.NewDatastore(t, func(engine, uri string) datastore.Datastore {
+			ds, err := NewCRDBDatastore(
+				ctx,
+				uri,
+				GCWindow(gcWindow),
+				RevisionQuantization(revisionQuantization),
+				WatchBufferLength(watchBufferLength),
+				OverlapStrategy(overlapStrategyPrefix),
+				DebugAnalyzeBeforeStatistics(),
+				WithIntegrity(true),
+			)
+			require.NoError(t, err)
+
+			wrapped, err := proxy.NewRelationshipIntegrityProxy(ds, defaultKeyForTesting, nil)
+			require.NoError(t, err)
+			return wrapped
+		})
+
+		return ds, nil
+	}), false)
+
+	unwrappedTester := test.DatastoreTesterFunc(func(revisionQuantization, gcInterval, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
+		ctx := context.Background()
+		ds := b.NewDatastore(t, func(engine, uri string) datastore.Datastore {
+			ds, err := NewCRDBDatastore(
+				ctx,
+				uri,
+				GCWindow(gcWindow),
+				RevisionQuantization(revisionQuantization),
+				WatchBufferLength(watchBufferLength),
+				OverlapStrategy(overlapStrategyPrefix),
+				DebugAnalyzeBeforeStatistics(),
+				WithIntegrity(true),
+			)
+			require.NoError(t, err)
+			return ds
+		})
+
+		return ds, nil
+	})
+
+	t.Run("TestRelationshipIntegrityInfo", func(t *testing.T) { RelationshipIntegrityInfoTest(t, unwrappedTester) })
+	t.Run("TestBulkRelationshipIntegrityInfo", func(t *testing.T) { BulkRelationshipIntegrityInfoTest(t, unwrappedTester) })
+	t.Run("TestWatchRelationshipIntegrity", func(t *testing.T) { RelationshipIntegrityWatchTest(t, unwrappedTester) })
+}
+
 func TestWatchFeatureDetection(t *testing.T) {
+	t.Parallel()
 	pool, err := dockertest.NewPool("")
 	require.NoError(t, err)
 	cases := []struct {
@@ -144,17 +258,19 @@ func TestWatchFeatureDetection(t *testing.T) {
 				_, err = adminConn.Exec(ctx, `SET CLUSTER SETTING kv.rangefeed.enabled = true;`)
 				require.NoError(t, err)
 
-				_, err = adminConn.Exec(ctx, fmt.Sprintf(`GRANT CHANGEFEED ON TABLE testspicedb.%s TO unprivileged;`, tableTuple))
+				_, err = adminConn.Exec(ctx, fmt.Sprintf(`GRANT CHANGEFEED ON TABLE testspicedb.%s TO unprivileged;`, schema.TableTuple))
 				require.NoError(t, err)
 
-				_, err = adminConn.Exec(ctx, fmt.Sprintf(`GRANT SELECT ON TABLE testspicedb.%s TO unprivileged;`, tableTuple))
+				_, err = adminConn.Exec(ctx, fmt.Sprintf(`GRANT SELECT ON TABLE testspicedb.%s TO unprivileged;`, schema.TableTuple))
 				require.NoError(t, err)
 			},
 			expectEnabled: true,
 		},
 	}
 	for _, tt := range cases {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			ctx, cancel := context.WithCancel(context.Background())
 			t.Cleanup(cancel)
 			adminConn, connStrings := newCRDBWithUser(t, pool)
@@ -171,10 +287,10 @@ func TestWatchFeatureDetection(t *testing.T) {
 
 			features, err := ds.Features(ctx)
 			require.NoError(t, err)
-			require.Equal(t, tt.expectEnabled, features.Watch.Enabled)
+			require.Equal(t, tt.expectEnabled, features.Watch.Status == datastore.FeatureSupported)
 			require.Contains(t, features.Watch.Reason, tt.expectMessage)
 
-			if !features.Watch.Enabled {
+			if features.Watch.Status != datastore.FeatureSupported {
 				headRevision, err := ds.HeadRevision(ctx)
 				require.NoError(t, err)
 
@@ -304,7 +420,7 @@ func newCRDBWithUser(t *testing.T, pool *dockertest.Pool) (adminConn *pgx.Conn, 
 
 	resource, err := pool.RunWithOptions(&dockertest.RunOptions{
 		Repository: "mirror.gcr.io/cockroachdb/cockroach",
-		Tag:        testdatastore.CRDBTestVersionTag,
+		Tag:        "v" + crdbTestVersion(),
 		Cmd:        []string{"start-single-node", "--certs-dir", "/certs", "--accept-sql-without-tls"},
 		Mounts:     []string{certDir + ":/certs"},
 	})
@@ -347,4 +463,262 @@ func newCRDBWithUser(t *testing.T, pool *dockertest.Pool) (adminConn *pgx.Conn, 
 	}
 
 	return
+}
+
+func RelationshipIntegrityInfoTest(t *testing.T, tester test.DatastoreTester) {
+	require := require.New(t)
+
+	rawDS, err := tester.New(0, veryLargeGCInterval, veryLargeGCWindow, 1)
+	require.NoError(err)
+
+	ds, _ := testfixtures.StandardDatastoreWithSchema(rawDS, require)
+	ctx := context.Background()
+
+	// Write a relationship with integrity information.
+	timestamp := time.Now().UTC()
+
+	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
+		tpl := tuple.MustParse("document:foo#viewer@user:tom")
+		tpl.OptionalIntegrity = &core.RelationshipIntegrity{
+			KeyId:    "key1",
+			Hash:     []byte("hash1"),
+			HashedAt: timestamppb.New(timestamp),
+		}
+		return rwt.WriteRelationships(ctx, []tuple.RelationshipUpdate{
+			tuple.Create(tpl),
+		})
+	})
+	require.NoError(err)
+
+	// Read the relationship back and ensure the integrity information is present.
+	headRev, err := ds.HeadRevision(ctx)
+	require.NoError(err)
+
+	reader := ds.SnapshotReader(headRev)
+	iter, err := reader.QueryRelationships(ctx, datastore.RelationshipsFilter{
+		OptionalResourceType:     "document",
+		OptionalResourceIds:      []string{"foo"},
+		OptionalResourceRelation: "viewer",
+	})
+	require.NoError(err)
+
+	slice, err := datastore.IteratorToSlice(iter)
+	require.NoError(err)
+
+	rel := slice[0]
+
+	require.NotNil(rel.OptionalIntegrity)
+	require.Equal("key1", rel.OptionalIntegrity.KeyId)
+	require.Equal([]byte("hash1"), rel.OptionalIntegrity.Hash)
+
+	require.LessOrEqual(math.Abs(float64(timestamp.Sub(rel.OptionalIntegrity.HashedAt.AsTime()).Milliseconds())), 1000.0)
+}
+
+type fakeSource struct {
+	rel *tuple.Relationship
+}
+
+func (f *fakeSource) Next(ctx context.Context) (*tuple.Relationship, error) {
+	if f.rel == nil {
+		return nil, nil
+	}
+
+	tpl := f.rel
+	f.rel = nil
+	return tpl, nil
+}
+
+func BulkRelationshipIntegrityInfoTest(t *testing.T, tester test.DatastoreTester) {
+	require := require.New(t)
+
+	rawDS, err := tester.New(0, veryLargeGCInterval, veryLargeGCWindow, 1)
+	require.NoError(err)
+
+	ds, _ := testfixtures.StandardDatastoreWithSchema(rawDS, require)
+	ctx := context.Background()
+
+	// Write a relationship with integrity information.
+	timestamp := time.Now().UTC()
+
+	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
+		rel := tuple.MustParse("document:foo#viewer@user:tom")
+		rel.OptionalIntegrity = &core.RelationshipIntegrity{
+			KeyId:    "key1",
+			Hash:     []byte("hash1"),
+			HashedAt: timestamppb.New(timestamp),
+		}
+
+		_, err := rwt.BulkLoad(ctx, &fakeSource{&rel})
+		return err
+	})
+	require.NoError(err)
+
+	// Read the relationship back and ensure the integrity information is present.
+	headRev, err := ds.HeadRevision(ctx)
+	require.NoError(err)
+
+	reader := ds.SnapshotReader(headRev)
+	iter, err := reader.QueryRelationships(ctx, datastore.RelationshipsFilter{
+		OptionalResourceType:     "document",
+		OptionalResourceIds:      []string{"foo"},
+		OptionalResourceRelation: "viewer",
+	})
+	require.NoError(err)
+
+	slice, err := datastore.IteratorToSlice(iter)
+	require.NoError(err)
+
+	rel := slice[0]
+
+	require.NotNil(rel.OptionalIntegrity)
+	require.Equal("key1", rel.OptionalIntegrity.KeyId)
+	require.Equal([]byte("hash1"), rel.OptionalIntegrity.Hash)
+
+	require.LessOrEqual(math.Abs(float64(timestamp.Sub(rel.OptionalIntegrity.HashedAt.AsTime()).Milliseconds())), 1000.0)
+}
+
+func RelationshipIntegrityWatchTest(t *testing.T, tester test.DatastoreTester) {
+	require := require.New(t)
+
+	rawDS, err := tester.New(0, veryLargeGCInterval, veryLargeGCWindow, 1)
+	require.NoError(err)
+
+	ds, rev := testfixtures.StandardDatastoreWithSchema(rawDS, require)
+	ctx := context.Background()
+
+	// Write a relationship with integrity information.
+	timestamp := time.Now().UTC()
+
+	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
+		rel := tuple.MustParse("document:foo#viewer@user:tom")
+		rel.OptionalIntegrity = &core.RelationshipIntegrity{
+			KeyId:    "key1",
+			Hash:     []byte("hash1"),
+			HashedAt: timestamppb.New(timestamp),
+		}
+		return rwt.WriteRelationships(ctx, []tuple.RelationshipUpdate{
+			tuple.Create(rel),
+		})
+	})
+	require.NoError(err)
+
+	// Ensure the watch API returns the integrity information.
+	opts := datastore.WatchOptions{
+		Content:                 datastore.WatchRelationships,
+		WatchBufferLength:       128,
+		WatchBufferWriteTimeout: 1 * time.Minute,
+	}
+
+	changes, errchan := ds.Watch(ctx, rev, opts)
+	select {
+	case change, ok := <-changes:
+		if !ok {
+			require.Fail("Timed out waiting for WatchDisconnectedError")
+		}
+
+		rel := change.RelationshipChanges[0].Relationship
+		require.NotNil(rel.OptionalIntegrity)
+		require.Equal("key1", rel.OptionalIntegrity.KeyId)
+		require.Equal([]byte("hash1"), rel.OptionalIntegrity.Hash)
+
+		require.LessOrEqual(math.Abs(float64(timestamp.Sub(rel.OptionalIntegrity.HashedAt.AsTime()).Milliseconds())), 1000.0)
+	case err := <-errchan:
+		require.Failf("Failed waiting for changes with error", "error: %v", err)
+	case <-time.NewTimer(10 * time.Second).C:
+		require.Fail("Timed out")
+	}
+}
+
+func StreamingWatchTest(t *testing.T, rawDS datastore.Datastore) {
+	require := require.New(t)
+
+	ds, rev := testfixtures.DatastoreFromSchemaAndTestRelationships(rawDS, `
+		caveat somecaveat(somecondition int) {
+			somecondition == 42	
+		}
+
+		caveat somecaveat2(somecondition int) {
+			somecondition == 42	
+		}
+
+		definition user {}
+
+		definition user2 {}
+
+		definition resource {
+			relation viewer: user
+		}
+
+		definition resource2 {
+			relation viewer: user2
+		}
+	`, []tuple.Relationship{
+		tuple.MustParse("resource:foo#viewer@user:tom"),
+		tuple.MustParse("resource:foo#viewer@user:fred"),
+	}, require)
+	ctx := context.Background()
+
+	// Touch and delete some relationships, add a namespace and caveat and delete a namespace and caveat.
+	_, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
+		err := rwt.WriteRelationships(ctx, []tuple.RelationshipUpdate{
+			tuple.Touch(tuple.MustParse("resource:foo#viewer@user:tom")),
+			tuple.Delete(tuple.MustParse("resource:foo#viewer@user:fred")),
+		})
+		require.NoError(err)
+
+		err = rwt.DeleteNamespaces(ctx, "resource2")
+		require.NoError(err)
+
+		err = rwt.DeleteCaveats(ctx, []string{"somecaveat2"})
+		require.NoError(err)
+
+		err = rwt.WriteNamespaces(ctx, &core.NamespaceDefinition{
+			Name: "somenewnamespace",
+		})
+		require.NoError(err)
+
+		err = rwt.WriteCaveats(ctx, []*core.CaveatDefinition{{
+			Name: "somenewcaveat",
+		}})
+		require.NoError(err)
+
+		return nil
+	})
+	require.NoError(err)
+
+	// Ensure the watch API returns the integrity information.
+	opts := datastore.WatchOptions{
+		Content:                 datastore.WatchRelationships | datastore.WatchSchema | datastore.WatchCheckpoints,
+		WatchBufferLength:       128,
+		WatchBufferWriteTimeout: 1 * time.Minute,
+		EmissionStrategy:        datastore.EmitImmediatelyStrategy,
+	}
+
+	expectedChanges := mapz.NewSet[string]()
+	expectedChanges.Add("DELETE(resource:foo#viewer@user:fred)\n")
+	expectedChanges.Add("DeletedCaveat: somecaveat2\n")
+	expectedChanges.Add("DeletedNamespace: resource2\n")
+	expectedChanges.Add("Definition: *corev1.NamespaceDefinition:somenewnamespace\n")
+	expectedChanges.Add("Definition: *corev1.CaveatDefinition:somenewcaveat\n")
+
+	changes, errchan := ds.Watch(ctx, rev, opts)
+	for {
+		select {
+		case change, ok := <-changes:
+			if !ok {
+				require.Fail("Timed out waiting for WatchDisconnectedError")
+			}
+
+			debugString := change.DebugString()
+			require.True(expectedChanges.Has(debugString), "unexpected change: %s", debugString)
+			expectedChanges.Delete(change.DebugString())
+			if expectedChanges.IsEmpty() {
+				return
+			}
+		case err := <-errchan:
+			require.Failf("Failed waiting for changes with error", "error: %v", err)
+		case <-time.NewTimer(10 * time.Second).C:
+			require.Fail("Timed out")
+		}
+	}
 }

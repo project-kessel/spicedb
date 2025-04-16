@@ -20,6 +20,7 @@ import (
 	"github.com/authzed/spicedb/pkg/datastore"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	"github.com/authzed/spicedb/pkg/spiceerrors"
+	"github.com/authzed/spicedb/pkg/tuple"
 )
 
 const (
@@ -51,25 +52,31 @@ func parseDatabaseName(db string) (project, instance, database string, err error
 	return matches[1], matches[2], matches[3], nil
 }
 
-func (sd spannerDatastore) Watch(ctx context.Context, afterRevision datastore.Revision, opts datastore.WatchOptions) (<-chan *datastore.RevisionChanges, <-chan error) {
+func (sd *spannerDatastore) Watch(ctx context.Context, afterRevision datastore.Revision, opts datastore.WatchOptions) (<-chan datastore.RevisionChanges, <-chan error) {
 	watchBufferLength := opts.WatchBufferLength
 	if watchBufferLength <= 0 {
 		watchBufferLength = sd.watchBufferLength
 	}
 
-	updates := make(chan *datastore.RevisionChanges, watchBufferLength)
+	updates := make(chan datastore.RevisionChanges, watchBufferLength)
 	errs := make(chan error, 1)
+
+	if opts.EmissionStrategy == datastore.EmitImmediatelyStrategy {
+		close(updates)
+		errs <- errors.New("emit immediately strategy is unsupported in Spanner")
+		return updates, errs
+	}
 
 	go sd.watch(ctx, afterRevision, opts, updates, errs)
 
 	return updates, errs
 }
 
-func (sd spannerDatastore) watch(
+func (sd *spannerDatastore) watch(
 	ctx context.Context,
 	afterRevisionRaw datastore.Revision,
 	opts datastore.WatchOptions,
-	updates chan *datastore.RevisionChanges,
+	updates chan datastore.RevisionChanges,
 	errs chan error,
 ) {
 	defer close(updates)
@@ -87,6 +94,16 @@ func (sd spannerDatastore) watch(
 			return
 		}
 
+		if common.IsCancellationError(err) {
+			errs <- datastore.NewWatchCanceledErr()
+			return
+		}
+
+		if common.IsResettableError(err) {
+			errs <- datastore.NewWatchTemporaryErr(err)
+			return
+		}
+
 		errs <- err
 	}
 
@@ -95,7 +112,7 @@ func (sd spannerDatastore) watch(
 		watchBufferWriteTimeout = sd.watchBufferWriteTimeout
 	}
 
-	sendChange := func(change *datastore.RevisionChanges) bool {
+	sendChange := func(change datastore.RevisionChanges) bool {
 		select {
 		case updates <- change:
 			return true
@@ -156,14 +173,49 @@ func (sd spannerDatastore) watch(
 	}
 	defer reader.Close()
 
+	metadataForTransactionTag := map[string]map[string]any{}
+
+	addMetadataForTransactionTag := func(ctx context.Context, tracked *common.Changes[revisions.TimestampRevision, int64], revision revisions.TimestampRevision, transactionTag string) error {
+		if metadata, ok := metadataForTransactionTag[transactionTag]; ok {
+			return tracked.SetRevisionMetadata(ctx, revision, metadata)
+		}
+
+		// Otherwise, load the metadata from the transactions metadata table.
+		transactionMetadata, err := sd.readTransactionMetadata(ctx, transactionTag)
+		if err != nil {
+			return err
+		}
+
+		metadataForTransactionTag[transactionTag] = transactionMetadata
+		return tracked.SetRevisionMetadata(ctx, revision, transactionMetadata)
+	}
+
 	err = reader.Read(ctx, func(result *changestreams.ReadResult) error {
 		// See: https://cloud.google.com/spanner/docs/change-streams/details
 		for _, record := range result.ChangeRecords {
-			tracked := common.NewChanges(revisions.TimestampIDKeyFunc, opts.Content)
+			tracked := common.NewChanges(revisions.TimestampIDKeyFunc, opts.Content, opts.MaximumBufferedChangesByteSize)
 
 			for _, dcr := range record.DataChangeRecords {
 				changeRevision := revisions.NewForTime(dcr.CommitTimestamp)
 				modType := dcr.ModType // options are INSERT, UPDATE, DELETE
+
+				// See: https://cloud.google.com/spanner/docs/ttl
+				// > TTL supports auditing its deletions through change streams. Change
+				// > streams data records that track TTL changes to a database have the
+				// > transaction_tag field set to RowDeletionPolicy and the
+				// > is_system_transaction field set to true.
+				if modType == "DELETE" && dcr.TransactionTag == "RowDeletionPolicy" && dcr.IsSystemTransaction {
+					// Skip deletions that are performed by TTL policy.
+					// TODO(jschorr): once we decide to emit events for GCed expired rels, change to emit those
+					// events instead.
+					continue
+				}
+
+				if len(dcr.TransactionTag) > 0 {
+					if err := addMetadataForTransactionTag(ctx, tracked, changeRevision, dcr.TransactionTag); err != nil {
+						return err
+					}
+				}
 
 				for _, mod := range dcr.Mods {
 					primaryKeyColumnValues, ok := mod.Keys.Value.(map[string]any)
@@ -175,19 +227,19 @@ func (sd spannerDatastore) watch(
 					case "DELETE":
 						switch dcr.TableName {
 						case tableRelationship:
-							relationTuple := relationTupleFromPrimaryKey(primaryKeyColumnValues)
+							relationship := relationshipFromPrimaryKey(primaryKeyColumnValues)
 
 							oldValues, ok := mod.OldValues.Value.(map[string]any)
 							if !ok {
 								return spiceerrors.MustBugf("error converting old values map")
 							}
 
-							relationTuple.Caveat, err = contextualizedCaveatFromValues(oldValues)
+							relationship.OptionalCaveat, err = contextualizedCaveatFromValues(oldValues)
 							if err != nil {
 								return err
 							}
 
-							err := tracked.AddRelationshipChange(ctx, changeRevision, relationTuple, core.RelationTupleUpdate_DELETE)
+							err := tracked.AddRelationshipChange(ctx, changeRevision, relationship, tuple.UpdateOperationDelete)
 							if err != nil {
 								return err
 							}
@@ -203,7 +255,10 @@ func (sd spannerDatastore) watch(
 								return spiceerrors.MustBugf("error converting namespace name: %v", primaryKeyColumnValues[colNamespaceName])
 							}
 
-							tracked.AddDeletedNamespace(ctx, changeRevision, namespaceName)
+							err := tracked.AddDeletedNamespace(ctx, changeRevision, namespaceName)
+							if err != nil {
+								return err
+							}
 
 						case tableCaveat:
 							caveatNameValue, ok := primaryKeyColumnValues[colNamespaceName]
@@ -216,7 +271,10 @@ func (sd spannerDatastore) watch(
 								return spiceerrors.MustBugf("error converting caveat name: %v", primaryKeyColumnValues[colName])
 							}
 
-							tracked.AddDeletedCaveat(ctx, changeRevision, caveatName)
+							err := tracked.AddDeletedCaveat(ctx, changeRevision, caveatName)
+							if err != nil {
+								return err
+							}
 
 						default:
 							return spiceerrors.MustBugf("unknown table name %s in delete of change stream", dcr.TableName)
@@ -233,7 +291,7 @@ func (sd spannerDatastore) watch(
 
 						switch dcr.TableName {
 						case tableRelationship:
-							relationTuple := relationTupleFromPrimaryKey(primaryKeyColumnValues)
+							relationship := relationshipFromPrimaryKey(primaryKeyColumnValues)
 
 							oldValues, ok := mod.OldValues.Value.(map[string]any)
 							if !ok {
@@ -253,12 +311,12 @@ func (sd spannerDatastore) watch(
 								continue
 							}
 
-							relationTuple.Caveat, err = contextualizedCaveatFromValues(newValues)
+							relationship.OptionalCaveat, err = contextualizedCaveatFromValues(newValues)
 							if err != nil {
 								return err
 							}
 
-							err := tracked.AddRelationshipChange(ctx, changeRevision, relationTuple, core.RelationTupleUpdate_TOUCH)
+							err := tracked.AddRelationshipChange(ctx, changeRevision, relationship, tuple.UpdateOperationTouch)
 							if err != nil {
 								return err
 							}
@@ -274,7 +332,10 @@ func (sd spannerDatastore) watch(
 								return err
 							}
 
-							tracked.AddChangedDefinition(ctx, changeRevision, ns)
+							err := tracked.AddChangedDefinition(ctx, changeRevision, ns)
+							if err != nil {
+								return err
+							}
 
 						case tableCaveat:
 							caveatDefValue, ok := newValues[colCaveatDefinition]
@@ -287,7 +348,10 @@ func (sd spannerDatastore) watch(
 								return err
 							}
 
-							tracked.AddChangedDefinition(ctx, changeRevision, caveat)
+							err := tracked.AddChangedDefinition(ctx, changeRevision, caveat)
+							if err != nil {
+								return err
+							}
 
 						default:
 							return spiceerrors.MustBugf("unknown table name %s in delete of change stream", dcr.TableName)
@@ -300,9 +364,14 @@ func (sd spannerDatastore) watch(
 			}
 
 			if !tracked.IsEmpty() {
-				for _, revChange := range tracked.AsRevisionChanges(revisions.TimestampIDKeyLessThanFunc) {
+				changes, err := tracked.AsRevisionChanges(revisions.TimestampIDKeyLessThanFunc)
+				if err != nil {
+					return err
+				}
+
+				for _, revChange := range changes {
 					revChange := revChange
-					if !sendChange(&revChange) {
+					if !sendChange(revChange) {
 						return datastore.NewWatchDisconnectedErr()
 					}
 				}
@@ -310,7 +379,7 @@ func (sd spannerDatastore) watch(
 
 			if opts.Content&datastore.WatchCheckpoints == datastore.WatchCheckpoints {
 				for _, hbr := range record.HeartbeatRecords {
-					if !sendChange(&datastore.RevisionChanges{
+					if !sendChange(datastore.RevisionChanges{
 						Revision:     revisions.NewForTime(hbr.Timestamp),
 						IsCheckpoint: true,
 					}) {
@@ -349,17 +418,19 @@ func unmarshalSchemaDefinition(def unmarshallable, configValue any) error {
 	return nil
 }
 
-func relationTupleFromPrimaryKey(primaryKeyColumnValues map[string]any) *core.RelationTuple {
-	return &core.RelationTuple{
-		ResourceAndRelation: &core.ObjectAndRelation{
-			Namespace: primaryKeyColumnValues[colNamespace].(string),
-			ObjectId:  primaryKeyColumnValues[colObjectID].(string),
-			Relation:  primaryKeyColumnValues[colRelation].(string),
-		},
-		Subject: &core.ObjectAndRelation{
-			Namespace: primaryKeyColumnValues[colUsersetNamespace].(string),
-			ObjectId:  primaryKeyColumnValues[colUsersetObjectID].(string),
-			Relation:  primaryKeyColumnValues[colUsersetRelation].(string),
+func relationshipFromPrimaryKey(primaryKeyColumnValues map[string]any) tuple.Relationship {
+	return tuple.Relationship{
+		RelationshipReference: tuple.RelationshipReference{
+			Resource: tuple.ObjectAndRelation{
+				ObjectType: primaryKeyColumnValues[colNamespace].(string),
+				ObjectID:   primaryKeyColumnValues[colObjectID].(string),
+				Relation:   primaryKeyColumnValues[colRelation].(string),
+			},
+			Subject: tuple.ObjectAndRelation{
+				ObjectType: primaryKeyColumnValues[colUsersetNamespace].(string),
+				ObjectID:   primaryKeyColumnValues[colUsersetObjectID].(string),
+				Relation:   primaryKeyColumnValues[colUsersetRelation].(string),
+			},
 		},
 	}
 }

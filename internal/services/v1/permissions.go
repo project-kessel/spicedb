@@ -2,16 +2,22 @@ package v1
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"slices"
+	"strings"
 
 	"github.com/authzed/authzed-go/pkg/requestmeta"
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	"github.com/jzelinskie/stringz"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	cexpr "github.com/authzed/spicedb/internal/caveats"
 	dispatchpkg "github.com/authzed/spicedb/internal/dispatch"
@@ -20,18 +26,30 @@ import (
 	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/middleware/usagemetrics"
 	"github.com/authzed/spicedb/internal/namespace"
+	"github.com/authzed/spicedb/internal/relationships"
 	"github.com/authzed/spicedb/internal/services/shared"
 	"github.com/authzed/spicedb/pkg/cursor"
 	"github.com/authzed/spicedb/pkg/datastore"
+	dsoptions "github.com/authzed/spicedb/pkg/datastore/options"
 	"github.com/authzed/spicedb/pkg/middleware/consistency"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	dispatch "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
+	implv1 "github.com/authzed/spicedb/pkg/proto/impl/v1"
+	"github.com/authzed/spicedb/pkg/schema"
+	"github.com/authzed/spicedb/pkg/spiceerrors"
 	"github.com/authzed/spicedb/pkg/tuple"
 )
 
 func (ps *permissionServer) rewriteError(ctx context.Context, err error) error {
 	return shared.RewriteError(ctx, err, &shared.ConfigForErrors{
 		MaximumAPIDepth: ps.config.MaximumAPIDepth,
+	})
+}
+
+func (ps *permissionServer) rewriteErrorWithOptionalDebugTrace(ctx context.Context, err error, debugTrace *v1.DebugInformation) error {
+	return shared.RewriteError(ctx, err, &shared.ConfigForErrors{
+		MaximumAPIDepth: ps.config.MaximumAPIDepth,
+		DebugTrace:      debugTrace,
 	})
 }
 
@@ -79,28 +97,22 @@ func (ps *permissionServer) CheckPermission(ctx context.Context, req *v1.CheckPe
 
 	cr, metadata, err := computed.ComputeCheck(ctx, ps.dispatch,
 		computed.CheckParameters{
-			ResourceType: &core.RelationReference{
-				Namespace: req.Resource.ObjectType,
-				Relation:  req.Permission,
-			},
-			Subject: &core.ObjectAndRelation{
-				Namespace: req.Subject.Object.ObjectType,
-				ObjectId:  req.Subject.Object.ObjectId,
-				Relation:  normalizeSubjectRelation(req.Subject),
-			},
+			ResourceType:  tuple.RR(req.Resource.ObjectType, req.Permission),
+			Subject:       tuple.ONR(req.Subject.Object.ObjectType, req.Subject.Object.ObjectId, normalizeSubjectRelation(req.Subject)),
 			CaveatContext: caveatContext,
 			AtRevision:    atRevision,
 			MaximumDepth:  ps.config.MaximumAPIDepth,
 			DebugOption:   debugOption,
 		},
 		req.Resource.ObjectId,
+		ps.config.DispatchChunkSize,
 	)
 	usagemetrics.SetInContext(ctx, metadata)
 
 	var debugTrace *v1.DebugInformation
 	if debugOption != computed.NoDebugging && metadata.DebugInfo != nil {
 		// Convert the dispatch debug information into API debug information.
-		converted, cerr := ConvertCheckDispatchDebugInformation(ctx, caveatContext, metadata, ds)
+		converted, cerr := ConvertCheckDispatchDebugInformation(ctx, caveatContext, metadata.DebugInfo, ds)
 		if cerr != nil {
 			return nil, ps.rewriteError(ctx, cerr)
 		}
@@ -108,7 +120,21 @@ func (ps *permissionServer) CheckPermission(ctx context.Context, req *v1.CheckPe
 	}
 
 	if err != nil {
-		return nil, ps.rewriteError(ctx, err)
+		// If the error already contains debug information, rewrite it. This can happen if
+		// a dispatch error occurs and debug was requested.
+		if dispatchDebugInfo, ok := spiceerrors.GetDetails[*dispatch.DebugInformation](err); ok {
+			// Convert the dispatch debug information into API debug information.
+			converted, cerr := ConvertCheckDispatchDebugInformation(ctx, caveatContext, dispatchDebugInfo, ds)
+			if cerr != nil {
+				return nil, ps.rewriteError(ctx, cerr)
+			}
+
+			if converted != nil {
+				return nil, spiceerrors.AppendDetailsMetadata(err, spiceerrors.DebugTraceErrorDetailsKey, converted.String())
+			}
+		}
+
+		return nil, ps.rewriteErrorWithOptionalDebugTrace(ctx, err, debugTrace)
 	}
 
 	permissionship, partialCaveat := checkResultToAPITypes(cr)
@@ -144,12 +170,13 @@ func (ps *permissionServer) CheckBulkPermissions(ctx context.Context, req *v1.Ch
 	return res, nil
 }
 
-func pairItemFromCheckResult(checkResult *dispatch.ResourceCheckResult) *v1.CheckBulkPermissionsPair_Item {
+func pairItemFromCheckResult(checkResult *dispatch.ResourceCheckResult, debugTrace *v1.DebugInformation) *v1.CheckBulkPermissionsPair_Item {
 	permissionship, partialCaveat := checkResultToAPITypes(checkResult)
 	return &v1.CheckBulkPermissionsPair_Item{
 		Item: &v1.CheckBulkPermissionsResponseItem{
 			Permissionship:    permissionship,
 			PartialCaveatInfo: partialCaveat,
+			DebugTrace:        debugTrace,
 		},
 	}
 }
@@ -157,14 +184,14 @@ func pairItemFromCheckResult(checkResult *dispatch.ResourceCheckResult) *v1.Chec
 func requestItemFromResourceAndParameters(params *computed.CheckParameters, resourceID string) (*v1.CheckBulkPermissionsRequestItem, error) {
 	item := &v1.CheckBulkPermissionsRequestItem{
 		Resource: &v1.ObjectReference{
-			ObjectType: params.ResourceType.Namespace,
+			ObjectType: params.ResourceType.ObjectType,
 			ObjectId:   resourceID,
 		},
 		Permission: params.ResourceType.Relation,
 		Subject: &v1.SubjectReference{
 			Object: &v1.ObjectReference{
-				ObjectType: params.Subject.Namespace,
-				ObjectId:   params.Subject.ObjectId,
+				ObjectType: params.Subject.ObjectType,
+				ObjectId:   params.Subject.ObjectID,
 			},
 			OptionalRelation: denormalizeSubjectRelation(params.Subject.Relation),
 		},
@@ -368,7 +395,22 @@ func TranslateExpansionTree(node *core.RelationTupleTreeNode) *v1.PermissionRela
 	}
 }
 
+const lrv2CursorFlag = "lrv2"
+
 func (ps *permissionServer) LookupResources(req *v1.LookupResourcesRequest, resp v1.PermissionsService_LookupResourcesServer) error {
+	// NOTE: LRv2 is the only valid option, and we'll expect that all cursors include that flag.
+	// This is to preserve backward-compatibility in the meantime.
+	if req.OptionalCursor != nil {
+		_, _, err := cursor.GetCursorFlag(req.OptionalCursor, lrv2CursorFlag)
+		if err != nil {
+			return ps.rewriteError(resp.Context(), err)
+		}
+	}
+
+	if req.OptionalLimit > 0 && req.OptionalLimit > ps.config.MaxLookupResourcesLimit {
+		return ps.rewriteError(resp.Context(), NewExceedsMaximumLimitErr(uint64(req.OptionalLimit), uint64(ps.config.MaxLookupResourcesLimit)))
+	}
+
 	ctx := resp.Context()
 
 	atRevision, revisionReadAt, err := consistency.RevisionFromContext(ctx)
@@ -410,7 +452,7 @@ func (ps *permissionServer) LookupResources(req *v1.LookupResourcesRequest, resp
 	}
 
 	if req.OptionalCursor != nil {
-		decodedCursor, err := cursor.DecodeToDispatchCursor(req.OptionalCursor, lrRequestHash)
+		decodedCursor, _, err := cursor.DecodeToDispatchCursor(req.OptionalCursor, lrRequestHash)
 		if err != nil {
 			return ps.rewriteError(ctx, err)
 		}
@@ -419,18 +461,18 @@ func (ps *permissionServer) LookupResources(req *v1.LookupResourcesRequest, resp
 
 	alreadyPublishedPermissionedResourceIds := map[string]struct{}{}
 
-	stream := dispatchpkg.NewHandlingDispatchStream(ctx, func(result *dispatch.DispatchLookupResourcesResponse) error {
-		found := result.ResolvedResource
+	stream := dispatchpkg.NewHandlingDispatchStream(ctx, func(result *dispatch.DispatchLookupResources2Response) error {
+		found := result.Resource
 
 		dispatchpkg.AddResponseMetadata(respMetadata, result.Metadata)
 		currentCursor = result.AfterResponseCursor
 
 		var partial *v1.PartialCaveatInfo
 		permissionship := v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION
-		if found.Permissionship == dispatch.ResolvedResource_CONDITIONALLY_HAS_PERMISSION {
+		if len(found.MissingContextParams) > 0 {
 			permissionship = v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION
 			partial = &v1.PartialCaveatInfo{
-				MissingRequiredContext: found.MissingRequiredContext,
+				MissingRequiredContext: found.MissingContextParams,
 			}
 		} else if req.OptionalLimit == 0 {
 			if _, ok := alreadyPublishedPermissionedResourceIds[found.ResourceId]; ok {
@@ -438,10 +480,13 @@ func (ps *permissionServer) LookupResources(req *v1.LookupResourcesRequest, resp
 				return nil
 			}
 
+			// TODO(jschorr): Investigate something like a Trie here for better memory efficiency.
 			alreadyPublishedPermissionedResourceIds[found.ResourceId] = struct{}{}
 		}
 
-		encodedCursor, err := cursor.EncodeFromDispatchCursor(result.AfterResponseCursor, lrRequestHash, atRevision)
+		encodedCursor, err := cursor.EncodeFromDispatchCursor(result.AfterResponseCursor, lrRequestHash, atRevision, map[string]string{
+			lrv2CursorFlag: "1",
+		})
 		if err != nil {
 			return ps.rewriteError(ctx, err)
 		}
@@ -464,18 +509,23 @@ func (ps *permissionServer) LookupResources(req *v1.LookupResourcesRequest, resp
 		return err
 	}
 
-	err = ps.dispatch.DispatchLookupResources(
-		&dispatch.DispatchLookupResourcesRequest{
+	err = ps.dispatch.DispatchLookupResources2(
+		&dispatch.DispatchLookupResources2Request{
 			Metadata: &dispatch.ResolverMeta{
 				AtRevision:     atRevision.String(),
 				DepthRemaining: ps.config.MaximumAPIDepth,
 				TraversalBloom: bf,
 			},
-			ObjectRelation: &core.RelationReference{
+			ResourceRelation: &core.RelationReference{
 				Namespace: req.ResourceObjectType,
 				Relation:  req.Permission,
 			},
-			Subject: &core.ObjectAndRelation{
+			SubjectRelation: &core.RelationReference{
+				Namespace: req.Subject.Object.ObjectType,
+				Relation:  normalizeSubjectRelation(req.Subject),
+			},
+			SubjectIds: []string{req.Subject.Object.ObjectId},
+			TerminalSubject: &core.ObjectAndRelation{
 				Namespace: req.Subject.Object.ObjectType,
 				ObjectId:  req.Subject.Object.ObjectId,
 				Relation:  normalizeSubjectRelation(req.Subject),
@@ -494,6 +544,10 @@ func (ps *permissionServer) LookupResources(req *v1.LookupResourcesRequest, resp
 
 func (ps *permissionServer) LookupSubjects(req *v1.LookupSubjectsRequest, resp v1.PermissionsService_LookupSubjectsServer) error {
 	ctx := resp.Context()
+
+	if req.OptionalConcreteLimit != 0 {
+		return ps.rewriteError(ctx, status.Errorf(codes.Unimplemented, "concrete limit is not yet supported"))
+	}
 
 	atRevision, revisionReadAt, err := consistency.RevisionFromContext(ctx)
 	if err != nil {
@@ -619,7 +673,7 @@ func foundSubjectToResolvedSubject(ctx context.Context, foundSubject *dispatch.F
 	if foundSubject.GetCaveatExpression() != nil {
 		permissionship = v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION
 
-		cr, err := cexpr.RunCaveatExpression(ctx, foundSubject.GetCaveatExpression(), caveatContext, ds, cexpr.RunCaveatExpressionNoDebugging)
+		cr, err := cexpr.RunSingleCaveatExpression(ctx, foundSubject.GetCaveatExpression(), caveatContext, ds, cexpr.RunCaveatExpressionNoDebugging)
 		if err != nil {
 			return nil, err
 		}
@@ -676,4 +730,341 @@ func GetCaveatContext(ctx context.Context, caveatCtx *structpb.Struct, maxCaveat
 		caveatContext = caveatCtx.AsMap()
 	}
 	return caveatContext, nil
+}
+
+type loadBulkAdapter struct {
+	stream                 grpc.ClientStreamingServer[v1.ImportBulkRelationshipsRequest, v1.ImportBulkRelationshipsResponse]
+	referencedNamespaceMap map[string]*schema.Definition
+	referencedCaveatMap    map[string]*core.CaveatDefinition
+	current                tuple.Relationship
+	caveat                 core.ContextualizedCaveat
+
+	awaitingNamespaces []string
+	awaitingCaveats    []string
+
+	currentBatch []*v1.Relationship
+	numSent      int
+	err          error
+}
+
+func (a *loadBulkAdapter) Next(_ context.Context) (*tuple.Relationship, error) {
+	for a.err == nil && a.numSent == len(a.currentBatch) {
+		// Load a new batch
+		batch, err := a.stream.Recv()
+		if err != nil {
+			a.err = err
+			if errors.Is(a.err, io.EOF) {
+				return nil, nil
+			}
+			return nil, a.err
+		}
+
+		a.currentBatch = batch.Relationships
+		a.numSent = 0
+
+		a.awaitingNamespaces, a.awaitingCaveats = extractBatchNewReferencedNamespacesAndCaveats(
+			a.currentBatch,
+			a.referencedNamespaceMap,
+			a.referencedCaveatMap,
+		)
+	}
+
+	if len(a.awaitingNamespaces) > 0 || len(a.awaitingCaveats) > 0 {
+		// Shut down the stream to give our caller a chance to fill in this information
+		return nil, nil
+	}
+
+	a.current.RelationshipReference.Resource.ObjectType = a.currentBatch[a.numSent].Resource.ObjectType
+	a.current.RelationshipReference.Resource.ObjectID = a.currentBatch[a.numSent].Resource.ObjectId
+	a.current.RelationshipReference.Resource.Relation = a.currentBatch[a.numSent].Relation
+	a.current.Subject.ObjectType = a.currentBatch[a.numSent].Subject.Object.ObjectType
+	a.current.Subject.ObjectID = a.currentBatch[a.numSent].Subject.Object.ObjectId
+	a.current.Subject.Relation = stringz.DefaultEmpty(a.currentBatch[a.numSent].Subject.OptionalRelation, tuple.Ellipsis)
+
+	if a.currentBatch[a.numSent].OptionalCaveat != nil {
+		a.caveat.CaveatName = a.currentBatch[a.numSent].OptionalCaveat.CaveatName
+		a.caveat.Context = a.currentBatch[a.numSent].OptionalCaveat.Context
+		a.current.OptionalCaveat = &a.caveat
+	} else {
+		a.current.OptionalCaveat = nil
+	}
+
+	if a.currentBatch[a.numSent].OptionalExpiresAt != nil {
+		t := a.currentBatch[a.numSent].OptionalExpiresAt.AsTime()
+		a.current.OptionalExpiration = &t
+	} else {
+		a.current.OptionalExpiration = nil
+	}
+
+	a.current.OptionalIntegrity = nil
+
+	if err := relationships.ValidateOneRelationship(
+		a.referencedNamespaceMap,
+		a.referencedCaveatMap,
+		a.current,
+		relationships.ValidateRelationshipForCreateOrTouch,
+	); err != nil {
+		return nil, err
+	}
+
+	a.numSent++
+	return &a.current, nil
+}
+
+func (ps *permissionServer) ImportBulkRelationships(stream grpc.ClientStreamingServer[v1.ImportBulkRelationshipsRequest, v1.ImportBulkRelationshipsResponse]) error {
+	ds := datastoremw.MustFromContext(stream.Context())
+
+	var numWritten uint64
+	if _, err := ds.ReadWriteTx(stream.Context(), func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
+		loadedNamespaces := make(map[string]*schema.Definition, 2)
+		loadedCaveats := make(map[string]*core.CaveatDefinition, 0)
+
+		adapter := &loadBulkAdapter{
+			stream:                 stream,
+			referencedNamespaceMap: loadedNamespaces,
+			referencedCaveatMap:    loadedCaveats,
+			caveat:                 core.ContextualizedCaveat{},
+		}
+		resolver := schema.ResolverForDatastoreReader(rwt)
+		ts := schema.NewTypeSystem(resolver)
+
+		var streamWritten uint64
+		var err error
+		for ; adapter.err == nil && err == nil; streamWritten, err = rwt.BulkLoad(stream.Context(), adapter) {
+			numWritten += streamWritten
+
+			// The stream has terminated because we're awaiting namespace and/or caveat information
+			if len(adapter.awaitingNamespaces) > 0 {
+				nsDefs, err := rwt.LookupNamespacesWithNames(stream.Context(), adapter.awaitingNamespaces)
+				if err != nil {
+					return err
+				}
+
+				for _, nsDef := range nsDefs {
+					newDef, err := schema.NewDefinition(ts, nsDef.Definition)
+					if err != nil {
+						return err
+					}
+
+					loadedNamespaces[nsDef.Definition.Name] = newDef
+				}
+				adapter.awaitingNamespaces = nil
+			}
+
+			if len(adapter.awaitingCaveats) > 0 {
+				caveats, err := rwt.LookupCaveatsWithNames(stream.Context(), adapter.awaitingCaveats)
+				if err != nil {
+					return err
+				}
+
+				for _, caveat := range caveats {
+					loadedCaveats[caveat.Definition.Name] = caveat.Definition
+				}
+				adapter.awaitingCaveats = nil
+			}
+		}
+		numWritten += streamWritten
+
+		return err
+	}, dsoptions.WithDisableRetries(true)); err != nil {
+		return shared.RewriteErrorWithoutConfig(stream.Context(), err)
+	}
+
+	usagemetrics.SetInContext(stream.Context(), &dispatch.ResponseMeta{
+		// One request for the whole load
+		DispatchCount: 1,
+	})
+
+	return stream.SendAndClose(&v1.ImportBulkRelationshipsResponse{
+		NumLoaded: numWritten,
+	})
+}
+
+func (ps *permissionServer) ExportBulkRelationships(
+	req *v1.ExportBulkRelationshipsRequest,
+	resp grpc.ServerStreamingServer[v1.ExportBulkRelationshipsResponse],
+) error {
+	ctx := resp.Context()
+	atRevision, _, err := consistency.RevisionFromContext(ctx)
+	if err != nil {
+		return shared.RewriteErrorWithoutConfig(ctx, err)
+	}
+
+	return ExportBulk(ctx, datastoremw.MustFromContext(ctx), uint64(ps.config.MaxBulkExportRelationshipsLimit), req, atRevision, resp.Send)
+}
+
+// ExportBulk implements the ExportBulkRelationships API functionality. Given a datastore.Datastore, it will
+// export stream via the sender all relationships matched by the incoming request.
+// If no cursor is provided, it will fallback to the provided revision.
+func ExportBulk(ctx context.Context, ds datastore.Datastore, batchSize uint64, req *v1.ExportBulkRelationshipsRequest, fallbackRevision datastore.Revision, sender func(response *v1.ExportBulkRelationshipsResponse) error) error {
+	if req.OptionalLimit > 0 && uint64(req.OptionalLimit) > batchSize {
+		return shared.RewriteErrorWithoutConfig(ctx, NewExceedsMaximumLimitErr(uint64(req.OptionalLimit), batchSize))
+	}
+
+	atRevision := fallbackRevision
+	var curNamespace string
+	var cur dsoptions.Cursor
+	if req.OptionalCursor != nil {
+		var err error
+		atRevision, curNamespace, cur, err = decodeCursor(ds, req.OptionalCursor)
+		if err != nil {
+			return shared.RewriteErrorWithoutConfig(ctx, err)
+		}
+	}
+
+	reader := ds.SnapshotReader(atRevision)
+
+	namespaces, err := reader.ListAllNamespaces(ctx)
+	if err != nil {
+		return shared.RewriteErrorWithoutConfig(ctx, err)
+	}
+
+	// Make sure the namespaces are always in a stable order
+	slices.SortFunc(namespaces, func(
+		lhs datastore.RevisionedDefinition[*core.NamespaceDefinition],
+		rhs datastore.RevisionedDefinition[*core.NamespaceDefinition],
+	) int {
+		return strings.Compare(lhs.Definition.Name, rhs.Definition.Name)
+	})
+
+	// Skip the namespaces that are already fully returned
+	for cur != nil && len(namespaces) > 0 && namespaces[0].Definition.Name < curNamespace {
+		namespaces = namespaces[1:]
+	}
+
+	limit := batchSize
+	if req.OptionalLimit > 0 {
+		limit = uint64(req.OptionalLimit)
+	}
+
+	// Pre-allocate all of the relationships that we might need in order to
+	// make export easier and faster for the garbage collector.
+	relsArray := make([]v1.Relationship, limit)
+	objArray := make([]v1.ObjectReference, limit)
+	subArray := make([]v1.SubjectReference, limit)
+	subObjArray := make([]v1.ObjectReference, limit)
+	caveatArray := make([]v1.ContextualizedCaveat, limit)
+	for i := range relsArray {
+		relsArray[i].Resource = &objArray[i]
+		relsArray[i].Subject = &subArray[i]
+		relsArray[i].Subject.Object = &subObjArray[i]
+	}
+
+	emptyRels := make([]*v1.Relationship, limit)
+	// The number of batches/dispatches for the purpose of usage metrics
+	var batches uint32
+	for _, ns := range namespaces {
+		rels := emptyRels
+
+		// Reset the cursor between namespaces.
+		if ns.Definition.Name != curNamespace {
+			cur = nil
+		}
+
+		// Skip this namespace if a resource type filter was specified.
+		if req.OptionalRelationshipFilter != nil && req.OptionalRelationshipFilter.ResourceType != "" {
+			if ns.Definition.Name != req.OptionalRelationshipFilter.ResourceType {
+				continue
+			}
+		}
+
+		// Setup the filter to use for the relationships.
+		relationshipFilter := datastore.RelationshipsFilter{OptionalResourceType: ns.Definition.Name}
+		if req.OptionalRelationshipFilter != nil {
+			rf, err := datastore.RelationshipsFilterFromPublicFilter(req.OptionalRelationshipFilter)
+			if err != nil {
+				return shared.RewriteErrorWithoutConfig(ctx, err)
+			}
+
+			// Overload the namespace name with the one from the request, because each iteration is for a different namespace.
+			rf.OptionalResourceType = ns.Definition.Name
+			relationshipFilter = rf
+		}
+
+		// We want to keep iterating as long as we're sending full batches.
+		// To bootstrap this loop, we enter the first time with a full rels
+		// slice of dummy rels that were never sent.
+		for uint64(len(rels)) == limit {
+			// Lop off any rels we've already sent
+			rels = rels[:0]
+
+			relFn := func(rel tuple.Relationship) {
+				offset := len(rels)
+				rels = append(rels, &relsArray[offset]) // nozero
+
+				v1Rel := &relsArray[offset]
+				v1Rel.Resource.ObjectType = rel.RelationshipReference.Resource.ObjectType
+				v1Rel.Resource.ObjectId = rel.RelationshipReference.Resource.ObjectID
+				v1Rel.Relation = rel.RelationshipReference.Resource.Relation
+				v1Rel.Subject.Object.ObjectType = rel.RelationshipReference.Subject.ObjectType
+				v1Rel.Subject.Object.ObjectId = rel.RelationshipReference.Subject.ObjectID
+				v1Rel.Subject.OptionalRelation = denormalizeSubjectRelation(rel.RelationshipReference.Subject.Relation)
+
+				if rel.OptionalCaveat != nil {
+					caveatArray[offset].CaveatName = rel.OptionalCaveat.CaveatName
+					caveatArray[offset].Context = rel.OptionalCaveat.Context
+					v1Rel.OptionalCaveat = &caveatArray[offset]
+				} else {
+					caveatArray[offset].CaveatName = ""
+					caveatArray[offset].Context = nil
+					v1Rel.OptionalCaveat = nil
+				}
+
+				if rel.OptionalExpiration != nil {
+					v1Rel.OptionalExpiresAt = timestamppb.New(*rel.OptionalExpiration)
+				} else {
+					v1Rel.OptionalExpiresAt = nil
+				}
+			}
+
+			cur, err = queryForEach(
+				ctx,
+				reader,
+				relationshipFilter,
+				relFn,
+				dsoptions.WithLimit(&limit),
+				dsoptions.WithAfter(cur),
+				dsoptions.WithSort(dsoptions.ByResource),
+			)
+			if err != nil {
+				return shared.RewriteErrorWithoutConfig(ctx, err)
+			}
+
+			if len(rels) == 0 {
+				continue
+			}
+
+			encoded, err := cursor.Encode(&implv1.DecodedCursor{
+				VersionOneof: &implv1.DecodedCursor_V1{
+					V1: &implv1.V1Cursor{
+						Revision: atRevision.String(),
+						Sections: []string{
+							ns.Definition.Name,
+							tuple.MustString(*dsoptions.ToRelationship(cur)),
+						},
+					},
+				},
+			})
+			if err != nil {
+				return shared.RewriteErrorWithoutConfig(ctx, err)
+			}
+
+			if err := sender(&v1.ExportBulkRelationshipsResponse{
+				AfterResultCursor: encoded,
+				Relationships:     rels,
+			}); err != nil {
+				return shared.RewriteErrorWithoutConfig(ctx, err)
+			}
+			// Increment batches for usagemetrics
+			batches++
+		}
+	}
+
+	// Record usage metrics
+	respMetadata := &dispatch.ResponseMeta{
+		DispatchCount: batches,
+	}
+	usagemetrics.SetInContext(ctx, respMetadata)
+
+	return nil
 }

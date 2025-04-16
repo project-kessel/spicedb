@@ -4,11 +4,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/authzed/spicedb/pkg/development"
-	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	devinterface "github.com/authzed/spicedb/pkg/proto/developer/v1"
 	v1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
 	"github.com/authzed/spicedb/pkg/schemadsl/generator"
@@ -38,8 +38,8 @@ func runOperation(devContext *development.DevContext, operation *devinterface.Op
 
 		cr, err := development.RunCheck(
 			devContext,
-			operation.CheckParameters.Resource,
-			operation.CheckParameters.Subject,
+			tuple.FromCoreObjectAndRelation(operation.CheckParameters.Resource),
+			tuple.FromCoreObjectAndRelation(operation.CheckParameters.Subject),
 			caveatContext,
 		)
 		if err != nil {
@@ -48,9 +48,11 @@ func runOperation(devContext *development.DevContext, operation *devinterface.Op
 				err,
 				devinterface.DeveloperError_CHECK_WATCH,
 				0, 0,
-				tuple.MustString(&core.RelationTuple{
-					ResourceAndRelation: operation.CheckParameters.Resource,
-					Subject:             operation.CheckParameters.Subject,
+				tuple.MustString(tuple.Relationship{
+					RelationshipReference: tuple.RelationshipReference{
+						Resource: tuple.FromCoreObjectAndRelation(operation.CheckParameters.Resource),
+						Subject:  tuple.FromCoreObjectAndRelation(operation.CheckParameters.Subject),
+					},
 				}),
 			)
 			if wireErr != nil {
@@ -131,6 +133,18 @@ func runOperation(devContext *development.DevContext, operation *devinterface.Op
 			ValidationResult: &devinterface.RunValidationResult{
 				UpdatedValidationYaml: updatedValidationYaml,
 				ValidationErrors:      validationErrors,
+			},
+		}, nil
+
+	case operation.SchemaWarningsParameters != nil:
+		warnings, err := development.GetWarnings(context.Background(), devContext)
+		if err != nil {
+			return nil, err
+		}
+
+		return &devinterface.OperationResult{
+			SchemaWarningsResult: &devinterface.SchemaWarningsResult{
+				Warnings: warnings,
 			},
 		}, nil
 

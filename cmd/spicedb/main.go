@@ -2,12 +2,16 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 
+	mcobra "github.com/muesli/mango-cobra"
+	"github.com/muesli/roff"
 	"github.com/rs/zerolog"
 	"github.com/sercand/kuberesolver/v5"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/balancer"
+
 	_ "google.golang.org/grpc/xds"
 
 	log "github.com/authzed/spicedb/internal/logging"
@@ -21,13 +25,15 @@ import (
 var errParsing = errors.New("parsing error")
 
 func main() {
+	// Set up root logger
+	// This will typically be overwritten by the logging setup for a given command.
+	log.SetGlobalLogger(zerolog.New(os.Stderr).Level(zerolog.InfoLevel))
+
 	// Enable Kubernetes gRPC resolver
 	kuberesolver.RegisterInCluster()
 
 	// Enable consistent hashring gRPC load balancer
 	balancer.Register(cmdutil.ConsistentHashringBuilder)
-
-	log.SetGlobalLogger(zerolog.New(os.Stderr).Level(zerolog.InfoLevel))
 
 	// Create a root command
 	rootCmd := cmd.NewRootCommand("spicedb")
@@ -36,7 +42,9 @@ func main() {
 		cmd.Println(cmd.UsageString())
 		return errParsing
 	})
-	cmd.RegisterRootFlags(rootCmd)
+	if err := cmd.RegisterRootFlags(rootCmd); err != nil {
+		log.Fatal().Err(err).Msg("failed to register root flags")
+	}
 
 	// Add a version command
 	versionCmd := cmd.NewVersionCommand(rootCmd.Use)
@@ -89,6 +97,25 @@ func main() {
 	testingCmd := cmd.NewTestingCommand(rootCmd.Use, &testServerConfig)
 	cmd.RegisterTestingFlags(testingCmd, &testServerConfig)
 	rootCmd.AddCommand(testingCmd)
+
+	rootCmd.AddCommand(&cobra.Command{
+		Use:                   "man",
+		Short:                 "Generate the SpiceDB manpage",
+		SilenceUsage:          true,
+		DisableFlagsInUseLine: true,
+		Hidden:                true,
+		Args:                  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			manPage, err := mcobra.NewManPage(1, cmd.Root())
+			if err != nil {
+				return err
+			}
+
+			_, err = fmt.Fprint(os.Stdout, manPage.Build(roff.NewDocument()))
+			return err
+		},
+	})
+
 	if err := rootCmd.Execute(); err != nil {
 		if !errors.Is(err, errParsing) {
 			log.Err(err).Msg("terminated with errors")

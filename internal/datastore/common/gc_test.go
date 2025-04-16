@@ -23,12 +23,15 @@ type fakeGC struct {
 	deleter      gcDeleter
 	metrics      gcMetrics
 	lock         sync.RWMutex
+	wasLocked    bool
+	wasUnlocked  bool
 }
 
 type gcMetrics struct {
-	deleteBeforeTxCount   int
-	markedCompleteCount   int
-	resetGCCompletedCount int
+	deleteBeforeTxCount    int
+	markedCompleteCount    int
+	resetGCCompletedCount  int
+	deleteExpiredRelsCount int
 }
 
 func newFakeGC(deleter gcDeleter) fakeGC {
@@ -36,6 +39,22 @@ func newFakeGC(deleter gcDeleter) fakeGC {
 		lastRevision: 0,
 		deleter:      deleter,
 	}
+}
+
+func (gc *fakeGC) LockForGCRun(ctx context.Context) (bool, error) {
+	gc.lock.Lock()
+	defer gc.lock.Unlock()
+
+	gc.wasLocked = true
+	return true, nil
+}
+
+func (gc *fakeGC) UnlockAfterGCRun() error {
+	gc.lock.Lock()
+	defer gc.lock.Unlock()
+
+	gc.wasUnlocked = true
+	return nil
 }
 
 func (*fakeGC) ReadyState(_ context.Context) (datastore.ReadyState, error) {
@@ -68,7 +87,16 @@ func (gc *fakeGC) DeleteBeforeTx(_ context.Context, rev datastore.Revision) (Del
 
 	revInt := rev.(revisions.TransactionIDRevision).TransactionID()
 
-	return gc.deleter.DeleteBeforeTx(int64(revInt))
+	return gc.deleter.DeleteBeforeTx(revInt)
+}
+
+func (gc *fakeGC) DeleteExpiredRels(_ context.Context) (int64, error) {
+	gc.lock.Lock()
+	defer gc.lock.Unlock()
+
+	gc.metrics.deleteExpiredRelsCount++
+
+	return gc.deleter.DeleteExpiredRels()
 }
 
 func (gc *fakeGC) HasGCRun() bool {
@@ -101,27 +129,36 @@ func (gc *fakeGC) GetMetrics() gcMetrics {
 
 // Allows specifying different deletion behaviors for tests
 type gcDeleter interface {
-	DeleteBeforeTx(revision int64) (DeletionCounts, error)
+	DeleteBeforeTx(revision uint64) (DeletionCounts, error)
+	DeleteExpiredRels() (int64, error)
 }
 
 // Always error trying to perform a delete
 type alwaysErrorDeleter struct{}
 
-func (alwaysErrorDeleter) DeleteBeforeTx(_ int64) (DeletionCounts, error) {
+func (alwaysErrorDeleter) DeleteBeforeTx(_ uint64) (DeletionCounts, error) {
 	return DeletionCounts{}, fmt.Errorf("delete error")
+}
+
+func (alwaysErrorDeleter) DeleteExpiredRels() (int64, error) {
+	return 0, fmt.Errorf("delete error")
 }
 
 // Only error on specific revisions
 type revisionErrorDeleter struct {
-	errorOnRevisions []int64
+	errorOnRevisions []uint64
 }
 
-func (d revisionErrorDeleter) DeleteBeforeTx(revision int64) (DeletionCounts, error) {
+func (d revisionErrorDeleter) DeleteBeforeTx(revision uint64) (DeletionCounts, error) {
 	if slices.Contains(d.errorOnRevisions, revision) {
 		return DeletionCounts{}, fmt.Errorf("delete error")
 	}
 
 	return DeletionCounts{}, nil
+}
+
+func (d revisionErrorDeleter) DeleteExpiredRels() (int64, error) {
+	return 0, nil
 }
 
 func TestGCFailureBackoff(t *testing.T) {
@@ -178,7 +215,7 @@ func TestGCFailureBackoffReset(t *testing.T) {
 		// Error on revisions 1 - 5, giving the exponential
 		// backoff enough time to fail the test if the interval
 		// is not reset properly.
-		errorOnRevisions: []int64{1, 2, 3, 4, 5},
+		errorOnRevisions: []uint64{1, 2, 3, 4, 5},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -199,4 +236,28 @@ func TestGCFailureBackoffReset(t *testing.T) {
 	// If it is not reset, the last exponential backoff interval will not give
 	// the GC enough time to run.
 	require.Greater(t, gc.GetMetrics().markedCompleteCount, 20, "Next interval was not reset with backoff")
+}
+
+func TestGCUnlockOnTimeout(t *testing.T) {
+	gc := newFakeGC(alwaysErrorDeleter{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		interval := 10 * time.Millisecond
+		window := 10 * time.Second
+		timeout := 1 * time.Millisecond
+
+		require.Error(t, StartGarbageCollector(ctx, &gc, interval, window, timeout))
+	}()
+
+	time.Sleep(30 * time.Millisecond)
+	require.False(t, gc.HasGCRun(), "GC should not have run")
+
+	gc.lock.Lock()
+	defer gc.lock.Unlock()
+
+	require.True(t, gc.wasLocked, "GC should have been locked")
+	require.True(t, gc.wasUnlocked, "GC should have been unlocked")
 }

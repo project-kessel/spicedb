@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/authzed/spicedb/internal/dispatch"
 	"github.com/authzed/spicedb/internal/middleware"
@@ -42,6 +43,8 @@ var writeUpdateCounter = promauto.NewHistogramVec(prometheus.HistogramOpts{
 	Buckets:   []float64{0, 1, 2, 5, 10, 15, 25, 50, 100, 250, 500, 1000},
 }, []string{"kind"})
 
+const MaximumTransactionMetadataSize = 65000 // bytes. Limited by the BLOB size used in MySQL driver
+
 // PermissionsServerConfig is configuration for the permissions server.
 type PermissionsServerConfig struct {
 	// MaxUpdatesPerWrite holds the maximum number of updates allowed per
@@ -55,6 +58,9 @@ type PermissionsServerConfig struct {
 	// MaximumAPIDepth is the default/starting depth remaining for API calls made
 	// to the permissions server.
 	MaximumAPIDepth uint32
+
+	// DispatchChunkSize is the maximum number of elements to dispach in a dispatch call
+	DispatchChunkSize uint16
 
 	// StreamingAPITimeout is the timeout for streaming APIs when no response has been
 	// recently received.
@@ -73,6 +79,25 @@ type PermissionsServerConfig struct {
 	// MaxCheckBulkConcurrency defines the maximum number of concurrent checks that can be
 	// made in a single CheckBulkPermissions call.
 	MaxCheckBulkConcurrency uint16
+
+	// MaxReadRelationshipsLimit defines the maximum number of relationships that can be read
+	// in a single ReadRelationships call.
+	MaxReadRelationshipsLimit uint32
+
+	// MaxDeleteRelationshipsLimit defines the maximum number of relationships that can be deleted
+	// in a single DeleteRelationships call.
+	MaxDeleteRelationshipsLimit uint32
+
+	// MaxLookupResourcesLimit defines the maximum number of resources that can be looked up in a
+	// single LookupResources call.
+	MaxLookupResourcesLimit uint32
+
+	// MaxBulkExportRelationshipsLimit defines the maximum number of relationships that can be
+	// exported in a single BulkExportRelationships call.
+	MaxBulkExportRelationshipsLimit uint32
+
+	// ExpiringRelationshipsEnabled defines whether or not expiring relationships are enabled.
+	ExpiringRelationshipsEnabled bool
 }
 
 // NewPermissionsServer creates a PermissionsServiceServer instance.
@@ -81,13 +106,20 @@ func NewPermissionsServer(
 	config PermissionsServerConfig,
 ) v1.PermissionsServiceServer {
 	configWithDefaults := PermissionsServerConfig{
-		MaxPreconditionsCount:      defaultIfZero(config.MaxPreconditionsCount, 1000),
-		MaxUpdatesPerWrite:         defaultIfZero(config.MaxUpdatesPerWrite, 1000),
-		MaximumAPIDepth:            defaultIfZero(config.MaximumAPIDepth, 50),
-		StreamingAPITimeout:        defaultIfZero(config.StreamingAPITimeout, 30*time.Second),
-		MaxCaveatContextSize:       defaultIfZero(config.MaxCaveatContextSize, 4096),
-		MaxRelationshipContextSize: defaultIfZero(config.MaxRelationshipContextSize, 25_000),
-		MaxDatastoreReadPageSize:   defaultIfZero(config.MaxDatastoreReadPageSize, 1_000),
+		MaxPreconditionsCount:           defaultIfZero(config.MaxPreconditionsCount, 1000),
+		MaxUpdatesPerWrite:              defaultIfZero(config.MaxUpdatesPerWrite, 1000),
+		MaximumAPIDepth:                 defaultIfZero(config.MaximumAPIDepth, 50),
+		StreamingAPITimeout:             defaultIfZero(config.StreamingAPITimeout, 30*time.Second),
+		MaxCaveatContextSize:            defaultIfZero(config.MaxCaveatContextSize, 4096),
+		MaxRelationshipContextSize:      defaultIfZero(config.MaxRelationshipContextSize, 25_000),
+		MaxDatastoreReadPageSize:        defaultIfZero(config.MaxDatastoreReadPageSize, 1_000),
+		MaxReadRelationshipsLimit:       defaultIfZero(config.MaxReadRelationshipsLimit, 1_000),
+		MaxDeleteRelationshipsLimit:     defaultIfZero(config.MaxDeleteRelationshipsLimit, 1_000),
+		MaxLookupResourcesLimit:         defaultIfZero(config.MaxLookupResourcesLimit, 1_000),
+		MaxBulkExportRelationshipsLimit: defaultIfZero(config.MaxBulkExportRelationshipsLimit, 100_000),
+		DispatchChunkSize:               defaultIfZero(config.DispatchChunkSize, 100),
+		MaxCheckBulkConcurrency:         defaultIfZero(config.MaxCheckBulkConcurrency, 50),
+		ExpiringRelationshipsEnabled:    true,
 	}
 
 	return &permissionServer{
@@ -111,6 +143,7 @@ func NewPermissionsServer(
 			maxCaveatContextSize: configWithDefaults.MaxCaveatContextSize,
 			maxConcurrency:       configWithDefaults.MaxCheckBulkConcurrency,
 			dispatch:             dispatch,
+			dispatchChunkSize:    configWithDefaults.DispatchChunkSize,
 		},
 	}
 }
@@ -126,6 +159,10 @@ type permissionServer struct {
 }
 
 func (ps *permissionServer) ReadRelationships(req *v1.ReadRelationshipsRequest, resp v1.PermissionsService_ReadRelationshipsServer) error {
+	if req.OptionalLimit > 0 && req.OptionalLimit > ps.config.MaxReadRelationshipsLimit {
+		return ps.rewriteError(resp.Context(), NewExceedsMaximumLimitErr(uint64(req.OptionalLimit), uint64(ps.config.MaxReadRelationshipsLimit)))
+	}
+
 	ctx := resp.Context()
 	atRevision, revisionReadAt, err := consistency.RevisionFromContext(ctx)
 	if err != nil {
@@ -142,7 +179,7 @@ func (ps *permissionServer) ReadRelationships(req *v1.ReadRelationshipsRequest, 
 		DispatchCount: 1,
 	})
 
-	limit := 0
+	limit := uint64(0)
 	var startCursor options.Cursor
 
 	rrRequestHash, err := computeReadRelationshipsRequestHash(req)
@@ -151,7 +188,7 @@ func (ps *permissionServer) ReadRelationships(req *v1.ReadRelationshipsRequest, 
 	}
 
 	if req.OptionalCursor != nil {
-		decodedCursor, err := cursor.DecodeToDispatchCursor(req.OptionalCursor, rrRequestHash)
+		decodedCursor, _, err := cursor.DecodeToDispatchCursor(req.OptionalCursor, rrRequestHash)
 		if err != nil {
 			return ps.rewriteError(ctx, err)
 		}
@@ -160,19 +197,19 @@ func (ps *permissionServer) ReadRelationships(req *v1.ReadRelationshipsRequest, 
 			return ps.rewriteError(ctx, NewInvalidCursorErr("did not find expected resume relationship"))
 		}
 
-		parsed := tuple.Parse(decodedCursor.Sections[0])
-		if parsed == nil {
+		parsed, err := tuple.Parse(decodedCursor.Sections[0])
+		if err != nil {
 			return ps.rewriteError(ctx, NewInvalidCursorErr("could not parse resume relationship"))
 		}
 
-		startCursor = options.Cursor(parsed)
+		startCursor = options.ToCursor(parsed)
 	}
 
 	pageSize := ps.config.MaxDatastoreReadPageSize
 	if req.OptionalLimit > 0 {
-		limit = int(req.OptionalLimit)
-		if uint64(limit) < pageSize {
-			pageSize = uint64(limit)
+		limit = uint64(req.OptionalLimit)
+		if limit < pageSize {
+			pageSize = limit
 		}
 	}
 
@@ -181,7 +218,7 @@ func (ps *permissionServer) ReadRelationships(req *v1.ReadRelationshipsRequest, 
 		return ps.rewriteError(ctx, fmt.Errorf("error filtering: %w", err))
 	}
 
-	tupleIterator, err := pagination.NewPaginatedIterator(
+	it, err := pagination.NewPaginatedIterator(
 		ctx,
 		ds,
 		dsFilter,
@@ -192,54 +229,55 @@ func (ps *permissionServer) ReadRelationships(req *v1.ReadRelationshipsRequest, 
 	if err != nil {
 		return ps.rewriteError(ctx, err)
 	}
-	defer tupleIterator.Close()
 
 	response := &v1.ReadRelationshipsResponse{
 		ReadAt: revisionReadAt,
+		Relationship: &v1.Relationship{
+			Resource: &v1.ObjectReference{},
+			Subject: &v1.SubjectReference{
+				Object: &v1.ObjectReference{},
+			},
+		},
 	}
-	targetRel := tuple.NewRelationship()
-	targetCaveat := &v1.ContextualizedCaveat{}
-	returnedCount := 0
 
 	dispatchCursor := &dispatchv1.Cursor{
 		DispatchVersion: 1,
 		Sections:        []string{""},
 	}
 
-	for tpl := tupleIterator.Next(); tpl != nil; tpl = tupleIterator.Next() {
+	var returnedCount uint64
+	for rel, err := range it {
+		if err != nil {
+			return ps.rewriteError(ctx, fmt.Errorf("error when reading tuples: %w", err))
+		}
+
 		if limit > 0 && returnedCount >= limit {
 			break
 		}
 
-		if tupleIterator.Err() != nil {
-			return ps.rewriteError(ctx, fmt.Errorf("error when reading tuples: %w", tupleIterator.Err()))
-		}
-
-		dispatchCursor.Sections[0] = tuple.StringWithoutCaveat(tpl)
-		encodedCursor, err := cursor.EncodeFromDispatchCursor(dispatchCursor, rrRequestHash, atRevision)
+		dispatchCursor.Sections[0] = tuple.StringWithoutCaveatOrExpiration(rel)
+		encodedCursor, err := cursor.EncodeFromDispatchCursor(dispatchCursor, rrRequestHash, atRevision, nil)
 		if err != nil {
 			return ps.rewriteError(ctx, err)
 		}
 
-		tuple.MustToRelationshipMutating(tpl, targetRel, targetCaveat)
-		response.Relationship = targetRel
+		tuple.CopyToV1Relationship(rel, response.Relationship)
 		response.AfterResultCursor = encodedCursor
+
 		err = resp.Send(response)
 		if err != nil {
 			return ps.rewriteError(ctx, fmt.Errorf("error when streaming tuple: %w", err))
 		}
 		returnedCount++
 	}
-
-	if tupleIterator.Err() != nil {
-		return ps.rewriteError(ctx, fmt.Errorf("error when reading tuples: %w", tupleIterator.Err()))
-	}
-
-	tupleIterator.Close()
 	return nil
 }
 
 func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.WriteRelationshipsRequest) (*v1.WriteRelationshipsResponse, error) {
+	if err := ps.validateTransactionMetadata(req.OptionalTransactionMetadata); err != nil {
+		return nil, ps.rewriteError(ctx, err)
+	}
+
 	ds := datastoremw.MustFromContext(ctx)
 
 	span := trace.SpanFromContext(ctx)
@@ -262,7 +300,8 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 	// Check for duplicate updates and create the set of caveat names to load.
 	updateRelationshipSet := mapz.NewSet[string]()
 	for _, update := range req.Updates {
-		tupleStr := tuple.StringRelationshipWithoutCaveat(update.Relationship)
+		// TODO(jschorr): Change to struct-based keys.
+		tupleStr := tuple.V1StringRelationshipWithoutCaveatOrExpiration(update.Relationship)
 		if !updateRelationshipSet.Add(tupleStr) {
 			return nil, ps.rewriteError(
 				ctx,
@@ -275,11 +314,22 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 				NewMaxRelationshipContextError(update, ps.config.MaxRelationshipContextSize),
 			)
 		}
+
+		if !ps.config.ExpiringRelationshipsEnabled && update.Relationship.OptionalExpiresAt != nil {
+			return nil, ps.rewriteError(
+				ctx,
+				fmt.Errorf("support for expiring relationships is not enabled"),
+			)
+		}
 	}
 
 	// Execute the write operation(s).
 	span.AddEvent("read write transaction")
-	tupleUpdates := tuple.UpdateFromRelationshipUpdates(req.Updates)
+	relUpdates, err := tuple.UpdatesFromV1RelationshipUpdates(req.Updates)
+	if err != nil {
+		return nil, ps.rewriteError(ctx, err)
+	}
+
 	revision, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
 		span.AddEvent("preconditions")
 
@@ -292,7 +342,7 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 
 		// Validate the updates.
 		span.AddEvent("validate updates")
-		err := relationships.ValidateRelationshipUpdates(ctx, rwt, tupleUpdates)
+		err := relationships.ValidateRelationshipUpdates(ctx, rwt, relUpdates)
 		if err != nil {
 			return ps.rewriteError(ctx, err)
 		}
@@ -313,8 +363,8 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 		}
 
 		span.AddEvent("write relationships")
-		return rwt.WriteRelationships(ctx, tupleUpdates)
-	})
+		return rwt.WriteRelationships(ctx, relUpdates)
+	}, options.WithMetadata(req.OptionalTransactionMetadata))
 	if err != nil {
 		return nil, ps.rewriteError(ctx, err)
 	}
@@ -334,7 +384,28 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 	}, nil
 }
 
+func (ps *permissionServer) validateTransactionMetadata(metadata *structpb.Struct) error {
+	if metadata == nil {
+		return nil
+	}
+
+	b, err := metadata.MarshalJSON()
+	if err != nil {
+		return err
+	}
+
+	if len(b) > MaximumTransactionMetadataSize {
+		return NewTransactionMetadataTooLargeErr(len(b), MaximumTransactionMetadataSize)
+	}
+
+	return nil
+}
+
 func (ps *permissionServer) DeleteRelationships(ctx context.Context, req *v1.DeleteRelationshipsRequest) (*v1.DeleteRelationshipsResponse, error) {
+	if err := ps.validateTransactionMetadata(req.OptionalTransactionMetadata); err != nil {
+		return nil, ps.rewriteError(ctx, err)
+	}
+
 	if len(req.OptionalPreconditions) > int(ps.config.MaxPreconditionsCount) {
 		return nil, ps.rewriteError(
 			ctx,
@@ -342,9 +413,14 @@ func (ps *permissionServer) DeleteRelationships(ctx context.Context, req *v1.Del
 		)
 	}
 
+	if req.OptionalLimit > 0 && req.OptionalLimit > ps.config.MaxDeleteRelationshipsLimit {
+		return nil, ps.rewriteError(ctx, NewExceedsMaximumLimitErr(uint64(req.OptionalLimit), uint64(ps.config.MaxDeleteRelationshipsLimit)))
+	}
+
 	ds := datastoremw.MustFromContext(ctx)
 	deletionProgress := v1.DeleteRelationshipsResponse_DELETION_PROGRESS_COMPLETE
 
+	var deletedRelationshipCount uint64
 	revision, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
 		if err := validateRelationshipsFilter(ctx, req.RelationshipFilter, rwt); err != nil {
 			return err
@@ -380,31 +456,29 @@ func (ps *permissionServer) DeleteRelationships(ctx context.Context, req *v1.Del
 				return ps.rewriteError(ctx, err)
 			}
 
-			iter, err := rwt.QueryRelationships(ctx, filter, options.WithLimit(&limitPlusOne))
+			it, err := rwt.QueryRelationships(ctx, filter, options.WithLimit(&limitPlusOne))
 			if err != nil {
 				return ps.rewriteError(ctx, err)
 			}
-			defer iter.Close()
 
-			counter := 0
-			for tpl := iter.Next(); tpl != nil; tpl = iter.Next() {
-				if iter.Err() != nil {
+			counter := uint64(0)
+			for _, err := range it {
+				if err != nil {
 					return ps.rewriteError(ctx, err)
 				}
 
-				if counter == int(limit) {
+				if counter == limit {
 					return ps.rewriteError(ctx, NewCouldNotTransactionallyDeleteErr(req.RelationshipFilter, req.OptionalLimit))
 				}
 
 				counter++
 			}
-			iter.Close()
 		}
 
 		// Delete with the specified limit.
 		if req.OptionalLimit > 0 {
 			deleteLimit := uint64(req.OptionalLimit)
-			reachedLimit, err := rwt.DeleteRelationships(ctx, req.RelationshipFilter, options.WithDeleteLimit(&deleteLimit))
+			drc, reachedLimit, err := rwt.DeleteRelationships(ctx, req.RelationshipFilter, options.WithDeleteLimit(&deleteLimit))
 			if err != nil {
 				return err
 			}
@@ -413,20 +487,22 @@ func (ps *permissionServer) DeleteRelationships(ctx context.Context, req *v1.Del
 				deletionProgress = v1.DeleteRelationshipsResponse_DELETION_PROGRESS_PARTIAL
 			}
 
+			deletedRelationshipCount = drc
 			return nil
 		}
 
 		// Otherwise, kick off an unlimited deletion.
-		_, err = rwt.DeleteRelationships(ctx, req.RelationshipFilter)
+		deletedRelationshipCount, _, err = rwt.DeleteRelationships(ctx, req.RelationshipFilter)
 		return err
-	})
+	}, options.WithMetadata(req.OptionalTransactionMetadata))
 	if err != nil {
 		return nil, ps.rewriteError(ctx, err)
 	}
 
 	return &v1.DeleteRelationshipsResponse{
-		DeletedAt:        zedtoken.MustNewFromRevision(revision),
-		DeletionProgress: deletionProgress,
+		DeletedAt:                 zedtoken.MustNewFromRevision(revision),
+		DeletionProgress:          deletionProgress,
+		RelationshipsDeletedCount: deletedRelationshipCount,
 	}, nil
 }
 
@@ -471,16 +547,20 @@ func validateRelationshipsFilter(ctx context.Context, filter *v1.RelationshipFil
 
 	// Ensure the resource ID and the resource ID prefix are not set at the same time.
 	if filter.OptionalResourceId != "" && filter.OptionalResourceIdPrefix != "" {
-		return NewInvalidFilterErr("resource_id and resource_id_prefix cannot be set at the same time")
+		return NewInvalidFilterErr("resource_id and resource_id_prefix cannot be set at the same time", filter.String())
 	}
 
 	// Ensure that at least one field is set.
+	return checkIfFilterIsEmpty(filter)
+}
+
+func checkIfFilterIsEmpty(filter *v1.RelationshipFilter) error {
 	if filter.ResourceType == "" &&
 		filter.OptionalResourceId == "" &&
 		filter.OptionalResourceIdPrefix == "" &&
 		filter.OptionalRelation == "" &&
 		filter.OptionalSubjectFilter == nil {
-		return NewInvalidFilterErr("at least one field must be set")
+		return NewInvalidFilterErr("at least one field must be set", filter.String())
 	}
 
 	return nil

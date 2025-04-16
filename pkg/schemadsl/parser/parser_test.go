@@ -118,11 +118,22 @@ func TestParser(t *testing.T) {
 		{"super large test", "superlarge"},
 		{"invalid permission name test", "invalid_perm_name"},
 		{"union positions test", "unionpos"},
+		{"arrow operations test", "arrowops"},
+		{"arrow illegal operations test", "arrowillegalops"},
+		{"arrow illegal function test", "arrowillegalfunc"},
+		{"caveat with keyword parameter test", "caveatwithkeywordparam"},
+		{"use expiration test", "useexpiration"},
+		{"use expiration keyword test", "useexpirationkeyword"},
+		{"expiration non-keyword test", "expirationnonkeyword"},
+		{"invalid use", "invaliduse"},
+		{"use after definition", "useafterdef"},
+		{"invalid use expiration test", "invaliduseexpiration"},
 	}
 
 	for _, test := range parserTests {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			root := Parse(createAstNode, input.Source(test.name), test.input())
 			parseTree := getParseTree((root).(*testNode), 0)
 			assert := assert.New(t)

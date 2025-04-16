@@ -3,6 +3,9 @@ package mysql
 import (
 	"fmt"
 	"time"
+
+	"github.com/authzed/spicedb/internal/datastore/common"
+	log "github.com/authzed/spicedb/internal/logging"
 )
 
 const (
@@ -21,6 +24,12 @@ const (
 	defaultEnablePrometheusStats             = false
 	defaultMaxRetries                        = 8
 	defaultGCEnabled                         = true
+	defaultCredentialsProviderName           = ""
+	defaultFilterMaximumIDCount              = 100
+	defaultColumnOptimizationOption          = common.ColumnOptimizationOptionNone
+	defaultExpirationDisabled                = false
+	// no follower delay by default, it should only be set if using read replicas
+	defaultFollowerReadDelay = 0
 )
 
 type mysqlOptions struct {
@@ -29,6 +38,7 @@ type mysqlOptions struct {
 	gcInterval                  time.Duration
 	gcMaxOperationTime          time.Duration
 	maxRevisionStalenessPercent float64
+	followerReadDelay           time.Duration
 	watchBufferLength           uint16
 	watchBufferWriteTimeout     time.Duration
 	tablePrefix                 string
@@ -40,6 +50,11 @@ type mysqlOptions struct {
 	maxRetries                  uint8
 	lockWaitTimeoutSeconds      *uint8
 	gcEnabled                   bool
+	credentialsProviderName     string
+	filterMaximumIDCount        uint16
+	allowedMigrations           []string
+	columnOptimizationOption    common.ColumnOptimizationOption
+	expirationDisabled          bool
 }
 
 // Option provides the facility to configure how clients within the
@@ -61,6 +76,11 @@ func generateConfig(options []Option) (mysqlOptions, error) {
 		enablePrometheusStats:       defaultEnablePrometheusStats,
 		maxRetries:                  defaultMaxRetries,
 		gcEnabled:                   defaultGCEnabled,
+		credentialsProviderName:     defaultCredentialsProviderName,
+		filterMaximumIDCount:        defaultFilterMaximumIDCount,
+		columnOptimizationOption:    defaultColumnOptimizationOption,
+		expirationDisabled:          defaultExpirationDisabled,
+		followerReadDelay:           defaultFollowerReadDelay,
 	}
 
 	for _, option := range options {
@@ -74,6 +94,11 @@ func generateConfig(options []Option) (mysqlOptions, error) {
 			computed.revisionQuantization,
 			computed.gcWindow,
 		)
+	}
+
+	if computed.filterMaximumIDCount == 0 {
+		computed.filterMaximumIDCount = 100
+		log.Warn().Msg("filterMaximumIDCount not set, defaulting to 100")
 	}
 
 	return computed, nil
@@ -114,6 +139,14 @@ func MaxRevisionStalenessPercent(stalenessPercent float64) Option {
 	return func(mo *mysqlOptions) {
 		mo.maxRevisionStalenessPercent = stalenessPercent
 	}
+}
+
+// FollowerReadDelay is the amount of time to round down the current time when
+// reading from a read replica is expected.
+//
+// This value defaults to 0 seconds.
+func FollowerReadDelay(delay time.Duration) Option {
+	return func(mo *mysqlOptions) { mo.followerReadDelay = delay }
 }
 
 // GCWindow is the maximum age of a passed revision that will be considered
@@ -234,5 +267,42 @@ func GCEnabled(isGCEnabled bool) Option {
 func GCMaxOperationTime(time time.Duration) Option {
 	return func(mo *mysqlOptions) {
 		mo.gcMaxOperationTime = time
+	}
+}
+
+// CredentialsProviderName is the name of the CredentialsProvider implementation to use
+// for dynamically retrieving the datastore credentials at runtime
+//
+// Empty by default.
+func CredentialsProviderName(credentialsProviderName string) Option {
+	return func(mo *mysqlOptions) { mo.credentialsProviderName = credentialsProviderName }
+}
+
+// FilterMaximumIDCount is the maximum number of IDs that can be used to filter IDs in queries
+func FilterMaximumIDCount(filterMaximumIDCount uint16) Option {
+	return func(mo *mysqlOptions) { mo.filterMaximumIDCount = filterMaximumIDCount }
+}
+
+// AllowedMigrations configures a set of additional migrations that will pass
+// the health check (head migration is always allowed).
+func AllowedMigrations(allowedMigrations []string) Option {
+	return func(mo *mysqlOptions) { mo.allowedMigrations = allowedMigrations }
+}
+
+// WithColumnOptimization configures the column optimization strategy for the MySQL datastore.
+func WithColumnOptimization(isEnabled bool) Option {
+	return func(mo *mysqlOptions) {
+		if isEnabled {
+			mo.columnOptimizationOption = common.ColumnOptimizationOptionStaticValues
+		} else {
+			mo.columnOptimizationOption = common.ColumnOptimizationOptionNone
+		}
+	}
+}
+
+// WithExpirationDisabled disables the expiration of relationships in the MySQL datastore.
+func WithExpirationDisabled(isDisabled bool) Option {
+	return func(mo *mysqlOptions) {
+		mo.expirationDisabled = isDisabled
 	}
 }

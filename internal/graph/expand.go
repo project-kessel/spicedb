@@ -3,7 +3,6 @@ package graph
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/authzed/spicedb/internal/caveats"
 
@@ -15,6 +14,7 @@ import (
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	v1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
 	"github.com/authzed/spicedb/pkg/spiceerrors"
+	"github.com/authzed/spicedb/pkg/tuple"
 )
 
 // NewConcurrentExpander creates an instance of ConcurrentExpander
@@ -67,27 +67,26 @@ func (ce *ConcurrentExpander) expandDirect(
 			resultChan <- expandResultError(NewExpansionFailureErr(err), emptyMetadata)
 			return
 		}
-		defer it.Close()
 
 		var foundNonTerminalUsersets []*core.DirectSubject
 		var foundTerminalUsersets []*core.DirectSubject
-		for tpl := it.Next(); tpl != nil; tpl = it.Next() {
-			if it.Err() != nil {
-				resultChan <- expandResultError(NewExpansionFailureErr(it.Err()), emptyMetadata)
+		for rel, err := range it {
+			if err != nil {
+				resultChan <- expandResultError(NewExpansionFailureErr(err), emptyMetadata)
 				return
 			}
 
 			ds := &core.DirectSubject{
-				Subject:          tpl.Subject,
-				CaveatExpression: caveats.CaveatAsExpr(tpl.Caveat),
+				Subject:          rel.Subject.ToCoreONR(),
+				CaveatExpression: caveats.CaveatAsExpr(rel.OptionalCaveat),
 			}
-			if tpl.Subject.Relation == Ellipsis {
+
+			if rel.Subject.Relation == Ellipsis {
 				foundTerminalUsersets = append(foundTerminalUsersets, ds)
 			} else {
 				foundNonTerminalUsersets = append(foundNonTerminalUsersets, ds)
 			}
 		}
-		it.Close()
 
 		// If only shallow expansion was required, or there are no non-terminal subjects found,
 		// nothing more to do.
@@ -191,11 +190,22 @@ func (ce *ConcurrentExpander) expandSetOperation(ctx context.Context, req Valida
 		case *core.SetOperation_Child_UsersetRewrite:
 			requests = append(requests, ce.expandUsersetRewrite(ctx, req, child.UsersetRewrite))
 		case *core.SetOperation_Child_TupleToUserset:
-			requests = append(requests, ce.expandTupleToUserset(ctx, req, child.TupleToUserset))
+			requests = append(requests, expandTupleToUserset(ctx, ce, req, child.TupleToUserset, expandAny))
+		case *core.SetOperation_Child_FunctionedTupleToUserset:
+			switch child.FunctionedTupleToUserset.Function {
+			case core.FunctionedTupleToUserset_FUNCTION_ANY:
+				requests = append(requests, expandTupleToUserset(ctx, ce, req, child.FunctionedTupleToUserset, expandAny))
+
+			case core.FunctionedTupleToUserset_FUNCTION_ALL:
+				requests = append(requests, expandTupleToUserset(ctx, ce, req, child.FunctionedTupleToUserset, expandAll))
+
+			default:
+				return expandError(spiceerrors.MustBugf("unknown function `%s` in expand", child.FunctionedTupleToUserset.Function))
+			}
 		case *core.SetOperation_Child_XNil:
 			requests = append(requests, emptyExpansion(req.ResourceAndRelation))
 		default:
-			return expandError(fmt.Errorf("unknown set operation child `%T` in expand", child))
+			return expandError(spiceerrors.MustBugf("unknown set operation child `%T` in expand", child))
 		}
 	}
 	return func(ctx context.Context, resultChan chan<- ExpandResult) {
@@ -211,28 +221,28 @@ func (ce *ConcurrentExpander) dispatch(req ValidatedExpandRequest) ReduceableExp
 	}
 }
 
-func (ce *ConcurrentExpander) expandComputedUserset(ctx context.Context, req ValidatedExpandRequest, cu *core.ComputedUserset, tpl *core.RelationTuple) ReduceableExpandFunc {
+func (ce *ConcurrentExpander) expandComputedUserset(ctx context.Context, req ValidatedExpandRequest, cu *core.ComputedUserset, rel *tuple.Relationship) ReduceableExpandFunc {
 	log.Ctx(ctx).Trace().Str("relation", cu.Relation).Msg("computed userset")
-	var start *core.ObjectAndRelation
+	var start tuple.ObjectAndRelation
 	if cu.Object == core.ComputedUserset_TUPLE_USERSET_OBJECT {
-		if tpl == nil {
+		if rel == nil {
 			return expandError(spiceerrors.MustBugf("computed userset for tupleset without tuple"))
 		}
 
-		start = tpl.Subject
+		start = rel.Subject
 	} else if cu.Object == core.ComputedUserset_TUPLE_OBJECT {
-		if tpl != nil {
-			start = tpl.ResourceAndRelation
+		if rel != nil {
+			start = rel.Resource
 		} else {
-			start = req.ResourceAndRelation
+			start = tuple.FromCoreObjectAndRelation(req.ResourceAndRelation)
 		}
 	}
 
 	// Check if the target relation exists. If not, return nothing.
 	ds := datastoremw.MustFromContext(ctx).SnapshotReader(req.Revision)
-	err := namespace.CheckNamespaceAndRelation(ctx, start.Namespace, cu.Relation, true, ds)
+	err := namespace.CheckNamespaceAndRelation(ctx, start.ObjectType, cu.Relation, true, ds)
 	if err != nil {
-		if errors.As(err, &namespace.ErrRelationNotFound{}) {
+		if errors.As(err, &namespace.RelationNotFoundError{}) {
 			return emptyExpansion(req.ResourceAndRelation)
 		}
 
@@ -242,8 +252,8 @@ func (ce *ConcurrentExpander) expandComputedUserset(ctx context.Context, req Val
 	return ce.dispatch(ValidatedExpandRequest{
 		&v1.DispatchExpandRequest{
 			ResourceAndRelation: &core.ObjectAndRelation{
-				Namespace: start.Namespace,
-				ObjectId:  start.ObjectId,
+				Namespace: start.ObjectType,
+				ObjectId:  start.ObjectID,
 				Relation:  cu.Relation,
 			},
 			Metadata:      decrementDepth(req.Metadata),
@@ -253,33 +263,39 @@ func (ce *ConcurrentExpander) expandComputedUserset(ctx context.Context, req Val
 	})
 }
 
-func (ce *ConcurrentExpander) expandTupleToUserset(_ context.Context, req ValidatedExpandRequest, ttu *core.TupleToUserset) ReduceableExpandFunc {
+type expandFunc func(ctx context.Context, start *core.ObjectAndRelation, requests []ReduceableExpandFunc) ExpandResult
+
+func expandTupleToUserset[T relation](
+	_ context.Context,
+	ce *ConcurrentExpander,
+	req ValidatedExpandRequest,
+	ttu ttu[T],
+	expandFunc expandFunc,
+) ReduceableExpandFunc {
 	return func(ctx context.Context, resultChan chan<- ExpandResult) {
 		ds := datastoremw.MustFromContext(ctx).SnapshotReader(req.Revision)
 		it, err := ds.QueryRelationships(ctx, datastore.RelationshipsFilter{
 			OptionalResourceType:     req.ResourceAndRelation.Namespace,
 			OptionalResourceIds:      []string{req.ResourceAndRelation.ObjectId},
-			OptionalResourceRelation: ttu.Tupleset.Relation,
+			OptionalResourceRelation: ttu.GetTupleset().GetRelation(),
 		})
 		if err != nil {
 			resultChan <- expandResultError(NewExpansionFailureErr(err), emptyMetadata)
 			return
 		}
-		defer it.Close()
 
 		var requestsToDispatch []ReduceableExpandFunc
-		for tpl := it.Next(); tpl != nil; tpl = it.Next() {
-			if it.Err() != nil {
-				resultChan <- expandResultError(NewExpansionFailureErr(it.Err()), emptyMetadata)
+		for rel, err := range it {
+			if err != nil {
+				resultChan <- expandResultError(NewExpansionFailureErr(err), emptyMetadata)
 				return
 			}
 
-			toDispatch := ce.expandComputedUserset(ctx, req, ttu.ComputedUserset, tpl)
-			requestsToDispatch = append(requestsToDispatch, decorateWithCaveatIfNecessary(toDispatch, caveats.CaveatAsExpr(tpl.Caveat)))
+			toDispatch := ce.expandComputedUserset(ctx, req, ttu.GetComputedUserset(), &rel)
+			requestsToDispatch = append(requestsToDispatch, decorateWithCaveatIfNecessary(toDispatch, caveats.CaveatAsExpr(rel.OptionalCaveat)))
 		}
-		it.Close()
 
-		resultChan <- expandAny(ctx, req.ResourceAndRelation, requestsToDispatch)
+		resultChan <- expandFunc(ctx, req.ResourceAndRelation, requestsToDispatch)
 	}
 }
 
@@ -329,7 +345,7 @@ func expandSetOperation(
 	for _, resultChan := range resultChans {
 		select {
 		case result := <-resultChan:
-			responseMetadata = combineResponseMetadata(responseMetadata, result.Resp.Metadata)
+			responseMetadata = combineResponseMetadata(ctx, responseMetadata, result.Resp.Metadata)
 			if result.Err != nil {
 				return expandResultError(result.Err, responseMetadata)
 			}

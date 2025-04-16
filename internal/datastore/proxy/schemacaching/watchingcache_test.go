@@ -15,37 +15,31 @@ import (
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/datastore/options"
 	corev1 "github.com/authzed/spicedb/pkg/proto/core/v1"
+	"github.com/authzed/spicedb/pkg/testutil"
 )
 
-var goleakIgnores = []goleak.Option{
-	goleak.IgnoreTopFunction("github.com/golang/glog.(*loggingT).flushDaemon"),
-	goleak.IgnoreTopFunction("github.com/outcaste-io/ristretto.(*lfuPolicy).processItems"),
-	goleak.IgnoreTopFunction("github.com/outcaste-io/ristretto.(*Cache).processItems"),
-	goleak.IgnoreCurrent(),
-}
-
 func TestWatchingCacheBasicOperation(t *testing.T) {
-	defer goleak.VerifyNone(t, goleakIgnores...)
+	defer goleak.VerifyNone(t, append(testutil.GoLeakIgnores(), goleak.IgnoreCurrent())...)
 
 	fakeDS := &fakeDatastore{
 		headRevision: rev("0"),
 		namespaces:   map[string][]fakeEntry[datastore.RevisionedNamespace, *corev1.NamespaceDefinition]{},
 		caveats:      map[string][]fakeEntry[datastore.RevisionedCaveat, *corev1.CaveatDefinition]{},
-		schemaChan:   make(chan *datastore.RevisionChanges, 1),
+		schemaChan:   make(chan datastore.RevisionChanges, 1),
 		errChan:      make(chan error, 1),
 	}
 
-	wcache := createWatchingCacheProxy(fakeDS, cache.NoopCache(), 1*time.Hour, 100*time.Millisecond)
+	wcache := createWatchingCacheProxy(fakeDS, cache.NoopCache[cache.StringKey, *cacheEntry](), 1*time.Hour, 100*time.Millisecond)
 	require.NoError(t, wcache.startSync(context.Background()))
 
 	// Ensure no namespaces are found.
 	_, _, err := wcache.SnapshotReader(rev("1")).ReadNamespaceByName(context.Background(), "somenamespace")
-	require.ErrorAs(t, err, &datastore.ErrNamespaceNotFound{})
+	require.ErrorAs(t, err, &datastore.NamespaceNotFoundError{})
 	require.False(t, wcache.namespaceCache.inFallbackMode)
 
 	// Ensure a re-read also returns not found, even before a checkpoint is received.
 	_, _, err = wcache.SnapshotReader(rev("1")).ReadNamespaceByName(context.Background(), "somenamespace")
-	require.ErrorAs(t, err, &datastore.ErrNamespaceNotFound{})
+	require.ErrorAs(t, err, &datastore.NamespaceNotFoundError{})
 
 	// Send a checkpoint for revision 1.
 	fakeDS.sendCheckpoint(rev("1"))
@@ -103,7 +97,7 @@ func TestWatchingCacheBasicOperation(t *testing.T) {
 	// Read at revision 5.
 	_, _, err = wcache.SnapshotReader(rev("5")).ReadNamespaceByName(context.Background(), "somenamespace")
 	require.Error(t, err)
-	require.ErrorAs(t, err, &datastore.ErrNamespaceNotFound{}, "missing not found in: %v", err)
+	require.ErrorAs(t, err, &datastore.NamespaceNotFoundError{}, "missing not found in: %v", err)
 
 	// Lookup at revision 5.
 	nsDefs, err = wcache.SnapshotReader(rev("5")).LookupNamespacesWithNames(context.Background(), []string{"somenamespace"})
@@ -128,17 +122,17 @@ func TestWatchingCacheBasicOperation(t *testing.T) {
 }
 
 func TestWatchingCacheParallelOperations(t *testing.T) {
-	defer goleak.VerifyNone(t, goleakIgnores...)
+	defer goleak.VerifyNone(t, append(testutil.GoLeakIgnores(), goleak.IgnoreCurrent())...)
 
 	fakeDS := &fakeDatastore{
 		headRevision: rev("0"),
 		namespaces:   map[string][]fakeEntry[datastore.RevisionedNamespace, *corev1.NamespaceDefinition]{},
 		caveats:      map[string][]fakeEntry[datastore.RevisionedCaveat, *corev1.CaveatDefinition]{},
-		schemaChan:   make(chan *datastore.RevisionChanges, 1),
+		schemaChan:   make(chan datastore.RevisionChanges, 1),
 		errChan:      make(chan error, 1),
 	}
 
-	wcache := createWatchingCacheProxy(fakeDS, cache.NoopCache(), 1*time.Hour, 100*time.Millisecond)
+	wcache := createWatchingCacheProxy(fakeDS, cache.NoopCache[cache.StringKey, *cacheEntry](), 1*time.Hour, 100*time.Millisecond)
 	require.NoError(t, wcache.startSync(context.Background()))
 
 	// Run some operations in parallel.
@@ -148,7 +142,7 @@ func TestWatchingCacheParallelOperations(t *testing.T) {
 	go (func() {
 		// Read somenamespace (which should not be found)
 		_, _, err := wcache.SnapshotReader(rev("1")).ReadNamespaceByName(context.Background(), "somenamespace")
-		require.ErrorAs(t, err, &datastore.ErrNamespaceNotFound{})
+		require.ErrorAs(t, err, &datastore.NamespaceNotFoundError{})
 		require.False(t, wcache.namespaceCache.inFallbackMode)
 
 		// Write somenamespace.
@@ -165,12 +159,12 @@ func TestWatchingCacheParallelOperations(t *testing.T) {
 	go (func() {
 		// Read anothernamespace (which should not be found)
 		_, _, err := wcache.SnapshotReader(rev("1")).ReadNamespaceByName(context.Background(), "anothernamespace")
-		require.ErrorAs(t, err, &datastore.ErrNamespaceNotFound{})
+		require.ErrorAs(t, err, &datastore.NamespaceNotFoundError{})
 		require.False(t, wcache.namespaceCache.inFallbackMode)
 
 		// Read again (which should still not be found)
 		_, _, err = wcache.SnapshotReader(rev("3")).ReadNamespaceByName(context.Background(), "anothernamespace")
-		require.ErrorAs(t, err, &datastore.ErrNamespaceNotFound{})
+		require.ErrorAs(t, err, &datastore.NamespaceNotFoundError{})
 		require.False(t, wcache.namespaceCache.inFallbackMode)
 
 		wg.Done()
@@ -184,17 +178,17 @@ func TestWatchingCacheParallelOperations(t *testing.T) {
 }
 
 func TestWatchingCacheParallelReaderWriter(t *testing.T) {
-	defer goleak.VerifyNone(t, goleakIgnores...)
+	defer goleak.VerifyNone(t, append(testutil.GoLeakIgnores(), goleak.IgnoreCurrent())...)
 
 	fakeDS := &fakeDatastore{
 		headRevision: rev("0"),
 		namespaces:   map[string][]fakeEntry[datastore.RevisionedNamespace, *corev1.NamespaceDefinition]{},
 		caveats:      map[string][]fakeEntry[datastore.RevisionedCaveat, *corev1.CaveatDefinition]{},
-		schemaChan:   make(chan *datastore.RevisionChanges, 1),
+		schemaChan:   make(chan datastore.RevisionChanges, 1),
 		errChan:      make(chan error, 1),
 	}
 
-	wcache := createWatchingCacheProxy(fakeDS, cache.NoopCache(), 1*time.Hour, 100*time.Millisecond)
+	wcache := createWatchingCacheProxy(fakeDS, cache.NoopCache[cache.StringKey, *cacheEntry](), 1*time.Hour, 100*time.Millisecond)
 	require.NoError(t, wcache.startSync(context.Background()))
 
 	// Write somenamespace.
@@ -236,20 +230,20 @@ func TestWatchingCacheParallelReaderWriter(t *testing.T) {
 }
 
 func TestWatchingCacheFallbackToStandardCache(t *testing.T) {
-	defer goleak.VerifyNone(t, goleakIgnores...)
+	defer goleak.VerifyNone(t, append(testutil.GoLeakIgnores(), goleak.IgnoreCurrent())...)
 
 	fakeDS := &fakeDatastore{
 		headRevision: rev("0"),
 		namespaces:   map[string][]fakeEntry[datastore.RevisionedNamespace, *corev1.NamespaceDefinition]{},
 		caveats:      map[string][]fakeEntry[datastore.RevisionedCaveat, *corev1.CaveatDefinition]{},
-		schemaChan:   make(chan *datastore.RevisionChanges, 1),
+		schemaChan:   make(chan datastore.RevisionChanges, 1),
 		errChan:      make(chan error, 1),
 	}
 
-	c, err := cache.NewCache(&cache.Config{
+	c, err := cache.NewStandardCache[cache.StringKey, *cacheEntry](&cache.Config{
 		NumCounters: 1000,
-		MaxCost:     1000,
-		DefaultTTL:  1000 * time.Second,
+		MaxCost:     10000,
+		DefaultTTL:  10000 * time.Second,
 	})
 	require.NoError(t, err)
 
@@ -257,19 +251,21 @@ func TestWatchingCacheFallbackToStandardCache(t *testing.T) {
 	require.NoError(t, wcache.startSync(context.Background()))
 
 	// Ensure the namespace is not found, but is cached in the fallback caching layer.
-	_, _, err = wcache.SnapshotReader(rev("1")).ReadNamespaceByName(context.Background(), "somenamespace")
-	require.ErrorAs(t, err, &datastore.ErrNamespaceNotFound{})
+	r := rev("1")
+	_, _, err = wcache.SnapshotReader(r).ReadNamespaceByName(context.Background(), "somenamespace")
+	require.ErrorAs(t, err, &datastore.NamespaceNotFoundError{})
 	require.False(t, wcache.namespaceCache.inFallbackMode)
 
-	entry, ok := c.Get("n:somenamespace@1")
+	expectedKey := cache.StringKey("n:somenamespace@" + r.String())
+	entry, ok := c.Get(expectedKey)
 	require.True(t, ok)
-	require.NotNil(t, entry.(*cacheEntry).notFound)
+	require.NotNil(t, entry.notFound)
 
 	// Disable reading and ensure it still works, via the fallback cache.
 	fakeDS.readsDisabled = true
 
 	_, _, err = wcache.SnapshotReader(rev("1")).ReadNamespaceByName(context.Background(), "somenamespace")
-	require.ErrorAs(t, err, &datastore.ErrNamespaceNotFound{})
+	require.ErrorAs(t, err, &datastore.NamespaceNotFoundError{})
 	require.False(t, wcache.namespaceCache.inFallbackMode)
 
 	// Close the proxy and ensure the background goroutines are terminated.
@@ -278,13 +274,13 @@ func TestWatchingCacheFallbackToStandardCache(t *testing.T) {
 }
 
 func TestWatchingCachePrepopulated(t *testing.T) {
-	defer goleak.VerifyNone(t, goleakIgnores...)
+	defer goleak.VerifyNone(t, append(testutil.GoLeakIgnores(), goleak.IgnoreCurrent())...)
 
 	fakeDS := &fakeDatastore{
 		headRevision: rev("4"),
 		namespaces:   map[string][]fakeEntry[datastore.RevisionedNamespace, *corev1.NamespaceDefinition]{},
 		caveats:      map[string][]fakeEntry[datastore.RevisionedCaveat, *corev1.CaveatDefinition]{},
-		schemaChan:   make(chan *datastore.RevisionChanges, 1),
+		schemaChan:   make(chan datastore.RevisionChanges, 1),
 		errChan:      make(chan error, 1),
 		existingNamespaces: []datastore.RevisionedNamespace{
 			datastore.RevisionedDefinition[*corev1.NamespaceDefinition]{
@@ -302,7 +298,7 @@ func TestWatchingCachePrepopulated(t *testing.T) {
 		},
 	}
 
-	c, err := cache.NewCache(&cache.Config{
+	c, err := cache.NewStandardCache[cache.StringKey, *cacheEntry](&cache.Config{
 		NumCounters: 1000,
 		MaxCost:     1000,
 		DefaultTTL:  1000 * time.Second,
@@ -328,13 +324,17 @@ type fakeDatastore struct {
 	namespaces map[string][]fakeEntry[datastore.RevisionedNamespace, *corev1.NamespaceDefinition]
 	caveats    map[string][]fakeEntry[datastore.RevisionedCaveat, *corev1.CaveatDefinition]
 
-	schemaChan chan *datastore.RevisionChanges
+	schemaChan chan datastore.RevisionChanges
 	errChan    chan error
 
 	readsDisabled      bool
 	existingNamespaces []datastore.RevisionedNamespace
 
 	lock sync.RWMutex
+}
+
+func (fds *fakeDatastore) MetricsID() (string, error) {
+	return "fake", nil
 }
 
 func (fds *fakeDatastore) updateNamespace(name string, def *corev1.NamespaceDefinition, revision datastore.Revision) {
@@ -354,7 +354,7 @@ func (fds *fakeDatastore) updateCaveat(name string, def *corev1.CaveatDefinition
 }
 
 func (fds *fakeDatastore) sendCheckpoint(revision datastore.Revision) {
-	fds.schemaChan <- &datastore.RevisionChanges{
+	fds.schemaChan <- datastore.RevisionChanges{
 		Revision:     revision,
 		IsCheckpoint: true,
 	}
@@ -377,7 +377,7 @@ func updateDef[T datastore.SchemaDefinition](
 	def T,
 	isDelete bool,
 	revision datastore.Revision,
-	schemaChan chan *datastore.RevisionChanges,
+	schemaChan chan datastore.RevisionChanges,
 ) {
 	slice, ok := defs[name]
 	if !ok {
@@ -394,12 +394,12 @@ func updateDef[T datastore.SchemaDefinition](
 	defs[name] = slice
 
 	if isDelete {
-		schemaChan <- &datastore.RevisionChanges{
+		schemaChan <- datastore.RevisionChanges{
 			Revision:          revision,
 			DeletedNamespaces: []string{name},
 		}
 	} else {
-		schemaChan <- &datastore.RevisionChanges{
+		schemaChan <- datastore.RevisionChanges{
 			Revision:           revision,
 			ChangedDefinitions: []datastore.SchemaDefinition{def},
 		}
@@ -510,6 +510,10 @@ func (*fakeDatastore) Features(context.Context) (*datastore.Features, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
+func (*fakeDatastore) OfflineFeatures() (*datastore.Features, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
 func (*fakeDatastore) OptimizedRevision(context.Context) (datastore.Revision, error) {
 	return nil, fmt.Errorf("not implemented")
 }
@@ -526,7 +530,7 @@ func (*fakeDatastore) Statistics(context.Context) (datastore.Stats, error) {
 	return datastore.Stats{}, fmt.Errorf("not implemented")
 }
 
-func (fds *fakeDatastore) Watch(_ context.Context, _ datastore.Revision, opts datastore.WatchOptions) (<-chan *datastore.RevisionChanges, <-chan error) {
+func (fds *fakeDatastore) Watch(_ context.Context, _ datastore.Revision, opts datastore.WatchOptions) (<-chan datastore.RevisionChanges, <-chan error) {
 	if opts.Content&datastore.WatchSchema != datastore.WatchSchema {
 		panic("unexpected option")
 	}
@@ -537,6 +541,14 @@ func (fds *fakeDatastore) Watch(_ context.Context, _ datastore.Revision, opts da
 type fakeSnapshotReader struct {
 	fds *fakeDatastore
 	rev datastore.Revision
+}
+
+func (fsr *fakeSnapshotReader) CountRelationships(ctx context.Context, name string) (int, error) {
+	return -1, fmt.Errorf("not implemented")
+}
+
+func (fsr *fakeSnapshotReader) LookupCounters(ctx context.Context) ([]datastore.RelationshipCounter, error) {
+	return nil, fmt.Errorf("not implemented")
 }
 
 func (fsr *fakeSnapshotReader) LookupNamespacesWithNames(_ context.Context, nsNames []string) ([]datastore.RevisionedDefinition[*corev1.NamespaceDefinition], error) {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/IBM/pgxpoolprometheus"
 	sq "github.com/Masterminds/squirrel"
+	"github.com/ccoveille/go-safecast"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,11 +24,13 @@ import (
 	"github.com/authzed/spicedb/internal/datastore/common"
 	"github.com/authzed/spicedb/internal/datastore/crdb/migrations"
 	"github.com/authzed/spicedb/internal/datastore/crdb/pool"
+	"github.com/authzed/spicedb/internal/datastore/crdb/schema"
 	pgxcommon "github.com/authzed/spicedb/internal/datastore/postgres/common"
 	"github.com/authzed/spicedb/internal/datastore/revisions"
 	log "github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/datastore/options"
+	"github.com/authzed/spicedb/pkg/spiceerrors"
 )
 
 func init() {
@@ -45,25 +48,7 @@ var (
 )
 
 const (
-	Engine            = "cockroachdb"
-	tableNamespace    = "namespace_config"
-	tableTuple        = "relation_tuple"
-	tableTransactions = "transactions"
-	tableCaveat       = "caveat"
-
-	colNamespace         = "namespace"
-	colConfig            = "serialized_config"
-	colTimestamp         = "timestamp"
-	colTransactionKey    = "key"
-	colObjectID          = "object_id"
-	colRelation          = "relation"
-	colUsersetNamespace  = "userset_namespace"
-	colUsersetObjectID   = "userset_object_id"
-	colUsersetRelation   = "userset_relation"
-	colCaveatName        = "name"
-	colCaveatDefinition  = "definition"
-	colCaveatContextName = "caveat_name"
-	colCaveatContext     = "caveat_context"
+	Engine = "cockroachdb"
 
 	errUnableToInstantiate = "unable to instantiate datastore"
 	errRevision            = "unable to find revision: %w"
@@ -72,6 +57,8 @@ const (
 	queryTransactionNowPreV23 = querySelectNow
 	queryTransactionNow       = "SHOW COMMIT TIMESTAMP"
 	queryShowZoneConfig       = "SHOW ZONE CONFIGURATION FOR RANGE default;"
+
+	spicedbTransactionKey = "$spicedb_transaction_key"
 )
 
 var livingTupleConstraints = []string{"pk_relation_tuple"}
@@ -82,17 +69,24 @@ func newCRDBDatastore(ctx context.Context, url string, options ...Option) (datas
 		return nil, common.RedactAndLogSensitiveConnString(ctx, errUnableToInstantiate, err, url)
 	}
 
+	includeQueryParametersInTraces := config.includeQueryParametersInTraces
 	readPoolConfig, err := pgxpool.ParseConfig(url)
 	if err != nil {
 		return nil, common.RedactAndLogSensitiveConnString(ctx, errUnableToInstantiate, err, url)
 	}
-	config.readPoolOpts.ConfigurePgx(readPoolConfig)
+	err = config.readPoolOpts.ConfigurePgx(readPoolConfig, includeQueryParametersInTraces)
+	if err != nil {
+		return nil, common.RedactAndLogSensitiveConnString(ctx, errUnableToInstantiate, err, url)
+	}
 
 	writePoolConfig, err := pgxpool.ParseConfig(url)
 	if err != nil {
 		return nil, common.RedactAndLogSensitiveConnString(ctx, errUnableToInstantiate, err, url)
 	}
-	config.writePoolOpts.ConfigurePgx(writePoolConfig)
+	err = config.writePoolOpts.ConfigurePgx(writePoolConfig, includeQueryParametersInTraces)
+	if err != nil {
+		return nil, common.RedactAndLogSensitiveConnString(ctx, errUnableToInstantiate, err, url)
+	}
 
 	initCtx, initCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer initCancel()
@@ -167,6 +161,11 @@ func newCRDBDatastore(ctx context.Context, url string, options ...Option) (datas
 	maxRevisionStaleness := time.Duration(float64(config.revisionQuantization.Nanoseconds())*
 		config.maxRevisionStalenessPercent) * time.Nanosecond
 
+	headMigration, err := migrations.CRDBMigrations.HeadRevision()
+	if err != nil {
+		return nil, fmt.Errorf("invalid head migration found for cockroach: %w", err)
+	}
+
 	ds := &crdbDatastore{
 		RemoteClockRevisions: revisions.NewRemoteClockRevisions(
 			config.gcWindow,
@@ -175,14 +174,20 @@ func newCRDBDatastore(ctx context.Context, url string, options ...Option) (datas
 			config.revisionQuantization,
 		),
 		CommonDecoder:           revisions.CommonDecoder{Kind: revisions.HybridLogicalClock},
+		MigrationValidator:      common.NewMigrationValidator(headMigration, config.allowedMigrations),
 		dburl:                   url,
 		watchBufferLength:       config.watchBufferLength,
 		watchBufferWriteTimeout: config.watchBufferWriteTimeout,
+		watchConnectTimeout:     config.watchConnectTimeout,
 		writeOverlapKeyer:       keyer,
 		overlapKeyInit:          keySetInit,
 		beginChangefeedQuery:    changefeedQuery,
 		transactionNowQuery:     transactionNowQuery,
 		analyzeBeforeStatistics: config.analyzeBeforeStatistics,
+		filterMaximumIDCount:    config.filterMaximumIDCount,
+		supportsIntegrity:       config.withIntegrity,
+		gcWindow:                config.gcWindow,
+		schema:                  *schema.Schema(config.columnOptimizationOption, config.withIntegrity, config.expirationDisabled),
 	}
 	ds.RemoteClockRevisions.SetNowFunc(ds.headRevisionInternal)
 
@@ -256,35 +261,49 @@ func NewCRDBDatastore(ctx context.Context, url string, options ...Option) (datas
 type crdbDatastore struct {
 	*revisions.RemoteClockRevisions
 	revisions.CommonDecoder
+	*common.MigrationValidator
 
 	dburl                   string
 	readPool, writePool     *pool.RetryPool
 	watchBufferLength       uint16
 	watchBufferWriteTimeout time.Duration
+	watchConnectTimeout     time.Duration
 	writeOverlapKeyer       overlapKeyer
 	overlapKeyInit          func(ctx context.Context) keySet
 	analyzeBeforeStatistics bool
+	gcWindow                time.Duration
+	schema                  common.SchemaInformation
 
 	beginChangefeedQuery string
 	transactionNowQuery  string
 
 	featureGroup singleflight.Group[string, *datastore.Features]
 
-	pruneGroup *errgroup.Group
-	ctx        context.Context
-	cancel     context.CancelFunc
+	pruneGroup           *errgroup.Group
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	filterMaximumIDCount uint16
+	supportsIntegrity    bool
 }
 
 func (cds *crdbDatastore) SnapshotReader(rev datastore.Revision) datastore.Reader {
-	executor := common.QueryExecutor{
-		Executor: pgxcommon.NewPGXExecutor(cds.readPool),
+	executor := common.QueryRelationshipsExecutor{
+		Executor: pgxcommon.NewPGXQueryRelationshipsExecutor(cds.readPool, cds),
 	}
-
-	fromBuilder := func(query sq.SelectBuilder, fromStr string) sq.SelectBuilder {
-		return query.From(fromStr + " AS OF SYSTEM TIME " + rev.String())
+	return &crdbReader{
+		schema:               cds.schema,
+		query:                cds.readPool,
+		executor:             executor,
+		keyer:                noOverlapKeyer,
+		overlapKeySet:        nil,
+		filterMaximumIDCount: cds.filterMaximumIDCount,
+		withIntegrity:        cds.supportsIntegrity,
+		atSpecificRevision:   rev.String(),
 	}
+}
 
-	return &crdbReader{cds.readPool, executor, noOverlapKeyer, nil, fromBuilder}
+func (cds *crdbDatastore) MetricsID() (string, error) {
+	return common.MetricsIDFromURL(cds.dburl)
 }
 
 func (cds *crdbDatastore) ReadWriteTx(
@@ -301,20 +320,44 @@ func (cds *crdbDatastore) ReadWriteTx(
 
 	err := cds.writePool.BeginFunc(ctx, func(tx pgx.Tx) error {
 		querier := pgxcommon.QuerierFuncsFor(tx)
-		executor := common.QueryExecutor{
-			Executor: pgxcommon.NewPGXExecutor(querier),
+		executor := common.QueryRelationshipsExecutor{
+			Executor: pgxcommon.NewPGXQueryRelationshipsExecutor(querier, cds),
+		}
+
+		// Write metadata onto the transaction.
+		metadata := config.Metadata.AsMap()
+
+		// Mark the transaction as coming from SpiceDB. See the comment in watch.go
+		// for why this is necessary.
+		metadata[spicedbTransactionKey] = true
+
+		expiresAt := time.Now().Add(cds.gcWindow).Add(1 * time.Minute)
+		insertTransactionMetadata := psql.Insert(schema.TableTransactionMetadata).
+			Columns(schema.ColExpiresAt, schema.ColMetadata).
+			Values(expiresAt, metadata)
+
+		sql, args, err := insertTransactionMetadata.ToSql()
+		if err != nil {
+			return fmt.Errorf("error building metadata insert: %w", err)
+		}
+
+		if _, err := tx.Exec(ctx, sql, args...); err != nil {
+			return fmt.Errorf("error writing metadata: %w", err)
+		}
+
+		reader := &crdbReader{
+			schema:               cds.schema,
+			query:                querier,
+			executor:             executor,
+			keyer:                cds.writeOverlapKeyer,
+			overlapKeySet:        cds.overlapKeyInit(ctx),
+			filterMaximumIDCount: cds.filterMaximumIDCount,
+			withIntegrity:        cds.supportsIntegrity,
+			atSpecificRevision:   "", // No AS OF SYSTEM TIME for writes
 		}
 
 		rwt := &crdbReadWriteTXN{
-			&crdbReader{
-				querier,
-				executor,
-				cds.writeOverlapKeyer,
-				cds.overlapKeyInit(ctx),
-				func(query sq.SelectBuilder, fromStr string) sq.SelectBuilder {
-					return query.From(fromStr)
-				},
-			},
+			reader,
 			tx,
 			0,
 		}
@@ -331,10 +374,10 @@ func (cds *crdbDatastore) ReadWriteTx(
 			}
 		}
 
-		var err error
-		commitTimestamp, err = cds.readTransactionCommitRev(ctx, querier)
-		if err != nil {
-			return fmt.Errorf("error getting commit timestamp: %w", err)
+		var cerr error
+		commitTimestamp, cerr = cds.readTransactionCommitRev(ctx, querier)
+		if cerr != nil {
+			return fmt.Errorf("error getting commit timestamp: %w", cerr)
 		}
 		return nil
 	})
@@ -355,11 +398,6 @@ func wrapError(err error) error {
 }
 
 func (cds *crdbDatastore) ReadyState(ctx context.Context) (datastore.ReadyState, error) {
-	headMigration, err := migrations.CRDBMigrations.HeadRevision()
-	if err != nil {
-		return datastore.ReadyState{}, fmt.Errorf("invalid head migration found for cockroach: %w", err)
-	}
-
 	currentRevision, err := migrations.NewCRDBDriver(cds.dburl)
 	if err != nil {
 		return datastore.ReadyState{}, err
@@ -371,17 +409,8 @@ func (cds *crdbDatastore) ReadyState(ctx context.Context) (datastore.ReadyState,
 		return datastore.ReadyState{}, err
 	}
 
-	// TODO(jschorr): Remove the check for the older migration once we are confident
-	// that all users have migrated past it.
-	if version != headMigration && version != "add-caveats" {
-		return datastore.ReadyState{
-			Message: fmt.Sprintf(
-				"datastore is not migrated: currently at revision `%s`, but requires `%s`. Please run `spicedb migrate`.",
-				version,
-				headMigration,
-			),
-			IsReady: false,
-		}, nil
+	if state := cds.MigrationValidator.MigrationReadyState(version); !state.IsReady {
+		return state, nil
 	}
 
 	readMin := cds.readPool.MinConns()
@@ -392,8 +421,14 @@ func (cds *crdbDatastore) ReadyState(ctx context.Context) (datastore.ReadyState,
 	if writeMin > 0 {
 		writeMin--
 	}
-	writeTotal := uint32(cds.writePool.Stat().TotalConns())
-	readTotal := uint32(cds.readPool.Stat().TotalConns())
+	writeTotal, err := safecast.ToUint32(cds.writePool.Stat().TotalConns())
+	if err != nil {
+		return datastore.ReadyState{}, spiceerrors.MustBugf("could not cast writeTotal to uint32: %v", err)
+	}
+	readTotal, err := safecast.ToUint32(cds.readPool.Stat().TotalConns())
+	if err != nil {
+		return datastore.ReadyState{}, spiceerrors.MustBugf("could not cast readTotal to uint32: %v", err)
+	}
 	if writeTotal < writeMin || readTotal < readMin {
 		return datastore.ReadyState{
 			Message: fmt.Sprintf(
@@ -432,6 +467,34 @@ func (cds *crdbDatastore) headRevisionInternal(ctx context.Context) (datastore.R
 	return hlcNow, fnErr
 }
 
+func (cds *crdbDatastore) OfflineFeatures() (*datastore.Features, error) {
+	if cds.supportsIntegrity {
+		return &datastore.Features{
+			IntegrityData: datastore.Feature{
+				Status: datastore.FeatureSupported,
+			},
+			ContinuousCheckpointing: datastore.Feature{
+				Status: datastore.FeatureSupported,
+			},
+			WatchEmitsImmediately: datastore.Feature{
+				Status: datastore.FeatureSupported,
+			},
+		}, nil
+	}
+
+	return &datastore.Features{
+		IntegrityData: datastore.Feature{
+			Status: datastore.FeatureUnsupported,
+		},
+		ContinuousCheckpointing: datastore.Feature{
+			Status: datastore.FeatureSupported,
+		},
+		WatchEmitsImmediately: datastore.Feature{
+			Status: datastore.FeatureSupported,
+		},
+	}, nil
+}
+
 func (cds *crdbDatastore) Features(ctx context.Context) (*datastore.Features, error) {
 	features, _, err := cds.featureGroup.Do(ctx, "", func(ictx context.Context) (*datastore.Features, error) {
 		return cds.features(ictx)
@@ -440,31 +503,43 @@ func (cds *crdbDatastore) Features(ctx context.Context) (*datastore.Features, er
 }
 
 func (cds *crdbDatastore) features(ctx context.Context) (*datastore.Features, error) {
-	var features datastore.Features
+	features := datastore.Features{
+		ContinuousCheckpointing: datastore.Feature{
+			Status: datastore.FeatureSupported,
+		},
+		WatchEmitsImmediately: datastore.Feature{
+			Status: datastore.FeatureSupported,
+		},
+	}
+	if cds.supportsIntegrity {
+		features.IntegrityData.Status = datastore.FeatureSupported
+	}
 
 	head, err := cds.HeadRevision(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// streams don't return at all if they succeed, so the only way to know
-	// it was created successfully is to wait a bit and then cancel
-	streamCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	time.AfterFunc(1*time.Second, cancel)
-
-	_ = cds.writePool.ExecFunc(streamCtx, func(ctx context.Context, tag pgconn.CommandTag, err error) error {
-		if err != nil && errors.Is(err, context.Canceled) {
-			features.Watch.Enabled = true
-			features.Watch.Reason = ""
-		} else if err != nil {
-			features.Watch.Enabled = false
-			features.Watch.Reason = fmt.Sprintf("Range feeds must be enabled in CockroachDB and the user must have permission to create them in order to enable the Watch API: %s", err.Error())
+	// Start a changefeed with an invalid value. If we get back an invalid value error (SQLSTATE 22023)
+	// then we know that the datastore supports watch. If we get back any other error, then we know that
+	// the datastore does not support watch emits or there is a permissions issue.
+	_ = cds.writePool.ExecFunc(ctx, func(ctx context.Context, tag pgconn.CommandTag, err error) error {
+		if err == nil {
+			return spiceerrors.MustBugf("expected an error, but got none")
 		}
-		return nil
-	}, fmt.Sprintf(cds.beginChangefeedQuery, tableTuple, head, "1s"))
 
-	<-streamCtx.Done()
+		var pgerr *pgconn.PgError
+		if errors.As(err, &pgerr) {
+			if pgerr.Code == "22023" {
+				features.Watch.Status = datastore.FeatureSupported
+				return nil
+			}
+		}
+
+		features.Watch.Status = datastore.FeatureUnsupported
+		features.Watch.Reason = fmt.Sprintf("Range feeds must be enabled in CockroachDB and the user must have permission to create them in order to enable the Watch API: %s", err.Error())
+		return nil
+	}, fmt.Sprintf(cds.beginChangefeedQuery, cds.schema.RelationshipTableName, head, "-1s"))
 
 	return &features, nil
 }

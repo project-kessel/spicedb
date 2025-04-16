@@ -5,10 +5,12 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ccoveille/go-safecast"
 	"github.com/google/go-cmp/cmp"
 	yaml "gopkg.in/yaml.v2"
 
 	"github.com/authzed/spicedb/internal/developmentmembership"
+	log "github.com/authzed/spicedb/internal/logging"
 	devinterface "github.com/authzed/spicedb/pkg/proto/developer/v1"
 	v1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
 	"github.com/authzed/spicedb/pkg/tuple"
@@ -22,13 +24,9 @@ func RunValidation(devContext *DevContext, validation *blocks.ParsedExpectedRela
 	ctx := devContext.Ctx
 
 	for onrKey, expectedSubjects := range validation.ValidationMap {
-		if onrKey.ObjectAndRelation == nil {
-			return nil, nil, fmt.Errorf("got nil ObjectAndRelation for key %s", onrKey.ObjectRelationString)
-		}
-
 		// Run a full recursive expansion over the ONR.
 		er, derr := devContext.Dispatcher.DispatchExpand(ctx, &v1.DispatchExpandRequest{
-			ResourceAndRelation: onrKey.ObjectAndRelation,
+			ResourceAndRelation: onrKey.ObjectAndRelation.ToCoreONR(),
 			Metadata: &v1.ResolverMeta{
 				AtRevision:     devContext.Revision.String(),
 				DepthRemaining: maxDispatchDepth,
@@ -70,7 +68,7 @@ func RunValidation(devContext *DevContext, validation *blocks.ParsedExpectedRela
 	return membershipSet, nil, nil
 }
 
-func wrapRelationships(onrStrings []string) []string {
+func wrapResources(onrStrings []string) []string {
 	wrapped := make([]string, 0, len(onrStrings))
 	for _, str := range onrStrings {
 		wrapped = append(wrapped, "<"+str+">")
@@ -90,14 +88,23 @@ func validateSubjects(onrKey blocks.ObjectRelation, fs developmentmembership.Fou
 	encounteredSubjects := map[string]struct{}{}
 	for _, expectedSubject := range expectedSubjects {
 		subjectWithExceptions := expectedSubject.SubjectWithExceptions
+		// NOTE: zeroes are fine here on failure.
+		lineNumber, err := safecast.ToUint32(expectedSubject.SourcePosition.LineNumber)
+		if err != nil {
+			log.Err(err).Msg("could not cast lineNumber to uint32")
+		}
+		columnPosition, err := safecast.ToUint32(expectedSubject.SourcePosition.ColumnPosition)
+		if err != nil {
+			log.Err(err).Msg("could not cast columnPosition to uint32")
+		}
 		if subjectWithExceptions == nil {
 			failures = append(failures, &devinterface.DeveloperError{
 				Message: fmt.Sprintf("For object and permission/relation `%s`, no expected subject specified in `%s`", tuple.StringONR(onr), expectedSubject.ValidationString),
 				Source:  devinterface.DeveloperError_VALIDATION_YAML,
 				Kind:    devinterface.DeveloperError_MISSING_EXPECTED_RELATIONSHIP,
 				Context: string(expectedSubject.ValidationString),
-				Line:    uint32(expectedSubject.SourcePosition.LineNumber),
-				Column:  uint32(expectedSubject.SourcePosition.ColumnPosition),
+				Line:    lineNumber,
+				Column:  columnPosition,
 			})
 			continue
 		}
@@ -111,30 +118,29 @@ func validateSubjects(onrKey blocks.ObjectRelation, fs developmentmembership.Fou
 				Source:  devinterface.DeveloperError_VALIDATION_YAML,
 				Kind:    devinterface.DeveloperError_MISSING_EXPECTED_RELATIONSHIP,
 				Context: string(expectedSubject.ValidationString),
-				Line:    uint32(expectedSubject.SourcePosition.LineNumber),
-				Column:  uint32(expectedSubject.SourcePosition.ColumnPosition),
+				Line:    lineNumber,
+				Column:  columnPosition,
 			})
 			continue
 		}
 
-		foundRelationships := subject.Relationships()
-
 		// Verify that the relationships are the same.
+		foundParentResources := subject.ParentResources()
 		expectedONRStrings := tuple.StringsONRs(expectedSubject.Resources)
-		foundONRStrings := tuple.StringsONRs(foundRelationships)
+		foundONRStrings := tuple.StringsONRs(foundParentResources)
 		if !cmp.Equal(expectedONRStrings, foundONRStrings) {
 			failures = append(failures, &devinterface.DeveloperError{
 				Message: fmt.Sprintf("For object and permission/relation `%s`, found different relationships for subject `%s`: Specified: `%s`, Computed: `%s`",
 					tuple.StringONR(onr),
 					tuple.StringONR(subjectWithExceptions.Subject.Subject),
-					strings.Join(wrapRelationships(expectedONRStrings), "/"),
-					strings.Join(wrapRelationships(foundONRStrings), "/"),
+					strings.Join(wrapResources(expectedONRStrings), "/"),
+					strings.Join(wrapResources(foundONRStrings), "/"),
 				),
 				Source:  devinterface.DeveloperError_VALIDATION_YAML,
 				Kind:    devinterface.DeveloperError_MISSING_EXPECTED_RELATIONSHIP,
 				Context: string(expectedSubject.ValidationString),
-				Line:    uint32(expectedSubject.SourcePosition.LineNumber),
-				Column:  uint32(expectedSubject.SourcePosition.ColumnPosition),
+				Line:    lineNumber,
+				Column:  columnPosition,
 			})
 		}
 
@@ -144,19 +150,23 @@ func validateSubjects(onrKey blocks.ObjectRelation, fs developmentmembership.Fou
 		if isWildcard {
 			expectedExcludedStrings := toExpectedRelationshipsStrings(expectedExcludedSubjects)
 			foundExcludedONRStrings := toFoundRelationshipsStrings(foundExcludedSubjects)
+
+			sort.Strings(expectedExcludedStrings)
+			sort.Strings(foundExcludedONRStrings)
+
 			if !cmp.Equal(expectedExcludedStrings, foundExcludedONRStrings) {
 				failures = append(failures, &devinterface.DeveloperError{
 					Message: fmt.Sprintf("For object and permission/relation `%s`, found different excluded subjects for subject `%s`: Specified: `%s`, Computed: `%s`",
 						tuple.StringONR(onr),
 						tuple.StringONR(subjectWithExceptions.Subject.Subject),
-						strings.Join(wrapRelationships(expectedExcludedStrings), ", "),
-						strings.Join(wrapRelationships(foundExcludedONRStrings), ", "),
+						strings.Join(wrapResources(expectedExcludedStrings), ", "),
+						strings.Join(wrapResources(foundExcludedONRStrings), ", "),
 					),
 					Source:  devinterface.DeveloperError_VALIDATION_YAML,
 					Kind:    devinterface.DeveloperError_MISSING_EXPECTED_RELATIONSHIP,
 					Context: string(expectedSubject.ValidationString),
-					Line:    uint32(expectedSubject.SourcePosition.LineNumber),
-					Column:  uint32(expectedSubject.SourcePosition.ColumnPosition),
+					Line:    lineNumber,
+					Column:  columnPosition,
 				})
 			}
 		} else {
@@ -168,8 +178,8 @@ func validateSubjects(onrKey blocks.ObjectRelation, fs developmentmembership.Fou
 					Source:  devinterface.DeveloperError_VALIDATION_YAML,
 					Kind:    devinterface.DeveloperError_EXTRA_RELATIONSHIP_FOUND,
 					Context: string(expectedSubject.ValidationString),
-					Line:    uint32(expectedSubject.SourcePosition.LineNumber),
-					Column:  uint32(expectedSubject.SourcePosition.ColumnPosition),
+					Line:    lineNumber,
+					Column:  columnPosition,
 				})
 			}
 		}
@@ -183,8 +193,8 @@ func validateSubjects(onrKey blocks.ObjectRelation, fs developmentmembership.Fou
 				Source:  devinterface.DeveloperError_VALIDATION_YAML,
 				Kind:    devinterface.DeveloperError_MISSING_EXPECTED_RELATIONSHIP,
 				Context: string(expectedSubject.ValidationString),
-				Line:    uint32(expectedSubject.SourcePosition.LineNumber),
-				Column:  uint32(expectedSubject.SourcePosition.ColumnPosition),
+				Line:    lineNumber,
+				Column:  columnPosition,
 			})
 		}
 	}
@@ -193,16 +203,24 @@ func validateSubjects(onrKey blocks.ObjectRelation, fs developmentmembership.Fou
 	for _, foundSubject := range fs.ListFound() {
 		_, ok := encounteredSubjects[tuple.StringONR(foundSubject.Subject())]
 		if !ok {
+			onrLineNumber, err := safecast.ToUint32(onrKey.SourcePosition.LineNumber)
+			if err != nil {
+				log.Err(err).Msg("could not cast lineNumber to uint32")
+			}
+			onrColumnPosition, err := safecast.ToUint32(onrKey.SourcePosition.ColumnPosition)
+			if err != nil {
+				log.Err(err).Msg("could not cast columnPosition to uint32")
+			}
 			failures = append(failures, &devinterface.DeveloperError{
-				Message: fmt.Sprintf("For object and permission/relation `%s`, subject `%s` found but missing from specified",
+				Message: fmt.Sprintf("For object and permission/relation `%s`, subject `%s` found but not listed in expected subjects",
 					tuple.StringONR(onr),
 					tuple.StringONR(foundSubject.Subject()),
 				),
 				Source:  devinterface.DeveloperError_VALIDATION_YAML,
 				Kind:    devinterface.DeveloperError_EXTRA_RELATIONSHIP_FOUND,
 				Context: tuple.StringONR(onr),
-				Line:    uint32(onrKey.SourcePosition.LineNumber),
-				Column:  uint32(onrKey.SourcePosition.ColumnPosition),
+				Line:    onrLineNumber,
+				Column:  onrColumnPosition,
 			})
 		}
 	}
@@ -230,7 +248,7 @@ func GenerateValidation(membershipSet *developmentmembership.Set) (string, error
 			strs = append(strs,
 				fmt.Sprintf("[%s] is %s",
 					fs.ToValidationString(),
-					strings.Join(wrapRelationships(tuple.StringsONRs(fs.Relationships())), "/"),
+					strings.Join(wrapResources(tuple.StringsONRs(fs.ParentResources())), "/"),
 				))
 		}
 

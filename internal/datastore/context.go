@@ -33,11 +33,15 @@ func SeparateContextWithTracing(ctx context.Context) context.Context {
 //
 // This is useful for datastores that do not want to close connections when a
 // cancel or deadline occurs.
-func NewSeparatingContextDatastoreProxy(d datastore.Datastore) datastore.Datastore {
+func NewSeparatingContextDatastoreProxy(d datastore.Datastore) datastore.StrictReadDatastore {
 	return &ctxProxy{d}
 }
 
 type ctxProxy struct{ delegate datastore.Datastore }
+
+func (p *ctxProxy) MetricsID() (string, error) {
+	return p.delegate.MetricsID()
+}
 
 func (p *ctxProxy) ReadWriteTx(
 	ctx context.Context,
@@ -45,6 +49,20 @@ func (p *ctxProxy) ReadWriteTx(
 	opts ...options.RWTOptionsOption,
 ) (datastore.Revision, error) {
 	return p.delegate.ReadWriteTx(ctx, f, opts...)
+}
+
+func (p *ctxProxy) IsStrictReadModeEnabled() bool {
+	ds := p.delegate
+	unwrapped, ok := p.delegate.(datastore.UnwrappableDatastore)
+	if ok {
+		ds = unwrapped.Unwrap()
+	}
+
+	if srm, ok := ds.(datastore.StrictReadDatastore); ok {
+		return srm.IsStrictReadModeEnabled()
+	}
+
+	return false
 }
 
 func (p *ctxProxy) OptimizedRevision(ctx context.Context) (datastore.Revision, error) {
@@ -63,12 +81,16 @@ func (p *ctxProxy) RevisionFromString(serialized string) (datastore.Revision, er
 	return p.delegate.RevisionFromString(serialized)
 }
 
-func (p *ctxProxy) Watch(ctx context.Context, afterRevision datastore.Revision, options datastore.WatchOptions) (<-chan *datastore.RevisionChanges, <-chan error) {
+func (p *ctxProxy) Watch(ctx context.Context, afterRevision datastore.Revision, options datastore.WatchOptions) (<-chan datastore.RevisionChanges, <-chan error) {
 	return p.delegate.Watch(ctx, afterRevision, options)
 }
 
 func (p *ctxProxy) Features(ctx context.Context) (*datastore.Features, error) {
 	return p.delegate.Features(SeparateContextWithTracing(ctx))
+}
+
+func (p *ctxProxy) OfflineFeatures() (*datastore.Features, error) {
+	return p.delegate.OfflineFeatures()
 }
 
 func (p *ctxProxy) Statistics(ctx context.Context) (datastore.Stats, error) {
@@ -96,6 +118,14 @@ func (p *ctxProxy) ExampleRetryableError() error {
 }
 
 type ctxReader struct{ delegate datastore.Reader }
+
+func (r *ctxReader) CountRelationships(ctx context.Context, name string) (int, error) {
+	return r.delegate.CountRelationships(SeparateContextWithTracing(ctx), name)
+}
+
+func (r *ctxReader) LookupCounters(ctx context.Context) ([]datastore.RelationshipCounter, error) {
+	return r.delegate.LookupCounters(SeparateContextWithTracing(ctx))
+}
 
 func (r *ctxReader) ReadCaveatByName(ctx context.Context, name string) (*core.CaveatDefinition, datastore.Revision, error) {
 	return r.delegate.ReadCaveatByName(SeparateContextWithTracing(ctx), name)

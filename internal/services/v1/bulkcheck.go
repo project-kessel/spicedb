@@ -2,11 +2,14 @@ package v1
 
 import (
 	"context"
+	"slices"
 	"sync"
+	"time"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	"github.com/jzelinskie/stringz"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/authzed/spicedb/internal/dispatch"
 	"github.com/authzed/spicedb/internal/graph"
@@ -31,8 +34,11 @@ type bulkChecker struct {
 	maxCaveatContextSize int
 	maxConcurrency       uint16
 
-	dispatch dispatch.Dispatcher
+	dispatch          dispatch.Dispatcher
+	dispatchChunkSize uint16
 }
+
+const maxBulkCheckCount = 10000
 
 func (bc *bulkChecker) checkBulkPermissions(ctx context.Context, req *v1.CheckBulkPermissionsRequest) (*v1.CheckBulkPermissionsResponse, error) {
 	atRevision, checkedAt, err := consistency.RevisionFromContext(ctx)
@@ -66,12 +72,17 @@ func (bc *bulkChecker) checkBulkPermissions(ctx context.Context, req *v1.CheckBu
 		atRevision:           atRevision,
 		maxCaveatContextSize: bc.maxCaveatContextSize,
 		maximumAPIDepth:      bc.maxAPIDepth,
+		withTracing:          req.WithTracing,
 	}, req.Items)
 	if err != nil {
 		return nil, err
 	}
 
 	bulkResponseMutex := sync.Mutex{}
+
+	spiceerrors.DebugAssert(func() bool {
+		return bc.maxConcurrency > 0
+	}, "max concurrency must be greater than 0 in bulk check")
 
 	tr := taskrunner.NewPreloadedTaskRunner(ctx, bc.maxConcurrency, len(groupedItems))
 
@@ -135,11 +146,76 @@ func (bc *bulkChecker) checkBulkPermissions(ctx context.Context, req *v1.CheckBu
 		return nil
 	}
 
-	appendResultsForCheck := func(params *computed.CheckParameters, resourceIDs []string, metadata *dispatchv1.ResponseMeta, results map[string]*dispatchv1.ResourceCheckResult) error {
+	appendResultsForCheck := func(
+		params *computed.CheckParameters,
+		resourceIDs []string,
+		metadata *dispatchv1.ResponseMeta,
+		debugInfos []*dispatchv1.DebugInformation,
+		results map[string]*dispatchv1.ResourceCheckResult,
+	) error {
 		bulkResponseMutex.Lock()
 		defer bulkResponseMutex.Unlock()
 
+		ds := datastoremw.MustFromContext(ctx).SnapshotReader(atRevision)
+
+		schemaText := ""
+		if len(debugInfos) > 0 {
+			schema, err := getFullSchema(ctx, ds)
+			if err != nil {
+				return err
+			}
+			schemaText = schema
+		}
+
 		for _, resourceID := range resourceIDs {
+			var debugTrace *v1.DebugInformation
+			if len(debugInfos) > 0 {
+				// Find the debug info that matches the resource ID.
+				var debugInfo *dispatchv1.DebugInformation
+				for _, di := range debugInfos {
+					if slices.Contains(di.Check.Request.ResourceIds, resourceID) {
+						debugInfo = di
+						break
+					}
+				}
+
+				if debugInfo != nil {
+					// Synthesize a new debug information with a trace "wrapping" the (potentially batched)
+					// trace.
+					localResults := make(map[string]*dispatchv1.ResourceCheckResult, 1)
+					if result, ok := results[resourceID]; ok {
+						localResults[resourceID] = result
+					}
+					wrappedDebugInfo := &dispatchv1.DebugInformation{
+						Check: &dispatchv1.CheckDebugTrace{
+							Request: &dispatchv1.DispatchCheckRequest{
+								ResourceRelation: debugInfo.Check.Request.ResourceRelation,
+								ResourceIds:      []string{resourceID},
+								Subject:          debugInfo.Check.Request.Subject,
+								ResultsSetting:   debugInfo.Check.Request.ResultsSetting,
+								Debug:            debugInfo.Check.Request.Debug,
+							},
+							ResourceRelationType: debugInfo.Check.ResourceRelationType,
+							IsCachedResult:       false,
+							SubProblems: []*dispatchv1.CheckDebugTrace{
+								debugInfo.Check,
+							},
+							Results:  localResults,
+							Duration: durationpb.New(time.Duration(0)),
+							TraceId:  graph.NewTraceID(),
+							SourceId: debugInfo.Check.SourceId,
+						},
+					}
+
+					// Convert to debug information.
+					dt, err := convertCheckDispatchDebugInformationWithSchema(ctx, params.CaveatContext, wrappedDebugInfo, ds, schemaText)
+					if err != nil {
+						return err
+					}
+					debugTrace = dt
+				}
+			}
+
 			reqItem, err := requestItemFromResourceAndParameters(params, resourceID)
 			if err != nil {
 				return err
@@ -147,7 +223,7 @@ func (bc *bulkChecker) checkBulkPermissions(ctx context.Context, req *v1.CheckBu
 
 			if err := addPair(&v1.CheckBulkPermissionsPair{
 				Request:  reqItem,
-				Response: pairItemFromCheckResult(results[resourceID]),
+				Response: pairItemFromCheckResult(results[resourceID], debugTrace),
 			}); err != nil {
 				return err
 			}
@@ -161,7 +237,7 @@ func (bc *bulkChecker) checkBulkPermissions(ctx context.Context, req *v1.CheckBu
 	for _, group := range groupedItems {
 		group := group
 
-		slicez.ForEachChunk(group.resourceIDs, MaxBulkCheckDispatchChunkSize, func(resourceIDs []string) {
+		slicez.ForEachChunk(group.resourceIDs, bc.dispatchChunkSize, func(resourceIDs []string) {
 			tr.Add(func(ctx context.Context) error {
 				ds := datastoremw.MustFromContext(ctx).SnapshotReader(atRevision)
 
@@ -169,12 +245,12 @@ func (bc *bulkChecker) checkBulkPermissions(ctx context.Context, req *v1.CheckBu
 				err := namespace.CheckNamespaceAndRelations(ctx,
 					[]namespace.TypeAndRelationToCheck{
 						{
-							NamespaceName: group.params.ResourceType.Namespace,
+							NamespaceName: group.params.ResourceType.ObjectType,
 							RelationName:  group.params.ResourceType.Relation,
 							AllowEllipsis: false,
 						},
 						{
-							NamespaceName: group.params.Subject.Namespace,
+							NamespaceName: group.params.Subject.ObjectType,
 							RelationName:  stringz.DefaultEmpty(group.params.Subject.Relation, graph.Ellipsis),
 							AllowEllipsis: true,
 						},
@@ -184,12 +260,12 @@ func (bc *bulkChecker) checkBulkPermissions(ctx context.Context, req *v1.CheckBu
 				}
 
 				// Call bulk check to compute the check result(s) for the resource ID(s).
-				rcr, metadata, err := computed.ComputeBulkCheck(ctx, bc.dispatch, *group.params, resourceIDs)
+				rcr, metadata, debugInfos, err := computed.ComputeBulkCheck(ctx, bc.dispatch, *group.params, resourceIDs, bc.dispatchChunkSize)
 				if err != nil {
 					return appendResultsForError(group.params, resourceIDs, err)
 				}
 
-				return appendResultsForCheck(group.params, resourceIDs, metadata, rcr)
+				return appendResultsForCheck(group.params, resourceIDs, metadata, debugInfos, rcr)
 			})
 		})
 	}

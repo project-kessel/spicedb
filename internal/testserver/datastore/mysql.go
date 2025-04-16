@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/ory/dockertest/v3"
+	"github.com/ory/dockertest/v3/docker"
 	"github.com/stretchr/testify/require"
 
 	"github.com/authzed/spicedb/internal/datastore/mysql/migrations"
@@ -64,6 +65,10 @@ func RunMySQLForTestingWithOptions(t testing.TB, options MySQLTesterOptions, bri
 		// increase max connections (default 151) to accommodate tests using the same docker container
 		Cmd:       []string{"--max-connections=500"},
 		NetworkID: bridgeNetworkName,
+	}, func(config *docker.HostConfig) {
+		// set AutoRemove to true so that stopped container goes away by itself
+		config.AutoRemove = true
+		config.RestartPolicy = docker.RestartPolicy{Name: "no"}
 	})
 	require.NoError(t, err)
 
@@ -72,6 +77,7 @@ func RunMySQLForTestingWithOptions(t testing.TB, options MySQLTesterOptions, bri
 		options: options,
 	}
 	t.Cleanup(func() {
+		require.NoError(t, builder.db.Close())
 		require.NoError(t, pool.Purge(resource))
 	})
 
@@ -116,7 +122,7 @@ func (mb *mysqlTester) NewDatabase(t testing.TB) string {
 }
 
 func (mb *mysqlTester) runMigrate(t testing.TB, dsn string) {
-	driver, err := migrations.NewMySQLDriverFromDSN(dsn, mb.options.Prefix)
+	driver, err := migrations.NewMySQLDriverFromDSN(dsn, mb.options.Prefix, datastore.NoCredentialsProvider)
 	require.NoError(t, err, "failed to create migration driver: %s", err)
 	err = migrations.Manager.Run(context.Background(), driver, migrate.Head, migrate.LiveRun)
 	require.NoError(t, err, "failed to run migration: %s", err)

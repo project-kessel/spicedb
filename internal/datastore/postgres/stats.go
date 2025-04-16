@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	pgxcommon "github.com/authzed/spicedb/internal/datastore/postgres/common"
+	"github.com/authzed/spicedb/internal/datastore/postgres/schema"
 	"github.com/authzed/spicedb/pkg/datastore"
 )
 
@@ -25,7 +26,7 @@ var (
 	queryEstimatedRowCount = psql.
 				Select(colReltuples).
 				From(tablePGClass).
-				Where(sq.Eq{colRelname: tableTuple})
+				Where(sq.Eq{colRelname: schema.TableTuple})
 )
 
 func (pgd *pgDatastore) datastoreUniqueID(ctx context.Context) (string, error) {
@@ -51,16 +52,16 @@ func (pgd *pgDatastore) Statistics(ctx context.Context) (datastore.Stats, error)
 		return datastore.Stats{}, fmt.Errorf("unable to prepare row count sql: %w", err)
 	}
 
-	filterer := func(original sq.SelectBuilder) sq.SelectBuilder {
-		return original.Where(sq.Eq{colDeletedXid: liveDeletedTxnID})
+	aliveFilter := func(original sq.SelectBuilder) sq.SelectBuilder {
+		return original.Where(sq.Eq{schema.ColDeletedXid: liveDeletedTxnID})
 	}
 
 	var uniqueID string
 	var nsDefs []datastore.RevisionedNamespace
-	var relCount int64
+	var relCount float64
 	if err := pgx.BeginTxFunc(ctx, pgd.readPool, pgd.readTxOptions, func(tx pgx.Tx) error {
 		if pgd.analyzeBeforeStatistics {
-			if _, err := tx.Exec(ctx, "ANALYZE "+tableTuple); err != nil {
+			if _, err := tx.Exec(ctx, "ANALYZE "+schema.TableTuple); err != nil {
 				return fmt.Errorf("unable to analyze tuple table: %w", err)
 			}
 		}
@@ -69,7 +70,7 @@ func (pgd *pgDatastore) Statistics(ctx context.Context) (datastore.Stats, error)
 			return fmt.Errorf("unable to query unique ID: %w", err)
 		}
 
-		nsDefsWithRevisions, err := loadAllNamespaces(ctx, pgxcommon.QuerierFuncsFor(tx), filterer)
+		nsDefsWithRevisions, err := loadAllNamespaces(ctx, pgxcommon.QuerierFuncsFor(tx), aliveFilter)
 		if err != nil {
 			return fmt.Errorf("unable to load namespaces: %w", err)
 		}

@@ -8,7 +8,7 @@ import (
 	"github.com/authzed/spicedb/internal/datastore/common"
 	"github.com/authzed/spicedb/internal/datastore/revisions"
 	"github.com/authzed/spicedb/pkg/datastore"
-	core "github.com/authzed/spicedb/pkg/proto/core/v1"
+	"github.com/authzed/spicedb/pkg/tuple"
 
 	sq "github.com/Masterminds/squirrel"
 )
@@ -20,17 +20,24 @@ const (
 // Watch notifies the caller about all changes to tuples.
 //
 // All events following afterRevision will be sent to the caller.
-func (mds *Datastore) Watch(ctx context.Context, afterRevisionRaw datastore.Revision, options datastore.WatchOptions) (<-chan *datastore.RevisionChanges, <-chan error) {
+func (mds *Datastore) Watch(ctx context.Context, afterRevisionRaw datastore.Revision, options datastore.WatchOptions) (<-chan datastore.RevisionChanges, <-chan error) {
 	watchBufferLength := options.WatchBufferLength
 	if watchBufferLength <= 0 {
 		watchBufferLength = mds.watchBufferLength
 	}
 
-	updates := make(chan *datastore.RevisionChanges, watchBufferLength)
+	updates := make(chan datastore.RevisionChanges, watchBufferLength)
 	errs := make(chan error, 1)
 
 	if options.Content&datastore.WatchSchema == datastore.WatchSchema {
+		close(updates)
 		errs <- errors.New("schema watch unsupported in MySQL")
+		return updates, errs
+	}
+
+	if options.EmissionStrategy == datastore.EmitImmediatelyStrategy {
+		close(updates)
+		errs <- errors.New("emit immediately strategy is unsupported in MySQL")
 		return updates, errs
 	}
 
@@ -45,7 +52,7 @@ func (mds *Datastore) Watch(ctx context.Context, afterRevisionRaw datastore.Revi
 		watchBufferWriteTimeout = mds.watchBufferWriteTimeout
 	}
 
-	sendChange := func(change *datastore.RevisionChanges) bool {
+	sendChange := func(change datastore.RevisionChanges) bool {
 		select {
 		case updates <- change:
 			return true
@@ -88,7 +95,7 @@ func (mds *Datastore) Watch(ctx context.Context, afterRevisionRaw datastore.Revi
 			// Write the staged updates to the channel
 			for _, changeToWrite := range stagedUpdates {
 				changeToWrite := changeToWrite
-				if !sendChange(&changeToWrite) {
+				if !sendChange(changeToWrite) {
 					return
 				}
 			}
@@ -125,7 +132,56 @@ func (mds *Datastore) loadChanges(
 		return
 	}
 
-	sql, args, err := mds.QueryChangedQuery.Where(sq.Or{
+	stagedChanges := common.NewChanges(revisions.TransactionIDKeyFunc, options.Content, options.MaximumBufferedChangesByteSize)
+
+	// Load any metadata for the revision range.
+	sql, args, err := mds.LoadRevisionRange.Where(sq.Or{
+		sq.And{
+			sq.Gt{colID: afterRevision},
+			sq.LtOrEq{colID: newRevision},
+		},
+	}).ToSql()
+	if err != nil {
+		return
+	}
+
+	rows, err := mds.db.QueryContext(ctx, sql, args...)
+	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			err = datastore.NewWatchCanceledErr()
+		} else if common.IsCancellationError(err) {
+			err = datastore.NewWatchCanceledErr()
+		} else if common.IsResettableError(err) {
+			err = datastore.NewWatchTemporaryErr(err)
+		}
+		return
+	}
+	defer common.LogOnError(ctx, rows.Close)
+
+	for rows.Next() {
+		var txnID uint64
+		var metadata structpbWrapper
+		err = rows.Scan(
+			&txnID,
+			&metadata,
+		)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		if len(metadata) > 0 {
+			if err := stagedChanges.SetRevisionMetadata(ctx, revisions.NewForTransactionID(txnID), metadata); err != nil {
+				return nil, 0, err
+			}
+		}
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return
+	}
+
+	// Load the changes relationships for the revision range.
+	sql, args, err = mds.QueryChangedQuery.Where(sq.Or{
 		sq.And{
 			sq.Gt{colCreatedTxn: afterRevision},
 			sq.LtOrEq{colCreatedTxn: newRevision},
@@ -139,7 +195,7 @@ func (mds *Datastore) loadChanges(
 		return
 	}
 
-	rows, err := mds.db.QueryContext(ctx, sql, args...)
+	rows, err = mds.db.QueryContext(ctx, sql, args...)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			err = datastore.NewWatchCanceledErr()
@@ -148,46 +204,64 @@ func (mds *Datastore) loadChanges(
 	}
 	defer common.LogOnError(ctx, rows.Close)
 
-	stagedChanges := common.NewChanges(revisions.TransactionIDKeyFunc, options.Content)
-
 	for rows.Next() {
-		nextTuple := &core.RelationTuple{
-			ResourceAndRelation: &core.ObjectAndRelation{},
-			Subject:             &core.ObjectAndRelation{},
-		}
-
+		var resourceObjectType string
+		var resourceObjectID string
+		var relation string
+		var subjectObjectType string
+		var subjectObjectID string
+		var subjectRelation string
 		var createdTxn uint64
 		var deletedTxn uint64
 		var caveatName string
-		var caveatContext caveatContextWrapper
+		var caveatContext structpbWrapper
+		var expiration *time.Time
 		err = rows.Scan(
-			&nextTuple.ResourceAndRelation.Namespace,
-			&nextTuple.ResourceAndRelation.ObjectId,
-			&nextTuple.ResourceAndRelation.Relation,
-			&nextTuple.Subject.Namespace,
-			&nextTuple.Subject.ObjectId,
-			&nextTuple.Subject.Relation,
+			&resourceObjectType,
+			&resourceObjectID,
+			&relation,
+			&subjectObjectType,
+			&subjectObjectID,
+			&subjectRelation,
 			&caveatName,
 			&caveatContext,
+			&expiration,
 			&createdTxn,
 			&deletedTxn,
 		)
 		if err != nil {
 			return
 		}
-		nextTuple.Caveat, err = common.ContextualizedCaveatFrom(caveatName, caveatContext)
+
+		relationship := tuple.Relationship{
+			RelationshipReference: tuple.RelationshipReference{
+				Resource: tuple.ObjectAndRelation{
+					ObjectType: resourceObjectType,
+					ObjectID:   resourceObjectID,
+					Relation:   relation,
+				},
+				Subject: tuple.ObjectAndRelation{
+					ObjectType: subjectObjectType,
+					ObjectID:   subjectObjectID,
+					Relation:   subjectRelation,
+				},
+			},
+			OptionalExpiration: expiration,
+		}
+
+		relationship.OptionalCaveat, err = common.ContextualizedCaveatFrom(caveatName, caveatContext)
 		if err != nil {
 			return
 		}
 
 		if createdTxn > afterRevision && createdTxn <= newRevision {
-			if err = stagedChanges.AddRelationshipChange(ctx, revisions.NewForTransactionID(createdTxn), nextTuple, core.RelationTupleUpdate_TOUCH); err != nil {
+			if err = stagedChanges.AddRelationshipChange(ctx, revisions.NewForTransactionID(createdTxn), relationship, tuple.UpdateOperationTouch); err != nil {
 				return
 			}
 		}
 
 		if deletedTxn > afterRevision && deletedTxn <= newRevision {
-			if err = stagedChanges.AddRelationshipChange(ctx, revisions.NewForTransactionID(deletedTxn), nextTuple, core.RelationTupleUpdate_DELETE); err != nil {
+			if err = stagedChanges.AddRelationshipChange(ctx, revisions.NewForTransactionID(deletedTxn), relationship, tuple.UpdateOperationDelete); err != nil {
 				return
 			}
 		}
@@ -196,6 +270,6 @@ func (mds *Datastore) loadChanges(
 		return
 	}
 
-	changes = stagedChanges.AsRevisionChanges(revisions.TransactionIDKeyLessThanFunc)
+	changes, err = stagedChanges.AsRevisionChanges(revisions.TransactionIDKeyLessThanFunc)
 	return
 }

@@ -6,11 +6,13 @@ import (
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/ccoveille/go-safecast"
 
 	"github.com/authzed/spicedb/internal/datastore/common"
 	"github.com/authzed/spicedb/internal/datastore/revisions"
 	log "github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/pkg/datastore"
+	"github.com/authzed/spicedb/pkg/spiceerrors"
 )
 
 var _ common.GarbageCollector = (*Datastore)(nil)
@@ -25,6 +27,14 @@ func (mds *Datastore) MarkGCCompleted() {
 
 func (mds *Datastore) ResetGCCompleted() {
 	mds.gcHasRun.Store(false)
+}
+
+func (mds *Datastore) LockForGCRun(ctx context.Context) (bool, error) {
+	return mds.tryAcquireLock(ctx, gcRunLock)
+}
+
+func (mds *Datastore) UnlockAfterGCRun() error {
+	return mds.releaseLock(context.Background(), gcRunLock)
 }
 
 func (mds *Datastore) Now(ctx context.Context) (time.Time, error) {
@@ -64,7 +74,12 @@ func (mds *Datastore) TxIDBefore(ctx context.Context, before time.Time) (datasto
 		return datastore.NoRevision, nil
 	}
 
-	return revisions.NewForTransactionID(uint64(value.Int64)), nil
+	uintValue, err := safecast.ToUint64(value.Int64)
+	if err != nil {
+		return datastore.NoRevision, spiceerrors.MustBugf("value could not be cast to uint64: %v", err)
+	}
+
+	return revisions.NewForTransactionID(uintValue), nil
 }
 
 // - implementation misses metrics
@@ -90,6 +105,23 @@ func (mds *Datastore) DeleteBeforeTx(
 	// Delete any namespace rows with deleted_transaction <= the transaction ID.
 	removed.Namespaces, err = mds.batchDelete(ctx, mds.driver.Namespace(), sq.LtOrEq{colDeletedTxn: txID})
 	return
+}
+
+func (mds *Datastore) DeleteExpiredRels(ctx context.Context) (int64, error) {
+	if mds.schema.ExpirationDisabled {
+		return 0, nil
+	}
+
+	now, err := mds.Now(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	return mds.batchDelete(
+		ctx,
+		mds.driver.RelationTuple(),
+		sq.Lt{colExpiration: now.Add(-1 * mds.gcWindow)},
+	)
 }
 
 // - query was reworked to make it compatible with Vitess

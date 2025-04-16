@@ -11,11 +11,11 @@ import (
 
 func TestDefaults(t *testing.T) {
 	f := pflag.FlagSet{}
-	expected := Config{}
-	err := RegisterDatastoreFlagsWithPrefix(&f, "", &expected)
+	expected := NewConfigWithOptionsAndDefaults()
+	err := RegisterDatastoreFlagsWithPrefix(&f, "", expected)
 	require.NoError(t, err)
 	received := DefaultDatastoreConfig()
-	require.Equal(t, expected, *received)
+	require.Equal(t, expected, received)
 }
 
 func TestLoadDatastoreFromFileContents(t *testing.T) {
@@ -35,7 +35,7 @@ func TestLoadDatastoreFromFileContents(t *testing.T) {
 }
 
 func TestLoadDatastoreFromFile(t *testing.T) {
-	file, err := os.CreateTemp("", "")
+	file, err := os.CreateTemp(t.TempDir(), "")
 	require.NoError(t, err)
 	_, err = file.Write([]byte("schema: definition user{}"))
 	require.NoError(t, err)
@@ -56,7 +56,7 @@ func TestLoadDatastoreFromFile(t *testing.T) {
 }
 
 func TestLoadDatastoreFromFileAndContents(t *testing.T) {
-	file, err := os.CreateTemp("", "")
+	file, err := os.CreateTemp(t.TempDir(), "")
 	require.NoError(t, err)
 	_, err = file.Write([]byte("schema: definition repository{}"))
 	require.NoError(t, err)

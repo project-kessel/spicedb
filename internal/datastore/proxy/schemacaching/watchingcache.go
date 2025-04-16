@@ -77,7 +77,7 @@ type watchingCachingProxy struct {
 }
 
 // createWatchingCacheProxy creates and returns a watching cache proxy.
-func createWatchingCacheProxy(delegate datastore.Datastore, c cache.Cache, gcWindow time.Duration, watchHeartbeat time.Duration) *watchingCachingProxy {
+func createWatchingCacheProxy(delegate datastore.Datastore, c cache.Cache[cache.StringKey, *cacheEntry], gcWindow time.Duration, watchHeartbeat time.Duration) *watchingCachingProxy {
 	fallbackCache := &definitionCachingProxy{
 		Datastore: delegate,
 		c:         c,
@@ -183,7 +183,7 @@ func (p *watchingCachingProxy) startSync(ctx context.Context) error {
 
 	// Start watching for schema changes.
 	go (func() {
-		retryCount := 0
+		retryCount := uint8(0)
 
 	restartWatch:
 		for {
@@ -243,6 +243,9 @@ func (p *watchingCachingProxy) startSync(ctx context.Context) error {
 				Content:            datastore.WatchSchema | datastore.WatchCheckpoints,
 				CheckpointInterval: p.watchHeartbeat,
 			})
+			spiceerrors.DebugAssertNotNil(ssc, "ssc is nil")
+			spiceerrors.DebugAssertNotNil(serrc, "serrc is nil")
+
 			log.Debug().Msg("schema watch started")
 
 			p.namespaceCache.startAtRevision(headRev)
@@ -261,7 +264,12 @@ func (p *watchingCachingProxy) startSync(ctx context.Context) error {
 					return
 
 				case ss := <-ssc:
-					log.Trace().Object("update", ss).Msg("received update from schema watch")
+					log.Trace().
+						Bool("is-checkpoint", ss.IsCheckpoint).
+						Int("changed-definition-count", len(ss.ChangedDefinitions)).
+						Int("deleted-namespace-count", len(ss.DeletedNamespaces)).
+						Int("deleted-caveat-count", len(ss.DeletedCaveats)).
+						Msg("received update from schema watch")
 
 					if ss.IsCheckpoint {
 						if converted, ok := ss.Revision.(revisions.WithInexactFloat64); ok {
@@ -317,12 +325,12 @@ func (p *watchingCachingProxy) startSync(ctx context.Context) error {
 					}
 
 				case err := <-serrc:
-					var retryable datastore.ErrWatchRetryable
+					var retryable datastore.WatchRetryableError
 					if errors.As(err, &retryable) && retryCount <= maximumRetryCount {
 						log.Warn().Err(err).Msg("received retryable error in schema watch; sleeping for a bit and restarting watch")
 						retryCount++
 						wg.Add(1)
-						pgxcommon.SleepOnErr(ctx, err, uint8(retryCount))
+						pgxcommon.SleepOnErr(ctx, err, retryCount)
 						continue restartWatch
 					}
 

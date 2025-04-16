@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/ccoveille/go-safecast"
+
 	"github.com/authzed/spicedb/internal/dispatch"
 	"github.com/authzed/spicedb/internal/taskrunner"
 	"github.com/authzed/spicedb/pkg/datastore/options"
@@ -159,7 +161,7 @@ func withDatastoreCursorInCursor[T any, Q any](
 	var datastoreCursor options.Cursor
 	datastoreCursorString, _ := ci.headSectionValue()
 	if datastoreCursorString != "" {
-		datastoreCursor = tuple.MustParse(datastoreCursorString)
+		datastoreCursor = options.ToCursor(tuple.MustParse(datastoreCursorString))
 	}
 
 	if ci.limits.hasExhaustedLimit() {
@@ -183,7 +185,13 @@ func withDatastoreCursorInCursor[T any, Q any](
 
 	getItemCursor := func(taskIndex int) (cursorInformation, error) {
 		// Create an updated cursor referencing the current item's cursor, so that any items returned know to resume from this point.
-		currentCursor, err := ci.withOutgoingSection(tuple.StringWithoutCaveat(itemsToBeProcessed[taskIndex].cursor))
+		cursorRel := options.ToRelationship(itemsToBeProcessed[taskIndex].cursor)
+		cursorSection := ""
+		if cursorRel != nil {
+			cursorSection = tuple.StringWithoutCaveatOrExpiration(*cursorRel)
+		}
+
+		currentCursor, err := ci.withOutgoingSection(cursorSection)
 		if err != nil {
 			return currentCursor, err
 		}
@@ -501,7 +509,11 @@ func (ls *parallelLimitedIndexedStream[Q]) completedTaskIndex(index int) error {
 
 		if ls.toPublishTaskIndex == 0 {
 			// Remove the already emitted data from the overall limits.
-			if err := ls.ci.limits.markAlreadyPublished(uint32(ls.countingStream.PublishedCount())); err != nil {
+			publishedCount, err := safecast.ToUint32(ls.countingStream.PublishedCount())
+			if err != nil {
+				return spiceerrors.MustBugf("cannot cast published count to uint32: %v", err)
+			}
+			if err := ls.ci.limits.markAlreadyPublished(publishedCount); err != nil {
 				return err
 			}
 

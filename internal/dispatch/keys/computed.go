@@ -20,12 +20,11 @@ type cachePrefix string
 // Define the various prefixes for the cache entries. These must *all* be unique and must *all*
 // also be placed into the cachePrefixes slice below.
 const (
-	checkViaRelationPrefix   cachePrefix = "cr"
-	checkViaCanonicalPrefix  cachePrefix = "cc"
-	lookupPrefix             cachePrefix = "l"
-	expandPrefix             cachePrefix = "e"
-	reachableResourcesPrefix cachePrefix = "rr"
-	lookupSubjectsPrefix     cachePrefix = "ls"
+	checkViaRelationPrefix  cachePrefix = "cr"
+	checkViaCanonicalPrefix cachePrefix = "cc"
+	lookupPrefix            cachePrefix = "l"
+	expandPrefix            cachePrefix = "e"
+	lookupSubjectsPrefix    cachePrefix = "ls"
 )
 
 var cachePrefixes = []cachePrefix{
@@ -33,7 +32,6 @@ var cachePrefixes = []cachePrefix{
 	checkViaCanonicalPrefix,
 	lookupPrefix,
 	expandPrefix,
-	reachableResourcesPrefix,
 	lookupSubjectsPrefix,
 }
 
@@ -60,7 +58,7 @@ func checkRequestToKeyWithCanonical(req *v1.DispatchCheckRequest, canonicalKey s
 	)
 
 	if canonicalKey == "" {
-		return cacheKey, spiceerrors.MustBugf("given empty canonical key for request: %s => %s", req.ResourceRelation, tuple.StringONR(req.Subject))
+		return cacheKey, spiceerrors.MustBugf("given empty canonical key for request: %s => %s", req.ResourceRelation, tuple.StringCoreONR(req.Subject))
 	}
 
 	return cacheKey, nil
@@ -73,22 +71,13 @@ func expandRequestToKey(req *v1.DispatchExpandRequest, option dispatchCacheKeyHa
 	)
 }
 
-// reachableResourcesRequestToKey converts a reachable resources request into a cache key
-func reachableResourcesRequestToKey(req *v1.DispatchReachableResourcesRequest, option dispatchCacheKeyHashComputeOption) DispatchCacheKey {
-	return dispatchCacheKeyHash(reachableResourcesPrefix, req.Metadata.AtRevision, option,
+// lookupResourcesRequest2ToKey converts a lookup request into a cache key
+func lookupResourcesRequest2ToKey(req *v1.DispatchLookupResources2Request, option dispatchCacheKeyHashComputeOption) DispatchCacheKey {
+	return dispatchCacheKeyHash(lookupPrefix, req.Metadata.AtRevision, option,
 		hashableRelationReference{req.ResourceRelation},
 		hashableRelationReference{req.SubjectRelation},
 		hashableIds(req.SubjectIds),
-		hashableCursor{req.OptionalCursor},
-		hashableLimit(req.OptionalLimit),
-	)
-}
-
-// lookupResourcesRequestToKey converts a lookup request into a cache key
-func lookupResourcesRequestToKey(req *v1.DispatchLookupResourcesRequest, option dispatchCacheKeyHashComputeOption) DispatchCacheKey {
-	return dispatchCacheKeyHash(lookupPrefix, req.Metadata.AtRevision, option,
-		hashableRelationReference{req.ObjectRelation},
-		hashableOnr{req.Subject},
+		hashableOnr{req.TerminalSubject},
 		hashableContext{HashableContext: caveats.HashableContext{Struct: req.Context}}, // NOTE: context is included here because lookup does a single dispatch
 		hashableCursor{req.OptionalCursor},
 		hashableLimit(req.OptionalLimit),

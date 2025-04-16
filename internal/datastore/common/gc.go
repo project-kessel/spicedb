@@ -29,6 +29,13 @@ var (
 		Help:      "The number of stale relationships deleted by the datastore garbage collection.",
 	})
 
+	gcExpiredRelationshipsCounter = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "spicedb",
+		Subsystem: "datastore",
+		Name:      "gc_expired_relationships_total",
+		Help:      "The number of expired relationships deleted by the datastore garbage collection.",
+	})
+
 	gcTransactionsCounter = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: "spicedb",
 		Subsystem: "datastore",
@@ -73,14 +80,39 @@ func RegisterGCMetrics() error {
 // GarbageCollector represents any datastore that supports external garbage
 // collection.
 type GarbageCollector interface {
+	// HasGCRun returns true if a garbage collection run has been completed.
 	HasGCRun() bool
+
+	// MarkGCCompleted marks that a garbage collection run has been completed.
 	MarkGCCompleted()
+
+	// ResetGCCompleted resets the state of the garbage collection run.
 	ResetGCCompleted()
 
+	// LockForGCRun attempts to acquire a lock for garbage collection. This lock
+	// is typically done at the datastore level, to ensure that no other nodes are
+	// running garbage collection at the same time.
+	LockForGCRun(ctx context.Context) (bool, error)
+
+	// UnlockAfterGCRun releases the lock after a garbage collection run.
+	// NOTE: this method does not take a context, as the context used for the
+	// reset of the GC run can be canceled/timed out and the unlock will still need to happen.
+	UnlockAfterGCRun() error
+
+	// ReadyState returns the current state of the datastore.
 	ReadyState(context.Context) (datastore.ReadyState, error)
+
+	// Now returns the current time from the datastore.
 	Now(context.Context) (time.Time, error)
+
+	// TxIDBefore returns the highest transaction ID before the provided time.
 	TxIDBefore(context.Context, time.Time) (datastore.Revision, error)
+
+	// DeleteBeforeTx deletes all data before the provided transaction ID.
 	DeleteBeforeTx(ctx context.Context, txID datastore.Revision) (DeletionCounts, error)
+
+	// DeleteExpiredRels deletes all relationships that have expired.
+	DeleteExpiredRels(ctx context.Context) (int64, error)
 }
 
 // DeletionCounts tracks the amount of deletions that occurred when calling
@@ -173,6 +205,26 @@ func RunGarbageCollection(gc GarbageCollector, window, timeout time.Duration) er
 		return nil
 	}
 
+	ok, err := gc.LockForGCRun(ctx)
+	if err != nil {
+		return fmt.Errorf("error locking for gc run: %w", err)
+	}
+
+	if !ok {
+		log.Info().
+			Msg("datastore garbage collection already in progress on another node")
+		return nil
+	}
+
+	defer func() {
+		err := gc.UnlockAfterGCRun()
+		if err != nil {
+			log.Error().
+				Err(err).
+				Msg("error unlocking after gc run")
+		}
+	}()
+
 	now, err := gc.Now(ctx)
 	if err != nil {
 		return fmt.Errorf("error retrieving now: %w", err)
@@ -185,11 +237,14 @@ func RunGarbageCollection(gc GarbageCollector, window, timeout time.Duration) er
 
 	collected, err := gc.DeleteBeforeTx(ctx, watermark)
 
+	expiredRelationshipsCount, eerr := gc.DeleteExpiredRels(ctx)
+
 	// even if an error happened, garbage would have been collected. This makes sure these are reflected even if the
 	// worker eventually fails or times out.
 	gcRelationshipsCounter.Add(float64(collected.Relationships))
 	gcTransactionsCounter.Add(float64(collected.Transactions))
 	gcNamespacesCounter.Add(float64(collected.Namespaces))
+	gcExpiredRelationshipsCounter.Add(float64(expiredRelationshipsCount))
 	collectionDuration := time.Since(startTime)
 	gcDurationHistogram.Observe(collectionDuration.Seconds())
 
@@ -197,11 +252,16 @@ func RunGarbageCollection(gc GarbageCollector, window, timeout time.Duration) er
 		return fmt.Errorf("error deleting in gc: %w", err)
 	}
 
+	if eerr != nil {
+		return fmt.Errorf("error deleting expired relationships in gc: %w", eerr)
+	}
+
 	log.Ctx(ctx).Info().
 		Stringer("highestTxID", watermark).
 		Dur("duration", collectionDuration).
 		Time("nowTime", now).
 		Interface("collected", collected).
+		Int64("expiredRelationships", expiredRelationshipsCount).
 		Msg("datastore garbage collection completed successfully")
 
 	gc.MarkGCCompleted()

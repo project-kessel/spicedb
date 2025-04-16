@@ -1,6 +1,8 @@
 package revisions
 
 import (
+	"bytes"
+	"sort"
 	"strings"
 	"testing"
 
@@ -151,7 +153,7 @@ func TestRevisionComparison(t *testing.T) {
 
 func TestRevisionBidirectionalParsing(t *testing.T) {
 	tcs := []string{
-		"1", "2", "42", "192747564535", "1.0000000004", "1.0000000002", "1.0000000042", "-1235",
+		"1.0000000000", "2.0000000000", "42.0000000000", "192747564535.0000000000", "1.0000000004", "1.0000000002", "1.0000000042", "-1235.0000000000",
 	}
 
 	for _, tc := range tcs {
@@ -223,11 +225,11 @@ func TestTransactionIDRevisionParsing(t *testing.T) {
 
 func TestHLCRevisionParsing(t *testing.T) {
 	tcs := map[string]bool{
-		"1":                              false,
-		"2":                              false,
-		"42":                             false,
-		"1257894000000000000":            false,
-		"-1":                             false,
+		"1.0000000000":                   false,
+		"2.0000000000":                   false,
+		"42.0000000000":                  false,
+		"1257894000000000000.0000000000": false,
+		"-1.0000000000":                  false,
 		"1.0000000004":                   false,
 		"9223372036854775807.0000000004": false,
 	}
@@ -243,6 +245,87 @@ func TestHLCRevisionParsing(t *testing.T) {
 
 			require.NoError(t, err)
 			require.Equal(t, tc, parsed.String())
+		})
+	}
+}
+
+func TestRevisionByteSortable(t *testing.T) {
+	tcs := []struct {
+		left      string
+		right     string
+		leftFirst bool
+	}{
+		{
+			"1",
+			"2",
+			true,
+		},
+		{
+			"2",
+			"1",
+			false,
+		},
+		{
+			"1",
+			"1",
+			true,
+		},
+		{
+			"1.0000000004",
+			"1",
+			false,
+		},
+		{
+			"1",
+			"1.0000000004",
+			true,
+		},
+		{
+			"1.0000000004",
+			"1.0000000004",
+			true,
+		},
+		{
+			"1.1000000000",
+			"1.0000000001",
+			false,
+		},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.left+"_"+tc.right, func(t *testing.T) {
+			for kind, supportsDecimals := range kinds {
+				t.Run(string(kind), func(t *testing.T) {
+					if !supportsDecimals && strings.Contains(tc.left, ".") {
+						t.Skip("does not support decimals")
+					}
+
+					if !supportsDecimals && strings.Contains(tc.right, ".") {
+						t.Skip("does not support decimals")
+					}
+					parser := RevisionParser(kind)
+
+					leftRev, err := parser(tc.left)
+					require.NoError(t, err)
+
+					rightRev, err := parser(tc.right)
+					require.NoError(t, err)
+
+					if !leftRev.ByteSortable() || !rightRev.ByteSortable() {
+						t.Skip("does not support byt sorting")
+					}
+
+					toSort := []string{leftRev.String(), rightRev.String()}
+					sort.Strings(toSort)
+					if tc.leftFirst {
+						require.Equal(t, leftRev.String(), toSort[0])
+						require.Equal(t, 0, bytes.Compare([]byte(leftRev.String()), []byte(toSort[0])))
+					} else {
+						require.Equal(t, rightRev.String(), toSort[0])
+						require.Equal(t, 0, bytes.Compare([]byte(rightRev.String()), []byte(toSort[0])))
+					}
+				})
+			}
 		})
 	}
 }

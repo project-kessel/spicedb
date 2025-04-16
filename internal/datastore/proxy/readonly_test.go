@@ -36,17 +36,17 @@ func TestRWOperationErrors(t *testing.T) {
 	rev, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
 		return rwt.DeleteNamespaces(ctx, "fake")
 	})
-	require.ErrorAs(err, &datastore.ErrReadOnly{})
+	require.ErrorAs(err, &datastore.ReadOnlyError{})
 	require.Equal(datastore.NoRevision, rev)
 
 	rev, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
 		return rwt.WriteNamespaces(ctx, &core.NamespaceDefinition{Name: "user"})
 	})
-	require.ErrorAs(err, &datastore.ErrReadOnly{})
+	require.ErrorAs(err, &datastore.ReadOnlyError{})
 	require.Equal(datastore.NoRevision, rev)
 
-	rev, err = common.WriteTuples(ctx, ds, core.RelationTupleUpdate_CREATE, tuple.Parse("user:test#boss@user:boss"))
-	require.ErrorAs(err, &datastore.ErrReadOnly{})
+	rev, err = common.WriteRelationships(ctx, ds, tuple.UpdateOperationCreate, tuple.MustParse("user:test#boss@user:boss"))
+	require.ErrorAs(err, &datastore.ReadOnlyError{})
 	require.Equal(datastore.NoRevision, rev)
 }
 
@@ -117,7 +117,7 @@ func TestWatchPassthrough(t *testing.T) {
 	ctx := context.Background()
 
 	delegate.On("Watch", expectedRevision).Return(
-		make(<-chan *datastore.RevisionChanges),
+		make(<-chan datastore.RevisionChanges),
 		make(<-chan error),
 	).Times(1)
 

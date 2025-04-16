@@ -6,13 +6,14 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/ccoveille/go-safecast"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/require"
 
 	"github.com/authzed/spicedb/internal/testfixtures"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/datastore/options"
-	core "github.com/authzed/spicedb/pkg/proto/core/v1"
+	"github.com/authzed/spicedb/pkg/genutil/mapz"
 	"github.com/authzed/spicedb/pkg/tuple"
 )
 
@@ -34,7 +35,7 @@ func OrderingTest(t *testing.T, tester DatastoreTester) {
 	require.NoError(t, err)
 
 	ds, rev := testfixtures.StandardDatastoreWithData(rawDS, require.New(t))
-	tRequire := testfixtures.TupleChecker{Require: require.New(t), DS: ds}
+	tRequire := testfixtures.RelationshipChecker{Require: require.New(t), DS: ds}
 
 	for _, tc := range testCases {
 		tc := tc
@@ -51,22 +52,7 @@ func OrderingTest(t *testing.T, tester DatastoreTester) {
 			}, options.WithSort(tc.ordering))
 
 			require.NoError(err)
-			defer iter.Close()
-
-			cursor, err := iter.Cursor()
-			require.Empty(cursor)
-			require.ErrorIs(err, datastore.ErrCursorEmpty)
-
 			tRequire.VerifyOrderedIteratorResults(iter, expected...)
-
-			cursor, err = iter.Cursor()
-			if len(expected) > 0 {
-				require.NotEmpty(cursor)
-				require.NoError(err)
-			} else {
-				require.Empty(cursor)
-				require.ErrorIs(err, datastore.ErrCursorEmpty)
-			}
 
 			// Check a reader from with a transaction
 			_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
@@ -74,23 +60,7 @@ func OrderingTest(t *testing.T, tester DatastoreTester) {
 					OptionalResourceType: tc.resourceType,
 				}, options.WithSort(tc.ordering))
 				require.NoError(err)
-				defer iter.Close()
-
-				cursor, err := iter.Cursor()
-				require.Empty(cursor)
-				require.ErrorIs(err, datastore.ErrCursorEmpty)
-
 				tRequire.VerifyOrderedIteratorResults(iter, expected...)
-
-				cursor, err = iter.Cursor()
-				if len(expected) > 0 {
-					require.NotEmpty(cursor)
-					require.NoError(err)
-				} else {
-					require.Empty(cursor)
-					require.ErrorIs(err, datastore.ErrCursorEmpty)
-				}
-
 				return nil
 			})
 			require.NoError(err)
@@ -109,12 +79,12 @@ func LimitTest(t *testing.T, tester DatastoreTester) {
 	require.NoError(t, err)
 
 	ds, rev := testfixtures.StandardDatastoreWithData(rawDS, require.New(t))
-	tRequire := testfixtures.TupleChecker{Require: require.New(t), DS: ds}
+	tRequire := testfixtures.RelationshipChecker{Require: require.New(t), DS: ds}
 
 	for _, objectType := range testCases {
 		expected := sortedStandardData(objectType, options.ByResource)
 		for limit := 1; limit <= len(expected)+1; limit++ {
-			testLimit := uint64(limit)
+			testLimit, _ := safecast.ToUint64(limit)
 			t.Run(fmt.Sprintf("%s-%d", objectType, limit), func(t *testing.T) {
 				require := require.New(t)
 				ctx := context.Background()
@@ -125,22 +95,13 @@ func LimitTest(t *testing.T, tester DatastoreTester) {
 					}, options.WithLimit(&testLimit))
 
 					require.NoError(err)
-					defer iter.Close()
 
 					expectedCount := limit
 					if expectedCount > len(expected) {
 						expectedCount = len(expected)
 					}
 
-					cursor, err := iter.Cursor()
-					require.Empty(cursor)
-					require.ErrorIs(err, datastore.ErrCursorsWithoutSorting)
-
 					tRequire.VerifyIteratorCount(iter, expectedCount)
-
-					cursor, err = iter.Cursor()
-					require.Empty(cursor)
-					require.ErrorIs(err, datastore.ErrCursorsWithoutSorting)
 				})
 			})
 		}
@@ -204,7 +165,7 @@ func OrderedLimitTest(t *testing.T, tester DatastoreTester) {
 	require.NoError(t, err)
 
 	ds, rev := testfixtures.StandardDatastoreWithData(rawDS, require.New(t))
-	tRequire := testfixtures.TupleChecker{Require: require.New(t), DS: ds}
+	tRequire := testfixtures.RelationshipChecker{Require: require.New(t), DS: ds}
 
 	for _, tc := range orderedTestCases {
 		expected := sortedStandardData(tc.objectType, tc.sortOrder)
@@ -213,7 +174,7 @@ func OrderedLimitTest(t *testing.T, tester DatastoreTester) {
 		}
 
 		for limit := 1; limit <= len(expected); limit++ {
-			testLimit := uint64(limit)
+			testLimit, _ := safecast.ToUint64(limit)
 
 			t.Run(tc.name, func(t *testing.T) {
 				require := require.New(t)
@@ -230,22 +191,7 @@ func OrderedLimitTest(t *testing.T, tester DatastoreTester) {
 					}
 
 					require.NoError(err)
-					defer iter.Close()
-
-					cursor, err := iter.Cursor()
-					require.Empty(cursor)
-					require.ErrorIs(err, datastore.ErrCursorEmpty)
-
 					tRequire.VerifyOrderedIteratorResults(iter, expected[0:limit]...)
-
-					cursor, err = iter.Cursor()
-					if len(expected) > 0 {
-						require.NotEmpty(cursor)
-						require.NoError(err)
-					} else {
-						require.Empty(cursor)
-						require.ErrorIs(err, datastore.ErrCursorEmpty)
-					}
 				})
 			})
 		}
@@ -257,7 +203,7 @@ func ResumeTest(t *testing.T, tester DatastoreTester) {
 	require.NoError(t, err)
 
 	ds, rev := testfixtures.StandardDatastoreWithData(rawDS, require.New(t))
-	tRequire := testfixtures.TupleChecker{Require: require.New(t), DS: ds}
+	tRequire := testfixtures.RelationshipChecker{Require: require.New(t), DS: ds}
 
 	for _, tc := range orderedTestCases {
 		expected := sortedStandardData(tc.objectType, tc.sortOrder)
@@ -266,7 +212,7 @@ func ResumeTest(t *testing.T, tester DatastoreTester) {
 		}
 
 		for batchSize := 1; batchSize <= len(expected); batchSize++ {
-			testLimit := uint64(batchSize)
+			testLimit, _ := safecast.ToUint64(batchSize)
 			expected := expected
 
 			t.Run(fmt.Sprintf("%s-batches-%d", tc.name, batchSize), func(t *testing.T) {
@@ -286,27 +232,13 @@ func ResumeTest(t *testing.T, tester DatastoreTester) {
 						}
 
 						require.NoError(err)
-						defer iter.Close()
-
-						emptyCursor, err := iter.Cursor()
-						require.Empty(emptyCursor)
-						require.ErrorIs(err, datastore.ErrCursorEmpty)
 
 						upperBound := offset + batchSize
 						if upperBound > len(expected) {
 							upperBound = len(expected)
 						}
 
-						tRequire.VerifyOrderedIteratorResults(iter, expected[offset:upperBound]...)
-
-						cursor, err = iter.Cursor()
-						if upperBound-offset > 0 {
-							require.NotEmpty(cursor)
-							require.NoError(err)
-						} else {
-							require.Empty(cursor)
-							require.ErrorIs(err, datastore.ErrCursorEmpty)
-						}
+						cursor = tRequire.VerifyOrderedIteratorResults(iter, expected[offset:upperBound]...)
 					}
 				})
 			})
@@ -314,63 +246,116 @@ func ResumeTest(t *testing.T, tester DatastoreTester) {
 	}
 }
 
-func CursorErrorsTest(t *testing.T, tester DatastoreTester) {
-	testCases := []struct {
-		order              options.SortOrder
-		defaultCursorError error
-	}{
-		{options.Unsorted, datastore.ErrCursorsWithoutSorting},
-		{options.ByResource, nil},
-	}
-
+func ReverseQueryFilteredOverMultipleValuesCursorTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(t, err)
 
-	ds, rev := testfixtures.StandardDatastoreWithData(rawDS, require.New(t))
-	ctx := context.Background()
+	// Create a datastore with the standard schema but no data.
+	ds, _ := testfixtures.StandardDatastoreWithSchema(rawDS, require.New(t))
 
-	for _, tc := range testCases {
-		t.Run(fmt.Sprintf("Order-%d", tc.order), func(t *testing.T) {
-			require := require.New(t)
+	// Add test relationships.
+	rev, err := ds.ReadWriteTx(context.Background(), func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
+		return rwt.WriteRelationships(ctx, []tuple.RelationshipUpdate{
+			tuple.Create(tuple.MustParse("document:firstdoc#viewer@user:alice")),
+			tuple.Create(tuple.MustParse("document:firstdoc#viewer@user:tom")),
+			tuple.Create(tuple.MustParse("document:firstdoc#viewer@user:fred")),
+			tuple.Create(tuple.MustParse("document:seconddoc#viewer@user:alice")),
+			tuple.Create(tuple.MustParse("document:seconddoc#viewer@user:*")),
+			tuple.Create(tuple.MustParse("document:thirddoc#viewer@user:*")),
+		})
+	})
+	require.NoError(t, err)
 
-			foreachTxType(ctx, ds, rev, func(reader datastore.Reader) {
-				iter, err := reader.QueryRelationships(ctx, datastore.RelationshipsFilter{
-					OptionalResourceType: testfixtures.DocumentNS.Name,
-				}, options.WithSort(tc.order))
-				require.NoError(err)
-				require.NotNil(iter)
-				defer iter.Close()
+	// Issue a reverse query call with a limit.
+	for _, sortBy := range []options.SortOrder{options.ByResource, options.BySubject} {
+		t.Run(fmt.Sprintf("SortBy-%d", sortBy), func(t *testing.T) {
+			reader := ds.SnapshotReader(rev)
 
-				cursor, err := iter.Cursor()
-				require.Nil(cursor)
-				if tc.defaultCursorError != nil {
-					require.ErrorIs(err, tc.defaultCursorError)
-				} else {
-					require.ErrorIs(err, datastore.ErrCursorEmpty)
+			var limit uint64 = 2
+			var cursor options.Cursor
+
+			foundTuples := mapz.NewSet[string]()
+
+			for i := 0; i < 5; i++ {
+				iter, err := reader.ReverseQueryRelationships(context.Background(), datastore.SubjectsFilter{
+					SubjectType:        testfixtures.UserNS.Name,
+					OptionalSubjectIds: []string{"alice", "tom", "fred", "*"},
+				}, options.WithResRelation(&options.ResourceRelation{
+					Namespace: "document",
+					Relation:  "viewer",
+				}), options.WithSortForReverse(sortBy), options.WithLimitForReverse(&limit), options.WithAfterForReverse(cursor))
+				require.NoError(t, err)
+
+				encounteredTuples := mapz.NewSet[string]()
+				for rel, err := range iter {
+					require.NoError(t, err)
+					require.True(t, encounteredTuples.Add(tuple.MustString(rel)))
+					cursor = options.ToCursor(rel)
 				}
 
-				val := iter.Next()
-				require.NotNil(val)
+				require.LessOrEqual(t, encounteredTuples.Len(), 2)
+				foundTuples = foundTuples.Union(encounteredTuples)
+				if encounteredTuples.IsEmpty() {
+					break
+				}
+			}
 
-				cursor, err = iter.Cursor()
-				if tc.defaultCursorError != nil {
-					require.Nil(cursor)
-					require.ErrorIs(err, tc.defaultCursorError)
-				} else {
-					require.NotNil(cursor)
-					require.Nil(err)
+			require.Equal(t, 6, foundTuples.Len())
+		})
+	}
+}
+
+func ReverseQueryCursorTest(t *testing.T, tester DatastoreTester) {
+	rawDS, err := tester.New(0, veryLargeGCInterval, veryLargeGCWindow, 1)
+	require.NoError(t, err)
+
+	// Create a datastore with the standard schema but no data.
+	ds, _ := testfixtures.StandardDatastoreWithSchema(rawDS, require.New(t))
+
+	// Add test relationships.
+	rev, err := ds.ReadWriteTx(context.Background(), func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
+		return rwt.WriteRelationships(ctx, []tuple.RelationshipUpdate{
+			tuple.Create(tuple.MustParse("document:firstdoc#viewer@user:alice")),
+			tuple.Create(tuple.MustParse("document:firstdoc#viewer@user:tom")),
+			tuple.Create(tuple.MustParse("document:firstdoc#viewer@user:fred")),
+			tuple.Create(tuple.MustParse("document:seconddoc#viewer@user:alice")),
+			tuple.Create(tuple.MustParse("document:seconddoc#viewer@user:*")),
+			tuple.Create(tuple.MustParse("document:thirddoc#viewer@user:*")),
+		})
+	})
+	require.NoError(t, err)
+
+	// Issue a reverse query call with a limit.
+	for _, sortBy := range []options.SortOrder{options.ByResource, options.BySubject} {
+		t.Run(fmt.Sprintf("SortBy-%d", sortBy), func(t *testing.T) {
+			reader := ds.SnapshotReader(rev)
+
+			var limit uint64 = 2
+			var cursor options.Cursor
+
+			foundTuples := mapz.NewSet[string]()
+
+			for i := 0; i < 5; i++ {
+				iter, err := reader.ReverseQueryRelationships(context.Background(), datastore.SubjectsFilter{
+					SubjectType: testfixtures.UserNS.Name,
+				}, options.WithSortForReverse(sortBy), options.WithLimitForReverse(&limit), options.WithAfterForReverse(cursor))
+				require.NoError(t, err)
+
+				encounteredTuples := mapz.NewSet[string]()
+				for rel, err := range iter {
+					require.NoError(t, err)
+					require.True(t, encounteredTuples.Add(tuple.MustString(rel)))
+					cursor = options.ToCursor(rel)
 				}
 
-				iter.Close()
-				valAfterClose := iter.Next()
-				require.Nil(valAfterClose)
+				require.LessOrEqual(t, encounteredTuples.Len(), 2)
+				foundTuples = foundTuples.Union(encounteredTuples)
+				if encounteredTuples.IsEmpty() {
+					break
+				}
+			}
 
-				err = iter.Err()
-				require.ErrorIs(err, datastore.ErrClosedIterator)
-				cursorAfterClose, err := iter.Cursor()
-				require.Nil(cursorAfterClose)
-				require.ErrorIs(err, datastore.ErrClosedIterator)
-			})
+			require.Equal(t, 6, foundTuples.Len())
 		})
 	}
 }
@@ -390,19 +375,19 @@ func foreachTxType(
 	})
 }
 
-func sortedStandardData(resourceType string, order options.SortOrder) []*core.RelationTuple {
-	asTuples := lo.Map(testfixtures.StandardTuples, func(item string, _ int) *core.RelationTuple {
-		return tuple.Parse(item)
+func sortedStandardData(resourceType string, order options.SortOrder) []tuple.Relationship {
+	asTuples := lo.Map(testfixtures.StandardRelationships, func(item string, _ int) tuple.Relationship {
+		return tuple.MustParse(item)
 	})
 
-	filteredToType := lo.Filter(asTuples, func(item *core.RelationTuple, _ int) bool {
-		return item.ResourceAndRelation.Namespace == resourceType
+	filteredToType := lo.Filter(asTuples, func(item tuple.Relationship, _ int) bool {
+		return item.Resource.ObjectType == resourceType
 	})
 
 	sort.Slice(filteredToType, func(i, j int) bool {
-		lhsResource := tuple.StringONR(filteredToType[i].ResourceAndRelation)
+		lhsResource := tuple.StringONR(filteredToType[i].Resource)
 		lhsSubject := tuple.StringONR(filteredToType[i].Subject)
-		rhsResource := tuple.StringONR(filteredToType[j].ResourceAndRelation)
+		rhsResource := tuple.StringONR(filteredToType[j].Resource)
 		rhsSubject := tuple.StringONR(filteredToType[j].Subject)
 		switch order {
 		case options.ByResource:
@@ -417,22 +402,22 @@ func sortedStandardData(resourceType string, order options.SortOrder) []*core.Re
 	return filteredToType
 }
 
-func sortedStandardDataBySubject(subjectType string, order options.SortOrder) []*core.RelationTuple {
-	asTuples := lo.Map(testfixtures.StandardTuples, func(item string, _ int) *core.RelationTuple {
-		return tuple.Parse(item)
+func sortedStandardDataBySubject(subjectType string, order options.SortOrder) []tuple.Relationship {
+	asTuples := lo.Map(testfixtures.StandardRelationships, func(item string, _ int) tuple.Relationship {
+		return tuple.MustParse(item)
 	})
 
-	filteredToType := lo.Filter(asTuples, func(item *core.RelationTuple, _ int) bool {
+	filteredToType := lo.Filter(asTuples, func(item tuple.Relationship, _ int) bool {
 		if subjectType == "" {
 			return true
 		}
-		return item.Subject.Namespace == subjectType
+		return item.Subject.ObjectType == subjectType
 	})
 
 	sort.Slice(filteredToType, func(i, j int) bool {
-		lhsResource := tuple.StringONR(filteredToType[i].ResourceAndRelation)
+		lhsResource := tuple.StringONR(filteredToType[i].Resource)
 		lhsSubject := tuple.StringONR(filteredToType[i].Subject)
-		rhsResource := tuple.StringONR(filteredToType[j].ResourceAndRelation)
+		rhsResource := tuple.StringONR(filteredToType[j].Resource)
 		rhsSubject := tuple.StringONR(filteredToType[j].Subject)
 		switch order {
 		case options.ByResource:

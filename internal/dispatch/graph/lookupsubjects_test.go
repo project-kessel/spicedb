@@ -7,29 +7,30 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"go.uber.org/goleak"
 
 	"github.com/authzed/spicedb/internal/caveats"
 	"github.com/authzed/spicedb/internal/datastore/common"
+	"github.com/authzed/spicedb/internal/datastore/dsfortesting"
 	"github.com/authzed/spicedb/internal/datastore/memdb"
 	"github.com/authzed/spicedb/internal/dispatch"
 	log "github.com/authzed/spicedb/internal/logging"
 	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/testfixtures"
 	itestutil "github.com/authzed/spicedb/internal/testutil"
-	corev1 "github.com/authzed/spicedb/pkg/proto/core/v1"
 	v1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
 	"github.com/authzed/spicedb/pkg/tuple"
 )
 
 var (
 	caveatexpr   = caveats.CaveatExprForTesting
+	caveatAndCtx = caveats.MustCaveatExprForTestingWithContext
 	caveatAnd    = caveats.And
 	caveatInvert = caveats.Invert
+	caveatOr     = caveats.Or
 )
 
 func TestSimpleLookupSubjects(t *testing.T) {
-	defer goleak.VerifyNone(t, goleakIgnores...)
+	t.Parallel()
 
 	testCases := []struct {
 		resourceType     string
@@ -132,8 +133,6 @@ func TestSimpleLookupSubjects(t *testing.T) {
 	for _, tc := range testCases {
 		tc := tc
 		t.Run(fmt.Sprintf("simple-lookup-subjects:%s:%s:%s:%s:%s", tc.resourceType, tc.resourceID, tc.permission, tc.subjectType, tc.subjectRelation), func(t *testing.T) {
-			defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
-
 			require := require.New(t)
 
 			ctx, dis, revision := newLocalDispatcher(t)
@@ -142,9 +141,9 @@ func TestSimpleLookupSubjects(t *testing.T) {
 			stream := dispatch.NewCollectingDispatchStream[*v1.DispatchLookupSubjectsResponse](ctx)
 
 			err := dis.DispatchLookupSubjects(&v1.DispatchLookupSubjectsRequest{
-				ResourceRelation: RR(tc.resourceType, tc.permission),
+				ResourceRelation: RR(tc.resourceType, tc.permission).ToCoreRR(),
 				ResourceIds:      []string{tc.resourceID},
-				SubjectRelation:  RR(tc.subjectType, tc.subjectRelation),
+				SubjectRelation:  RR(tc.subjectType, tc.subjectRelation).ToCoreRR(),
 				Metadata: &v1.ResolverMeta{
 					AtRevision:     revision.String(),
 					DepthRemaining: 50,
@@ -174,10 +173,10 @@ func TestSimpleLookupSubjects(t *testing.T) {
 			// Ensure every subject found has access.
 			for _, subjectID := range foundSubjectIds {
 				checkResult, err := dis.DispatchCheck(ctx, &v1.DispatchCheckRequest{
-					ResourceRelation: RR(tc.resourceType, tc.permission),
+					ResourceRelation: RR(tc.resourceType, tc.permission).ToCoreRR(),
 					ResourceIds:      []string{tc.resourceID},
 					ResultsSetting:   v1.DispatchCheckRequest_ALLOW_SINGLE_RESULT,
-					Subject:          ONR(tc.subjectType, subjectID, tc.subjectRelation),
+					Subject:          ONR(tc.subjectType, subjectID, tc.subjectRelation).ToCoreONR(),
 					Metadata: &v1.ResolverMeta{
 						AtRevision:     revision.String(),
 						DepthRemaining: 50,
@@ -193,9 +192,10 @@ func TestSimpleLookupSubjects(t *testing.T) {
 }
 
 func TestLookupSubjectsMaxDepth(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
-	rawDS, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
+	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
 	require.NoError(err)
 
 	ds, _ := testfixtures.StandardDatastoreWithSchema(rawDS, require)
@@ -203,17 +203,17 @@ func TestLookupSubjectsMaxDepth(t *testing.T) {
 	ctx := log.Logger.WithContext(datastoremw.ContextWithHandle(context.Background()))
 	require.NoError(datastoremw.SetInContext(ctx, ds))
 
-	tpl := tuple.Parse("folder:oops#owner@folder:oops#owner")
-	revision, err := common.WriteTuples(ctx, ds, corev1.RelationTupleUpdate_CREATE, tpl)
+	tpl := tuple.MustParse("folder:oops#owner@folder:oops#owner")
+	revision, err := common.WriteRelationships(ctx, ds, tuple.UpdateOperationCreate, tpl)
 	require.NoError(err)
 
-	dis := NewLocalOnlyDispatcher(10)
+	dis := NewLocalOnlyDispatcher(10, 100)
 	stream := dispatch.NewCollectingDispatchStream[*v1.DispatchLookupSubjectsResponse](ctx)
 
 	err = dis.DispatchLookupSubjects(&v1.DispatchLookupSubjectsRequest{
-		ResourceRelation: RR("folder", "owner"),
+		ResourceRelation: RR("folder", "owner").ToCoreRR(),
 		ResourceIds:      []string{"oops"},
-		SubjectRelation:  RR("user", "..."),
+		SubjectRelation:  RR("user", "...").ToCoreRR(),
 		Metadata: &v1.ResolverMeta{
 			AtRevision:     revision.String(),
 			DepthRemaining: 50,
@@ -223,6 +223,7 @@ func TestLookupSubjectsMaxDepth(t *testing.T) {
 }
 
 func TestLookupSubjectsDispatchCount(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		resourceType          string
 		resourceID            string
@@ -258,9 +259,9 @@ func TestLookupSubjectsDispatchCount(t *testing.T) {
 			stream := dispatch.NewCollectingDispatchStream[*v1.DispatchLookupSubjectsResponse](ctx)
 
 			err := dis.DispatchLookupSubjects(&v1.DispatchLookupSubjectsRequest{
-				ResourceRelation: RR(tc.resourceType, tc.permission),
+				ResourceRelation: RR(tc.resourceType, tc.permission).ToCoreRR(),
 				ResourceIds:      []string{tc.resourceID},
-				SubjectRelation:  RR(tc.subjectType, tc.subjectRelation),
+				SubjectRelation:  RR(tc.subjectType, tc.subjectRelation).ToCoreRR(),
 				Metadata: &v1.ResolverMeta{
 					AtRevision:     revision.String(),
 					DepthRemaining: 50,
@@ -275,13 +276,14 @@ func TestLookupSubjectsDispatchCount(t *testing.T) {
 	}
 }
 
-func TestCaveatedLookupSubjects(t *testing.T) {
+func TestLookupSubjectsOverSchema(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name          string
 		schema        string
-		relationships []*corev1.RelationTuple
-		start         *corev1.ObjectAndRelation
-		target        *corev1.RelationReference
+		relationships []tuple.Relationship
+		start         tuple.ObjectAndRelation
+		target        tuple.RelationReference
 		expected      []*v1.FoundSubject
 	}{
 		{
@@ -296,7 +298,7 @@ func TestCaveatedLookupSubjects(t *testing.T) {
 				relation viewer: user | user with somecaveat
 				permission view = viewer
   		 }`,
-			[]*corev1.RelationTuple{
+			[]tuple.Relationship{
 				tuple.MustWithCaveat(tuple.MustParse("document:first#viewer@user:tom"), "somecaveat"),
 				tuple.MustParse("document:first#viewer@user:sarah"),
 			},
@@ -325,7 +327,7 @@ func TestCaveatedLookupSubjects(t *testing.T) {
 				relation editor: user | user with somecaveat
 				permission view = viewer + editor
   		 }`,
-			[]*corev1.RelationTuple{
+			[]tuple.Relationship{
 				tuple.MustWithCaveat(tuple.MustParse("document:first#viewer@user:tom"), "somecaveat"),
 				tuple.MustWithCaveat(tuple.MustParse("document:first#editor@user:tom"), "somecaveat"),
 			},
@@ -351,7 +353,7 @@ func TestCaveatedLookupSubjects(t *testing.T) {
 				relation editor: user | user with somecaveat
 				permission view = viewer + editor
   		 }`,
-			[]*corev1.RelationTuple{
+			[]tuple.Relationship{
 				tuple.MustParse("document:first#viewer@user:tom"),
 				tuple.MustWithCaveat(tuple.MustParse("document:first#editor@user:tom"), "somecaveat"),
 			},
@@ -380,7 +382,7 @@ func TestCaveatedLookupSubjects(t *testing.T) {
 				relation editor: user | user with anothercaveat
 				permission view = viewer & editor
   		 }`,
-			[]*corev1.RelationTuple{
+			[]tuple.Relationship{
 				tuple.MustWithCaveat(tuple.MustParse("document:first#viewer@user:tom"), "somecaveat"),
 				tuple.MustWithCaveat(tuple.MustParse("document:first#editor@user:tom"), "anothercaveat"),
 				tuple.MustWithCaveat(tuple.MustParse("document:first#viewer@user:sarah"), "somecaveat"),
@@ -414,7 +416,7 @@ func TestCaveatedLookupSubjects(t *testing.T) {
 				relation banned: user | user with anothercaveat
 				permission view = viewer - banned
   		 }`,
-			[]*corev1.RelationTuple{
+			[]tuple.Relationship{
 				tuple.MustWithCaveat(tuple.MustParse("document:first#viewer@user:tom"), "somecaveat"),
 				tuple.MustWithCaveat(tuple.MustParse("document:first#banned@user:tom"), "anothercaveat"),
 				tuple.MustWithCaveat(tuple.MustParse("document:first#viewer@user:sarah"), "somecaveat"),
@@ -451,7 +453,7 @@ func TestCaveatedLookupSubjects(t *testing.T) {
 				relation org: org with somecaveat
 				permission view = org->viewer
   		 }`,
-			[]*corev1.RelationTuple{
+			[]tuple.Relationship{
 				tuple.MustWithCaveat(tuple.MustParse("document:first#org@org:someorg"), "somecaveat"),
 				tuple.MustParse("org:someorg#viewer@user:tom"),
 			},
@@ -484,7 +486,7 @@ func TestCaveatedLookupSubjects(t *testing.T) {
 				relation org: org with somecaveat
 				permission view = org->viewer
   		 }`,
-			[]*corev1.RelationTuple{
+			[]tuple.Relationship{
 				tuple.MustWithCaveat(tuple.MustParse("document:first#org@org:someorg"), "somecaveat"),
 				tuple.MustWithCaveat(tuple.MustParse("org:someorg#viewer@user:tom"), "anothercaveat"),
 			},
@@ -517,7 +519,7 @@ func TestCaveatedLookupSubjects(t *testing.T) {
 				relation banned: user with anothercaveat
 				permission view = viewer - banned
   		 }`,
-			[]*corev1.RelationTuple{
+			[]tuple.Relationship{
 				tuple.MustWithCaveat(tuple.MustParse("document:first#viewer@user:*"), "somecaveat"),
 				tuple.MustWithCaveat(tuple.MustParse("document:first#banned@user:tom"), "anothercaveat"),
 			},
@@ -558,7 +560,7 @@ func TestCaveatedLookupSubjects(t *testing.T) {
 				relation explicitly_allowed: user with thirdcaveat
 				permission view = (viewer - banned) + explicitly_allowed
   		 }`,
-			[]*corev1.RelationTuple{
+			[]tuple.Relationship{
 				tuple.MustWithCaveat(tuple.MustParse("document:first#viewer@user:*"), "somecaveat"),
 				tuple.MustWithCaveat(tuple.MustParse("document:first#banned@user:tom"), "anothercaveat"),
 				tuple.MustWithCaveat(tuple.MustParse("document:first#explicitly_allowed@user:tom"), "thirdcaveat"),
@@ -609,7 +611,7 @@ func TestCaveatedLookupSubjects(t *testing.T) {
 				relation org: org with somecaveat | org with thirdcaveat
 				permission view = org->viewer
   		 }`,
-			[]*corev1.RelationTuple{
+			[]tuple.Relationship{
 				tuple.MustWithCaveat(tuple.MustParse("document:first#org@org:someorg"), "somecaveat"),
 				tuple.MustWithCaveat(tuple.MustParse("org:someorg#viewer@user:tom"), "anothercaveat"),
 				tuple.MustParse("org:someorg#viewer@user:sarah"),
@@ -654,7 +656,7 @@ func TestCaveatedLookupSubjects(t *testing.T) {
 				relation folder: folder | folder#parent
 				permission view = folder->view
   		 }`,
-			[]*corev1.RelationTuple{
+			[]tuple.Relationship{
 				tuple.MustParse("folder:folder1#viewer@user:tom"),
 				tuple.MustParse("folder:folder2#viewer@user:fred"),
 				tuple.MustParse("document:somedoc#folder@folder:folder1"),
@@ -689,7 +691,7 @@ func TestCaveatedLookupSubjects(t *testing.T) {
 				relation folder: folder | folder#parent with somecaveat
 				permission view = folder->view
   		 }`,
-			[]*corev1.RelationTuple{
+			[]tuple.Relationship{
 				tuple.MustParse("folder:folder1#viewer@user:tom"),
 				tuple.MustParse("folder:folder2#viewer@user:fred"),
 				tuple.MustParse("document:somedoc#folder@folder:folder1"),
@@ -707,6 +709,286 @@ func TestCaveatedLookupSubjects(t *testing.T) {
 				},
 			},
 		},
+		{
+			"simple arrow",
+			`definition user {}
+	
+			 definition folder {
+				relation viewer: user
+				permission view = viewer
+			 }
+
+		 	 definition document {
+				relation folder: folder
+				permission view = folder->view
+  		 }`,
+			[]tuple.Relationship{
+				tuple.MustParse("folder:folder1#viewer@user:tom"),
+				tuple.MustParse("folder:folder1#viewer@user:fred"),
+				tuple.MustParse("document:somedoc#folder@folder:folder1"),
+			},
+			ONR("document", "somedoc", "view"),
+			RR("user", "..."),
+			[]*v1.FoundSubject{
+				{
+					SubjectId: "tom",
+				},
+				{
+					SubjectId: "fred",
+				},
+			},
+		},
+		{
+			"simple any arrow",
+			`definition user {}
+	
+			 definition folder {
+				relation viewer: user
+				permission view = viewer
+			 }
+
+		 	 definition document {
+				relation folder: folder
+				permission view = folder.any(view)
+  		 }`,
+			[]tuple.Relationship{
+				tuple.MustParse("folder:folder1#viewer@user:tom"),
+				tuple.MustParse("folder:folder1#viewer@user:fred"),
+				tuple.MustParse("document:somedoc#folder@folder:folder1"),
+			},
+			ONR("document", "somedoc", "view"),
+			RR("user", "..."),
+			[]*v1.FoundSubject{
+				{
+					SubjectId: "tom",
+				},
+				{
+					SubjectId: "fred",
+				},
+			},
+		},
+		{
+			"simple all arrow",
+			`definition user {}
+	
+			 definition folder {
+				relation viewer: user
+				permission view = viewer
+			 }
+
+		 	 definition document {
+				relation folder: folder
+				permission view = folder.all(view)
+  		 }`,
+			[]tuple.Relationship{
+				tuple.MustParse("folder:folder1#viewer@user:tom"),
+				tuple.MustParse("folder:folder1#viewer@user:fred"),
+				tuple.MustParse("document:somedoc#folder@folder:folder1"),
+			},
+			ONR("document", "somedoc", "view"),
+			RR("user", "..."),
+			[]*v1.FoundSubject{
+				{
+					SubjectId: "tom",
+				},
+				{
+					SubjectId: "fred",
+				},
+			},
+		},
+		{
+			"all arrow multiple",
+			`definition user {}
+	
+			 definition folder {
+				relation viewer: user
+				permission view = viewer
+			 }
+
+		 	 definition document {
+				relation folder: folder
+				permission view = folder.all(view)
+  		 }`,
+			[]tuple.Relationship{
+				tuple.MustParse("folder:folder1#viewer@user:tom"),
+				tuple.MustParse("folder:folder1#viewer@user:fred"),
+				tuple.MustParse("folder:folder2#viewer@user:fred"),
+				tuple.MustParse("document:somedoc#folder@folder:folder1"),
+				tuple.MustParse("document:somedoc#folder@folder:folder2"),
+			},
+			ONR("document", "somedoc", "view"),
+			RR("user", "..."),
+			[]*v1.FoundSubject{
+				{
+					SubjectId: "fred",
+				},
+			},
+		},
+		{
+			"all arrow over multiple resource IDs",
+			`definition user {}
+	
+			 definition organization {
+			 	relation member: user
+			 }
+
+			 definition folder {
+   			    relation parent: organization
+				permission view = parent.all(member)
+			 }
+
+		 	 definition document {
+				relation folder: folder
+				permission view = folder->view
+  		 }`,
+			[]tuple.Relationship{
+				tuple.MustParse("document:somedoc#folder@folder:folder1"),
+				tuple.MustParse("document:somedoc#folder@folder:folder2"),
+				tuple.MustParse("folder:folder1#parent@organization:org1"),
+				tuple.MustParse("folder:folder2#parent@organization:org2"),
+				tuple.MustParse("folder:folder2#parent@organization:org3"),
+				tuple.MustParse("organization:org1#member@user:fred"),
+				tuple.MustParse("organization:org2#member@user:tom"),
+				tuple.MustParse("organization:org3#member@user:tom"),
+				tuple.MustParse("organization:org2#member@user:sarah"),
+			},
+			ONR("document", "somedoc", "view"),
+			RR("user", "..."),
+			[]*v1.FoundSubject{
+				{
+					SubjectId: "tom",
+				},
+				{
+					SubjectId: "fred",
+				},
+			},
+		},
+		{
+			"intersection arrow over caveated teams",
+			`definition user {}
+	
+			 definition team {
+			 	relation member: user | user with anothercaveat
+			 }
+
+			 caveat caveat1(someparam1 int) {
+				someparam1 == 42
+			 }
+
+ 			 caveat caveat2(someparam2 int) {
+				someparam2 == 42
+			 }
+
+			 caveat anothercaveat(anotherparam int) {
+			 	anotherparam == 43
+			 }
+
+		 	 definition document {
+				relation team: team with caveat1 | team with caveat2
+				permission view = team.all(member)
+  		 }`,
+			[]tuple.Relationship{
+				tuple.MustParse(`document:somedoc#team@team:team1[caveat1:{":someparam1":42}]`),
+				tuple.MustParse(`document:somedoc#team@team:team2[caveat2:{":someparam2":43}]`),
+				tuple.MustParse(`team:team1#member@user:tom`),
+				tuple.MustParse(`team:team2#member@user:tom`),
+				tuple.MustParse(`team:team1#member@user:fred`),
+				tuple.MustParse(`team:team2#member@user:fred[anothercaveat:{":anotherparam":43}]`),
+				tuple.MustParse(`team:team1#member@user:sarah`),
+			},
+			ONR("document", "somedoc", "view"),
+			RR("user", "..."),
+			[]*v1.FoundSubject{
+				{
+					SubjectId: "tom",
+					CaveatExpression: caveatAnd(
+						caveatAndCtx("caveat1", map[string]interface{}{"someparam1": 42}),
+						caveatAndCtx("caveat2", map[string]interface{}{"someparam2": 43}),
+					),
+				},
+				{
+					SubjectId: "fred",
+					CaveatExpression: caveatAnd(
+						caveatAnd(
+							caveatAndCtx("caveat1", map[string]interface{}{"someparam1": 42}),
+							caveatAndCtx("caveat2", map[string]interface{}{"someparam2": 43}),
+						),
+						caveatAndCtx("anothercaveat", map[string]interface{}{"anotherparam": 43}),
+					),
+				},
+			},
+		},
+		{
+			"all arrow minus banned",
+			`definition user {}
+	
+			 definition folder {
+				relation viewer: user
+				permission view = viewer
+			 }
+
+		 	 definition document {
+			 	relation banned: user
+				relation folder: folder
+				permission view = folder.all(view) - banned
+  		 }`,
+			[]tuple.Relationship{
+				tuple.MustParse("folder:folder1#viewer@user:tom"),
+				tuple.MustParse("folder:folder1#viewer@user:fred"),
+				tuple.MustParse("document:somedoc#folder@folder:folder1"),
+				tuple.MustParse("document:somedoc#banned@user:fred"),
+				tuple.MustParse("document:somedoc#banned@user:sarah"),
+			},
+			ONR("document", "somedoc", "view"),
+			RR("user", "..."),
+			[]*v1.FoundSubject{
+				{
+					SubjectId: "tom",
+				},
+			},
+		},
+		{
+			"recursive all arrow ",
+			`definition user {}
+
+			definition folder {
+				relation parent: folder
+				relation owner: user
+
+				permission view = parent.all(owner)
+			}
+
+			definition document {
+				relation folder: folder
+				permission view = folder.all(view)
+			}`,
+			[]tuple.Relationship{
+				tuple.MustParse("folder:root1#owner@user:tom"),
+				tuple.MustParse("folder:root1#owner@user:fred"),
+				tuple.MustParse("folder:root1#owner@user:sarah"),
+				tuple.MustParse("folder:root2#owner@user:fred"),
+				tuple.MustParse("folder:root2#owner@user:sarah"),
+
+				tuple.MustParse("folder:child1#parent@folder:root1"),
+				tuple.MustParse("folder:child1#parent@folder:root2"),
+
+				tuple.MustParse("folder:child2#parent@folder:root1"),
+				tuple.MustParse("folder:child2#parent@folder:root2"),
+
+				tuple.MustParse("document:doc1#folder@folder:child1"),
+				tuple.MustParse("document:doc1#folder@folder:child2"),
+			},
+			ONR("document", "doc1", "view"),
+			RR("user", "..."),
+			[]*v1.FoundSubject{
+				{
+					SubjectId: "fred",
+				},
+				{
+					SubjectId: "sarah",
+				},
+			},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -714,9 +996,9 @@ func TestCaveatedLookupSubjects(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			require := require.New(t)
 
-			dispatcher := NewLocalOnlyDispatcher(10)
+			dispatcher := NewLocalOnlyDispatcher(10, 100)
 
-			ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
+			ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
 			require.NoError(err)
 
 			ds, revision := testfixtures.DatastoreFromSchemaAndTestRelationships(ds, tc.schema, tc.relationships, require)
@@ -726,12 +1008,9 @@ func TestCaveatedLookupSubjects(t *testing.T) {
 
 			stream := dispatch.NewCollectingDispatchStream[*v1.DispatchLookupSubjectsResponse](ctx)
 			err = dispatcher.DispatchLookupSubjects(&v1.DispatchLookupSubjectsRequest{
-				ResourceRelation: &corev1.RelationReference{
-					Namespace: tc.start.Namespace,
-					Relation:  tc.start.Relation,
-				},
-				ResourceIds:     []string{tc.start.ObjectId},
-				SubjectRelation: tc.target,
+				ResourceRelation: tc.start.RelationReference().ToCoreRR(),
+				ResourceIds:      []string{tc.start.ObjectID},
+				SubjectRelation:  tc.target.ToCoreRR(),
 				Metadata: &v1.ResolverMeta{
 					AtRevision:     revision.String(),
 					DepthRemaining: 50,

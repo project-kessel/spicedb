@@ -4,6 +4,8 @@ package parser
 import (
 	"strings"
 
+	"golang.org/x/exp/maps"
+
 	"github.com/authzed/spicedb/pkg/schemadsl/dslshape"
 	"github.com/authzed/spicedb/pkg/schemadsl/input"
 	"github.com/authzed/spicedb/pkg/schemadsl/lexer"
@@ -38,6 +40,8 @@ func (p *sourceParser) consumeTopLevel() AstNode {
 		return rootNode
 	}
 
+	hasSeenDefinition := false
+
 Loop:
 	for {
 		if p.isToken(lexer.TokenTypeEOF) {
@@ -56,10 +60,15 @@ Loop:
 		// caveat somecaveat (...) { ... }
 
 		switch {
+		case p.isIdentifier("use"):
+			rootNode.Connect(dslshape.NodePredicateChild, p.consumeUseFlag(hasSeenDefinition))
+
 		case p.isKeyword("definition"):
+			hasSeenDefinition = true
 			rootNode.Connect(dslshape.NodePredicateChild, p.consumeDefinition())
 
 		case p.isKeyword("caveat"):
+			hasSeenDefinition = true
 			rootNode.Connect(dslshape.NodePredicateChild, p.consumeCaveat())
 
 		default:
@@ -231,6 +240,45 @@ func (p *sourceParser) consumeCaveatTypeReference() AstNode {
 	return typeRefNode
 }
 
+// consumeUseFlag attempts to consume a use flag.
+// ``` use flagname ```
+func (p *sourceParser) consumeUseFlag(afterDefinition bool) AstNode {
+	useNode := p.startNode(dslshape.NodeTypeUseFlag)
+	defer p.mustFinishNode()
+
+	// consume the `use`
+	p.consumeIdentifier()
+
+	var useFlag string
+	if p.isToken(lexer.TokenTypeIdentifier) {
+		useFlag, _ = p.consumeIdentifier()
+	} else {
+		useName, ok := p.consumeVariableKeyword()
+		if !ok {
+			return useNode
+		}
+		useFlag = useName
+	}
+
+	if _, ok := lexer.Flags[useFlag]; !ok {
+		p.emitErrorf("Unknown use flag: `%s`. Options are: %s", useFlag, strings.Join(maps.Keys(lexer.Flags), ", "))
+		return useNode
+	}
+
+	useNode.MustDecorate(dslshape.NodeUseFlagPredicateName, useFlag)
+
+	// NOTE: we conduct this check in `consumeFlag` rather than at
+	// the callsite to keep the callsite clean.
+	// We also do the check after consumption to ensure that the parser continues
+	// moving past the use expression.
+	if afterDefinition {
+		p.emitErrorf("`use` expressions must be declared before any definition")
+		return useNode
+	}
+
+	return useNode
+}
+
 // consumeDefinition attempts to consume a single schema definition.
 // ```definition somedef { ... }```
 func (p *sourceParser) consumeDefinition() AstNode {
@@ -323,16 +371,8 @@ func (p *sourceParser) consumeTypeReference() AstNode {
 
 // tryConsumeWithCaveat tries to consume a caveat `with` expression.
 func (p *sourceParser) tryConsumeWithCaveat() (AstNode, bool) {
-	if !p.isKeyword("with") {
-		return nil, false
-	}
-
 	caveatNode := p.startNode(dslshape.NodeTypeCaveatReference)
 	defer p.mustFinishNode()
-
-	if ok := p.consumeKeyword("with"); !ok {
-		return nil, ok
-	}
 
 	consumed, ok := p.consumeTypePath()
 	if !ok {
@@ -348,12 +388,44 @@ func (p *sourceParser) consumeSpecificTypeWithCaveat() AstNode {
 	specificNode := p.consumeSpecificTypeWithoutFinish()
 	defer p.mustFinishNode()
 
-	caveatNode, ok := p.tryConsumeWithCaveat()
-	if ok {
-		specificNode.Connect(dslshape.NodeSpecificReferencePredicateCaveat, caveatNode)
+	// Check for a caveat and/or supported trait.
+	if !p.isKeyword("with") {
+		return specificNode
+	}
+
+	p.consumeKeyword("with")
+
+	if !p.isKeyword("expiration") {
+		caveatNode, ok := p.tryConsumeWithCaveat()
+		if ok {
+			specificNode.Connect(dslshape.NodeSpecificReferencePredicateCaveat, caveatNode)
+		}
+
+		if !p.tryConsumeKeyword("and") {
+			return specificNode
+		}
+	}
+
+	if p.isKeyword("expiration") {
+		// Check for expiration trait.
+		traitNode := p.consumeExpirationTrait()
+
+		// Decorate with the expiration trait.
+		specificNode.Connect(dslshape.NodeSpecificReferencePredicateTrait, traitNode)
 	}
 
 	return specificNode
+}
+
+// consumeExpirationTrait consumes an expiration trait.
+func (p *sourceParser) consumeExpirationTrait() AstNode {
+	expirationTraitNode := p.startNode(dslshape.NodeTypeTraitReference)
+	p.consumeKeyword("expiration")
+
+	expirationTraitNode.MustDecorate(dslshape.NodeTraitPredicateTrait, "expiration")
+	defer p.mustFinishNode()
+
+	return expirationTraitNode
 }
 
 // consumeSpecificTypeOpen consumes an identifier as a specific type reference.
@@ -478,7 +550,40 @@ func (p *sourceParser) tryConsumeComputeExpression(subTryExprFn tryParserFn, bin
 // ```foo->bar->baz->meh```
 func (p *sourceParser) tryConsumeArrowExpression() (AstNode, bool) {
 	rightNodeBuilder := func(leftNode AstNode, operatorToken lexer.Lexeme) (AstNode, bool) {
-		rightNode, ok := p.tryConsumeBaseExpression()
+		// Check for an arrow function.
+		if operatorToken.Kind == lexer.TokenTypePeriod {
+			functionName, ok := p.consumeIdentifier()
+			if !ok {
+				return nil, false
+			}
+
+			// TODO(jschorr): Change to keywords in schema v2.
+			if functionName != "any" && functionName != "all" {
+				p.emitErrorf("Expected 'any' or 'all' for arrow function, found: %s", functionName)
+				return nil, false
+			}
+
+			if _, ok := p.consume(lexer.TokenTypeLeftParen); !ok {
+				return nil, false
+			}
+
+			rightNode, ok := p.tryConsumeIdentifierLiteral()
+			if !ok {
+				return nil, false
+			}
+
+			if _, ok := p.consume(lexer.TokenTypeRightParen); !ok {
+				return nil, false
+			}
+
+			exprNode := p.createNode(dslshape.NodeTypeArrowExpression)
+			exprNode.Connect(dslshape.NodeExpressionPredicateLeftExpr, leftNode)
+			exprNode.Connect(dslshape.NodeExpressionPredicateRightExpr, rightNode)
+			exprNode.MustDecorate(dslshape.NodeArrowExpressionFunctionName, functionName)
+			return exprNode, true
+		}
+
+		rightNode, ok := p.tryConsumeIdentifierLiteral()
 		if !ok {
 			return nil, false
 		}
@@ -489,7 +594,7 @@ func (p *sourceParser) tryConsumeArrowExpression() (AstNode, bool) {
 		exprNode.Connect(dslshape.NodeExpressionPredicateRightExpr, rightNode)
 		return exprNode, true
 	}
-	return p.performLeftRecursiveParsing(p.tryConsumeIdentifierLiteral, rightNodeBuilder, nil, lexer.TokenTypeRightArrow)
+	return p.performLeftRecursiveParsing(p.tryConsumeIdentifierLiteral, rightNodeBuilder, nil, lexer.TokenTypeRightArrow, lexer.TokenTypePeriod)
 }
 
 // tryConsumeBaseExpression attempts to consume base compute expressions (identifiers, parenthesis).

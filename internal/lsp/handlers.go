@@ -57,7 +57,7 @@ func (s *Server) computeDiagnostics(ctx context.Context, uri lsp.DocumentURI) ([
 			return &jsonrpc2.Error{Code: jsonrpc2.CodeInternalError, Message: "file not found"}
 		}
 
-		_, devErrs, err := development.NewDevContext(ctx, &developerv1.RequestContext{
+		devCtx, devErrs, err := development.NewDevContext(ctx, &developerv1.RequestContext{
 			Schema:        file.contents,
 			Relationships: nil,
 		})
@@ -65,6 +65,7 @@ func (s *Server) computeDiagnostics(ctx context.Context, uri lsp.DocumentURI) ([
 			return err
 		}
 
+		// Get errors.
 		for _, devErr := range devErrs.GetInputErrors() {
 			diagnostics = append(diagnostics, lsp.Diagnostic{
 				Severity: lsp.Error,
@@ -76,12 +77,45 @@ func (s *Server) computeDiagnostics(ctx context.Context, uri lsp.DocumentURI) ([
 			})
 		}
 
+		// If there are no errors, we can also check for warnings.
+		if len(diagnostics) == 0 {
+			warnings, err := development.GetWarnings(ctx, devCtx)
+			if err != nil {
+				return err
+			}
+
+			for _, devWarning := range warnings {
+				diagnostics = append(diagnostics, lsp.Diagnostic{
+					Severity: lsp.Warning,
+					Range: lsp.Range{
+						Start: lsp.Position{Line: int(devWarning.Line) - 1, Character: int(devWarning.Column) - 1},
+						End:   lsp.Position{Line: int(devWarning.Line) - 1, Character: int(devWarning.Column) - 1},
+					},
+					Message: devWarning.Message,
+				})
+			}
+		}
+
 		return nil
 	}); err != nil {
 		return nil, err
 	}
 
+	log.Info().Int("diagnostics", len(diagnostics)).Str("uri", string(uri)).Msg("computed diagnostics")
 	return diagnostics, nil
+}
+
+func (s *Server) textDocDidSave(ctx context.Context, r *jsonrpc2.Request, conn *jsonrpc2.Conn) (any, error) {
+	params, err := unmarshalParams[lsp.DidSaveTextDocumentParams](r)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.publishDiagnosticsIfNecessary(ctx, conn, params.TextDocument.URI); err != nil {
+		return nil, err
+	}
+
+	return nil, nil
 }
 
 func (s *Server) textDocDidChange(ctx context.Context, r *jsonrpc2.Request, conn *jsonrpc2.Conn) (any, error) {
@@ -164,8 +198,11 @@ func (s *Server) getCompiledContents(path lsp.DocumentURI, files *persistent.Map
 	}
 
 	justCompiled, derr, err := development.CompileSchema(file.contents)
-	if err != nil || derr != nil {
+	if err != nil {
 		return nil, err
+	}
+	if derr != nil {
+		return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeInternalError, Message: derr.String()}
 	}
 
 	files.Set(path, trackedFile{file.contents, justCompiled}, nil)

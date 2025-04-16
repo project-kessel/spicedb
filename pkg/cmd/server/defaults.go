@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/KimMachineGun/automemlimit/memlimit"
 	"github.com/fatih/color"
 	"github.com/go-logr/zerologr"
 	grpcprom "github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus"
@@ -18,6 +19,7 @@ import (
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/selector"
 	"github.com/jzelinskie/cobrautil/v2"
 	"github.com/jzelinskie/cobrautil/v2/cobraotel"
+	"github.com/jzelinskie/cobrautil/v2/cobraproclimits"
 	"github.com/jzelinskie/cobrautil/v2/cobrazerolog"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -31,12 +33,13 @@ import (
 
 	"github.com/authzed/spicedb/internal/dispatch"
 	"github.com/authzed/spicedb/internal/logging"
-	consistencymw "github.com/authzed/spicedb/internal/middleware/consistency"
 	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	dispatchmw "github.com/authzed/spicedb/internal/middleware/dispatcher"
 	"github.com/authzed/spicedb/internal/middleware/servicespecific"
 	"github.com/authzed/spicedb/pkg/datastore"
+	consistencymw "github.com/authzed/spicedb/pkg/middleware/consistency"
 	logmw "github.com/authzed/spicedb/pkg/middleware/logging"
+	"github.com/authzed/spicedb/pkg/middleware/nodeid"
 	"github.com/authzed/spicedb/pkg/middleware/requestid"
 	"github.com/authzed/spicedb/pkg/middleware/serverversion"
 	"github.com/authzed/spicedb/pkg/releases"
@@ -71,6 +74,13 @@ func DefaultPreRunE(programName string) cobrautil.CobraRunFunc {
 				logging.SetGlobalLogger(logger)
 			}),
 		).RunE(),
+		// NOTE: These need to be declared after the logger to access
+		// the logging context.
+		// NOTE: The default memlimit is 0.9. Our assumption is that SpiceDB
+		// will be the only thing consuming memory in its context, and if
+		// this needs to be configurable we can do that as a future step.
+		cobraproclimits.SetMemLimitRunE(memlimit.WithRatio(1.0)),
+		cobraproclimits.SetProcLimitRunE(),
 		cobraotel.New("spicedb",
 			cobraotel.WithLogger(zerologr.New(&logging.Logger)),
 		).RunE(),
@@ -155,6 +165,7 @@ var alwaysDebugOption = grpclog.WithLevels(func(code codes.Code) grpclog.Level {
 
 const (
 	DefaultMiddlewareRequestID     = "requestid"
+	DefaultMiddlewareNodeID        = "nodeid"
 	DefaultMiddlewareLog           = "log"
 	DefaultMiddlewareGRPCLog       = "grpclog"
 	DefaultMiddlewareOTelGRPC      = "otelgrpc"
@@ -168,15 +179,78 @@ const (
 	DefaultInternalMiddlewareServerSpecific = "servicespecific"
 )
 
+//go:generate go run github.com/ecordell/optgen -output zz_generated.middlewareoption.go . MiddlewareOption
 type MiddlewareOption struct {
-	logger                zerolog.Logger
-	authFunc              grpcauth.AuthFunc
-	enableVersionResponse bool
-	dispatcher            dispatch.Dispatcher
-	ds                    datastore.Datastore
-	enableRequestLog      bool
-	enableResponseLog     bool
-	disableGRPCHistogram  bool
+	Logger                  zerolog.Logger      `debugmap:"hidden"`
+	AuthFunc                grpcauth.AuthFunc   `debugmap:"hidden"`
+	EnableVersionResponse   bool                `debugmap:"visible"`
+	DispatcherForMiddleware dispatch.Dispatcher `debugmap:"hidden"`
+	EnableRequestLog        bool                `debugmap:"visible"`
+	EnableResponseLog       bool                `debugmap:"visible"`
+	DisableGRPCHistogram    bool                `debugmap:"visible"`
+	MiddlewareServiceLabel  string              `debugmap:"visible"`
+
+	unaryDatastoreMiddleware  *ReferenceableMiddleware[grpc.UnaryServerInterceptor]  `debugmap:"hidden"`
+	streamDatastoreMiddleware *ReferenceableMiddleware[grpc.StreamServerInterceptor] `debugmap:"hidden"`
+}
+
+type Middleware interface {
+	UnaryServerInterceptor() grpc.UnaryServerInterceptor
+	StreamServerInterceptor() grpc.StreamServerInterceptor
+}
+
+func (m MiddlewareOption) WithDatastoreMiddleware(middleware Middleware) MiddlewareOption {
+	unary := NewUnaryMiddleware().
+		WithName(DefaultInternalMiddlewareDatastore).
+		WithInternal(true).
+		WithInterceptor(middleware.UnaryServerInterceptor()).
+		Done()
+
+	stream := NewStreamMiddleware().
+		WithName(DefaultInternalMiddlewareDatastore).
+		WithInternal(true).
+		WithInterceptor(middleware.StreamServerInterceptor()).
+		Done()
+
+	return MiddlewareOption{
+		Logger:                    m.Logger,
+		AuthFunc:                  m.AuthFunc,
+		EnableVersionResponse:     m.EnableVersionResponse,
+		DispatcherForMiddleware:   m.DispatcherForMiddleware,
+		EnableRequestLog:          m.EnableRequestLog,
+		EnableResponseLog:         m.EnableResponseLog,
+		DisableGRPCHistogram:      m.DisableGRPCHistogram,
+		MiddlewareServiceLabel:    m.MiddlewareServiceLabel,
+		unaryDatastoreMiddleware:  &unary,
+		streamDatastoreMiddleware: &stream,
+	}
+}
+
+func (m MiddlewareOption) WithDatastore(ds datastore.Datastore) MiddlewareOption {
+	unary := NewUnaryMiddleware().
+		WithName(DefaultInternalMiddlewareDatastore).
+		WithInternal(true).
+		WithInterceptor(datastoremw.UnaryServerInterceptor(ds)).
+		Done()
+
+	stream := NewStreamMiddleware().
+		WithName(DefaultInternalMiddlewareDatastore).
+		WithInternal(true).
+		WithInterceptor(datastoremw.StreamServerInterceptor(ds)).
+		Done()
+
+	return MiddlewareOption{
+		Logger:                    m.Logger,
+		AuthFunc:                  m.AuthFunc,
+		EnableVersionResponse:     m.EnableVersionResponse,
+		DispatcherForMiddleware:   m.DispatcherForMiddleware,
+		EnableRequestLog:          m.EnableRequestLog,
+		EnableResponseLog:         m.EnableResponseLog,
+		DisableGRPCHistogram:      m.DisableGRPCHistogram,
+		MiddlewareServiceLabel:    m.MiddlewareServiceLabel,
+		unaryDatastoreMiddleware:  &unary,
+		streamDatastoreMiddleware: &stream,
+	}
 }
 
 // gRPCMetricsUnaryInterceptor creates the default prometheus metrics interceptor for unary gRPCs
@@ -212,7 +286,7 @@ func doesNotMatchRoute(route string) func(_ context.Context, c interceptors.Call
 
 // DefaultUnaryMiddleware generates the default middleware chain used for the public SpiceDB Unary gRPC methods
 func DefaultUnaryMiddleware(opts MiddlewareOption) (*MiddlewareChain[grpc.UnaryServerInterceptor], error) {
-	grpcMetricsUnaryInterceptor, _ := GRPCMetrics(opts.disableGRPCHistogram)
+	grpcMetricsUnaryInterceptor, _ := GRPCMetrics(opts.DisableGRPCHistogram)
 	chain, err := NewMiddlewareChain([]ReferenceableMiddleware[grpc.UnaryServerInterceptor]{
 		NewUnaryMiddleware().
 			WithName(DefaultMiddlewareRequestID).
@@ -225,6 +299,11 @@ func DefaultUnaryMiddleware(opts MiddlewareOption) (*MiddlewareChain[grpc.UnaryS
 			Done(),
 
 		NewUnaryMiddleware().
+			WithName(DefaultMiddlewareNodeID).
+			WithInterceptor(nodeid.UnaryServerInterceptor("")).
+			Done(),
+
+		NewUnaryMiddleware().
 			WithName(DefaultMiddlewareOTelGRPC).
 			WithInterceptor(otelgrpc.UnaryServerInterceptor()). // nolint: staticcheck
 			Done(),
@@ -232,7 +311,7 @@ func DefaultUnaryMiddleware(opts MiddlewareOption) (*MiddlewareChain[grpc.UnaryS
 		NewUnaryMiddleware().
 			WithName(DefaultMiddlewareGRPCLog + "-debug").
 			WithInterceptor(selector.UnaryServerInterceptor(
-				grpclog.UnaryServerInterceptor(InterceptorLogger(opts.logger), determineEventsToLog(opts), alwaysDebugOption, durationFieldOption, traceIDFieldOption),
+				grpclog.UnaryServerInterceptor(InterceptorLogger(opts.Logger), determineEventsToLog(opts), alwaysDebugOption, durationFieldOption, traceIDFieldOption),
 										selector.MatchFunc(matchesRoute(healthCheckRoute)))).
 			EnsureAlreadyExecuted(DefaultMiddlewareOTelGRPC). // dependency so that OTel traceID is injected in logs),
 			Done(),
@@ -240,7 +319,7 @@ func DefaultUnaryMiddleware(opts MiddlewareOption) (*MiddlewareChain[grpc.UnaryS
 		NewUnaryMiddleware().
 			WithName(DefaultMiddlewareGRPCLog).
 			WithInterceptor(selector.UnaryServerInterceptor(
-				grpclog.UnaryServerInterceptor(InterceptorLogger(opts.logger), determineEventsToLog(opts), defaultCodeToLevel, durationFieldOption, traceIDFieldOption),
+				grpclog.UnaryServerInterceptor(InterceptorLogger(opts.Logger), determineEventsToLog(opts), defaultCodeToLevel, durationFieldOption, traceIDFieldOption),
 										selector.MatchFunc(doesNotMatchRoute(healthCheckRoute)))).
 			EnsureAlreadyExecuted(DefaultMiddlewareOTelGRPC). // dependency so that OTel traceID is injected in logs),
 			Done(),
@@ -252,31 +331,26 @@ func DefaultUnaryMiddleware(opts MiddlewareOption) (*MiddlewareChain[grpc.UnaryS
 
 		NewUnaryMiddleware().
 			WithName(DefaultMiddlewareGRPCAuth).
-			WithInterceptor(grpcauth.UnaryServerInterceptor(opts.authFunc)).
+			WithInterceptor(grpcauth.UnaryServerInterceptor(opts.AuthFunc)).
 			EnsureAlreadyExecuted(DefaultMiddlewareGRPCProm). // so that prom middleware reports auth failures
 			Done(),
 
 		NewUnaryMiddleware().
 			WithName(DefaultMiddlewareServerVersion).
-			WithInterceptor(serverversion.UnaryServerInterceptor(opts.enableVersionResponse)).
+			WithInterceptor(serverversion.UnaryServerInterceptor(opts.EnableVersionResponse)).
 			Done(),
 
 		NewUnaryMiddleware().
 			WithName(DefaultInternalMiddlewareDispatch).
 			WithInternal(true).
-			WithInterceptor(dispatchmw.UnaryServerInterceptor(opts.dispatcher)).
+			WithInterceptor(dispatchmw.UnaryServerInterceptor(opts.DispatcherForMiddleware)).
 			Done(),
 
-		NewUnaryMiddleware().
-			WithName(DefaultInternalMiddlewareDatastore).
-			WithInternal(true).
-			WithInterceptor(datastoremw.UnaryServerInterceptor(opts.ds)).
-			Done(),
+		*opts.unaryDatastoreMiddleware,
 
 		NewUnaryMiddleware().
 			WithName(DefaultInternalMiddlewareConsistency).
-			WithInternal(true).
-			WithInterceptor(consistencymw.UnaryServerInterceptor()).
+			WithInterceptor(consistencymw.UnaryServerInterceptor(opts.MiddlewareServiceLabel)).
 			Done(),
 
 		NewUnaryMiddleware().
@@ -290,7 +364,7 @@ func DefaultUnaryMiddleware(opts MiddlewareOption) (*MiddlewareChain[grpc.UnaryS
 
 // DefaultStreamingMiddleware generates the default middleware chain used for the public SpiceDB Streaming gRPC methods
 func DefaultStreamingMiddleware(opts MiddlewareOption) (*MiddlewareChain[grpc.StreamServerInterceptor], error) {
-	_, grpcMetricsStreamingInterceptor := GRPCMetrics(opts.disableGRPCHistogram)
+	_, grpcMetricsStreamingInterceptor := GRPCMetrics(opts.DisableGRPCHistogram)
 	chain, err := NewMiddlewareChain([]ReferenceableMiddleware[grpc.StreamServerInterceptor]{
 		NewStreamMiddleware().
 			WithName(DefaultMiddlewareRequestID).
@@ -303,6 +377,11 @@ func DefaultStreamingMiddleware(opts MiddlewareOption) (*MiddlewareChain[grpc.St
 			Done(),
 
 		NewStreamMiddleware().
+			WithName(DefaultMiddlewareNodeID).
+			WithInterceptor(nodeid.StreamServerInterceptor("")).
+			Done(),
+
+		NewStreamMiddleware().
 			WithName(DefaultMiddlewareOTelGRPC).
 			WithInterceptor(otelgrpc.StreamServerInterceptor()). // nolint: staticcheck
 			Done(),
@@ -310,7 +389,7 @@ func DefaultStreamingMiddleware(opts MiddlewareOption) (*MiddlewareChain[grpc.St
 		NewStreamMiddleware().
 			WithName(DefaultMiddlewareGRPCLog + "-debug").
 			WithInterceptor(selector.StreamServerInterceptor(
-				grpclog.StreamServerInterceptor(InterceptorLogger(opts.logger), determineEventsToLog(opts), alwaysDebugOption, durationFieldOption, traceIDFieldOption),
+				grpclog.StreamServerInterceptor(InterceptorLogger(opts.Logger), determineEventsToLog(opts), alwaysDebugOption, durationFieldOption, traceIDFieldOption),
 											selector.MatchFunc(matchesRoute(healthCheckRoute)))).
 			EnsureInterceptorAlreadyExecuted(DefaultMiddlewareOTelGRPC). // dependency so that OTel traceID is injected in logs),
 			Done(),
@@ -318,7 +397,7 @@ func DefaultStreamingMiddleware(opts MiddlewareOption) (*MiddlewareChain[grpc.St
 		NewStreamMiddleware().
 			WithName(DefaultMiddlewareGRPCLog).
 			WithInterceptor(selector.StreamServerInterceptor(
-				grpclog.StreamServerInterceptor(InterceptorLogger(opts.logger), determineEventsToLog(opts), defaultCodeToLevel, durationFieldOption, traceIDFieldOption),
+				grpclog.StreamServerInterceptor(InterceptorLogger(opts.Logger), determineEventsToLog(opts), defaultCodeToLevel, durationFieldOption, traceIDFieldOption),
 											selector.MatchFunc(doesNotMatchRoute(healthCheckRoute)))).
 			EnsureInterceptorAlreadyExecuted(DefaultMiddlewareOTelGRPC). // dependency so that OTel traceID is injected in logs),
 			Done(),
@@ -330,31 +409,26 @@ func DefaultStreamingMiddleware(opts MiddlewareOption) (*MiddlewareChain[grpc.St
 
 		NewStreamMiddleware().
 			WithName(DefaultMiddlewareGRPCAuth).
-			WithInterceptor(grpcauth.StreamServerInterceptor(opts.authFunc)).
+			WithInterceptor(grpcauth.StreamServerInterceptor(opts.AuthFunc)).
 			EnsureInterceptorAlreadyExecuted(DefaultMiddlewareGRPCProm). // so that prom middleware reports auth failures
 			Done(),
 
 		NewStreamMiddleware().
 			WithName(DefaultMiddlewareServerVersion).
-			WithInterceptor(serverversion.StreamServerInterceptor(opts.enableVersionResponse)).
+			WithInterceptor(serverversion.StreamServerInterceptor(opts.EnableVersionResponse)).
 			Done(),
 
 		NewStreamMiddleware().
 			WithName(DefaultInternalMiddlewareDispatch).
 			WithInternal(true).
-			WithInterceptor(dispatchmw.StreamServerInterceptor(opts.dispatcher)).
+			WithInterceptor(dispatchmw.StreamServerInterceptor(opts.DispatcherForMiddleware)).
 			Done(),
 
-		NewStreamMiddleware().
-			WithName(DefaultInternalMiddlewareDatastore).
-			WithInternal(true).
-			WithInterceptor(datastoremw.StreamServerInterceptor(opts.ds)).
-			Done(),
+		*opts.streamDatastoreMiddleware,
 
 		NewStreamMiddleware().
 			WithName(DefaultInternalMiddlewareConsistency).
-			WithInternal(true).
-			WithInterceptor(consistencymw.StreamServerInterceptor()).
+			WithInterceptor(consistencymw.StreamServerInterceptor(opts.MiddlewareServiceLabel)).
 			Done(),
 
 		NewStreamMiddleware().
@@ -368,11 +442,11 @@ func DefaultStreamingMiddleware(opts MiddlewareOption) (*MiddlewareChain[grpc.St
 
 func determineEventsToLog(opts MiddlewareOption) grpclog.Option {
 	eventsToLog := []grpclog.LoggableEvent{grpclog.FinishCall}
-	if opts.enableRequestLog {
+	if opts.EnableRequestLog {
 		eventsToLog = append(eventsToLog, grpclog.PayloadReceived)
 	}
 
-	if opts.enableResponseLog {
+	if opts.EnableResponseLog {
 		eventsToLog = append(eventsToLog, grpclog.PayloadSent)
 	}
 
@@ -386,6 +460,7 @@ func DefaultDispatchMiddleware(logger zerolog.Logger, authFunc grpcauth.AuthFunc
 	grpcMetricsUnaryInterceptor, grpcMetricsStreamingInterceptor := GRPCMetrics(disableGRPCLatencyHistogram)
 	return []grpc.UnaryServerInterceptor{
 			requestid.UnaryServerInterceptor(requestid.GenerateIfMissing(true)),
+			nodeid.UnaryServerInterceptor(""),
 			logmw.UnaryServerInterceptor(logmw.ExtractMetadataField(string(requestmeta.RequestIDKey), "requestID")),
 			grpclog.UnaryServerInterceptor(InterceptorLogger(logger), dispatchDefaultCodeToLevel, durationFieldOption, traceIDFieldOption),
 			grpcMetricsUnaryInterceptor,
@@ -394,6 +469,7 @@ func DefaultDispatchMiddleware(logger zerolog.Logger, authFunc grpcauth.AuthFunc
 			servicespecific.UnaryServerInterceptor,
 		}, []grpc.StreamServerInterceptor{
 			requestid.StreamServerInterceptor(requestid.GenerateIfMissing(true)),
+			nodeid.StreamServerInterceptor(""),
 			logmw.StreamServerInterceptor(logmw.ExtractMetadataField(string(requestmeta.RequestIDKey), "requestID")),
 			grpclog.StreamServerInterceptor(InterceptorLogger(logger), dispatchDefaultCodeToLevel, durationFieldOption, traceIDFieldOption),
 			grpcMetricsStreamingInterceptor,
@@ -428,7 +504,13 @@ func createServerMetrics(disableHistogram bool) (grpc.UnaryServerInterceptor, gr
 	var opts []grpcprom.ServerMetricsOption
 	if !disableHistogram {
 		opts = append(opts, grpcprom.WithServerHandlingTimeHistogram(
-			grpcprom.WithHistogramBuckets([]float64{.001, .003, .006, .010, .018, .024, .032, .042, .056, .075, .100, .178, .316, .562, 1, 5}),
+			grpcprom.WithHistogramOpts(&prometheus.HistogramOpts{
+				NativeHistogramBucketFactor:    1.1, // At most 10% increase from bucket to bucket.
+				NativeHistogramMaxBucketNumber: 100,
+				Buckets: []float64{
+					.001, .003, .006, .010, .018, .024, .032, .042, .056, .075, .100, .178, .316, .562, 1, 5,
+				},
+			}),
 		))
 	}
 	srvMetrics := grpcprom.NewServerMetrics(opts...)

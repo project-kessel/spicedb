@@ -44,7 +44,7 @@ func NamespaceNotFoundTest(t *testing.T, tester DatastoreTester) {
 	require.NoError(err)
 
 	_, _, err = ds.SnapshotReader(startRevision).ReadNamespaceByName(ctx, "unknown")
-	require.True(errors.As(err, &datastore.ErrNamespaceNotFound{}))
+	require.True(errors.As(err, &datastore.NamespaceNotFoundError{}))
 }
 
 // NamespaceWriteTest tests whether or not the requirements for writing
@@ -149,14 +149,16 @@ func NamespaceDeleteTest(t *testing.T, tester DatastoreTester) {
 	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require)
 	ctx := context.Background()
 
-	tRequire := testfixtures.TupleChecker{Require: require, DS: ds}
-	docTpl := tuple.Parse(testfixtures.StandardTuples[0])
+	tRequire := testfixtures.RelationshipChecker{Require: require, DS: ds}
+	docTpl, err := tuple.Parse(testfixtures.StandardRelationships[0])
+	require.NoError(err)
 	require.NotNil(docTpl)
-	tRequire.TupleExists(ctx, docTpl, revision)
+	tRequire.RelationshipExists(ctx, docTpl, revision)
 
-	folderTpl := tuple.Parse(testfixtures.StandardTuples[2])
+	folderTpl, err := tuple.Parse(testfixtures.StandardRelationships[2])
+	require.NoError(err)
 	require.NotNil(folderTpl)
-	tRequire.TupleExists(ctx, folderTpl, revision)
+	tRequire.RelationshipExists(ctx, folderTpl, revision)
 
 	deletedRev, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
 		return rwt.DeleteNamespaces(ctx, testfixtures.DocumentNS.Name)
@@ -165,7 +167,7 @@ func NamespaceDeleteTest(t *testing.T, tester DatastoreTester) {
 	require.True(deletedRev.GreaterThan(revision))
 
 	_, _, err = ds.SnapshotReader(deletedRev).ReadNamespaceByName(ctx, testfixtures.DocumentNS.Name)
-	require.True(errors.As(err, &datastore.ErrNamespaceNotFound{}))
+	require.True(errors.As(err, &datastore.NamespaceNotFoundError{}))
 
 	found, nsCreatedRev, err := ds.SnapshotReader(deletedRev).ReadNamespaceByName(ctx, testfixtures.FolderNS.Name)
 	require.NotNil(found)
@@ -187,7 +189,7 @@ func NamespaceDeleteTest(t *testing.T, tester DatastoreTester) {
 	require.NoError(err)
 	tRequire.VerifyIteratorResults(iter)
 
-	tRequire.TupleExists(ctx, folderTpl, deletedRevision)
+	tRequire.RelationshipExists(ctx, folderTpl, deletedRevision)
 }
 
 func NamespaceMultiDeleteTest(t *testing.T, tester DatastoreTester) {
@@ -232,7 +234,48 @@ func EmptyNamespaceDeleteTest(t *testing.T, tester DatastoreTester) {
 	require.True(deletedRev.GreaterThan(revision))
 
 	_, _, err = ds.SnapshotReader(deletedRev).ReadNamespaceByName(ctx, testfixtures.UserNS.Name)
-	require.True(errors.As(err, &datastore.ErrNamespaceNotFound{}))
+	require.True(errors.As(err, &datastore.NamespaceNotFoundError{}))
+}
+
+// NamespaceDeleteInvalidNamespaceTest tests deleting an invalid namespace in the datastore.
+func NamespaceDeleteInvalidNamespaceTest(t *testing.T, tester DatastoreTester) {
+	require := require.New(t)
+
+	schemaString := `definition user {}
+
+definition document {
+	relation viewer: user
+}`
+
+	// Compile namespace to write to the datastore.
+	compiled, err := compiler.Compile(compiler.InputSchema{
+		Source:       input.Source("schema"),
+		SchemaString: schemaString,
+	}, compiler.AllowUnprefixedObjectType())
+	require.NoError(err)
+	require.Equal(2, len(compiled.OrderedDefinitions))
+
+	// Write the namespace definition to the datastore.
+	ds, err := tester.New(0, veryLargeGCInterval, veryLargeGCWindow, 1)
+	require.NoError(err)
+
+	ctx := context.Background()
+	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
+		err := rwt.WriteCaveats(ctx, compiled.CaveatDefinitions)
+		if err != nil {
+			return err
+		}
+
+		return rwt.WriteNamespaces(ctx, compiled.ObjectDefinitions...)
+	})
+	require.NoError(err)
+
+	// Attempt to delete the invalid namespace.
+	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
+		return rwt.DeleteNamespaces(ctx, "invalid")
+	})
+	require.Error(err)
+	require.ErrorContains(err, "not found")
 }
 
 // StableNamespaceReadWriteTest tests writing a namespace to the datastore and reading it back,

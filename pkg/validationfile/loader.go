@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"os"
 
-	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
-
 	log "github.com/authzed/spicedb/internal/logging"
 	dsctx "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/namespace"
@@ -14,8 +12,8 @@ import (
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/genutil/slicez"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
+	"github.com/authzed/spicedb/pkg/schema"
 	"github.com/authzed/spicedb/pkg/tuple"
-	"github.com/authzed/spicedb/pkg/typesystem"
 )
 
 // PopulatedValidationFile contains the fully parsed information from a validation file.
@@ -31,9 +29,9 @@ type PopulatedValidationFile struct {
 	// direct or compiled from schema form.
 	CaveatDefinitions []*core.CaveatDefinition
 
-	// Tuples are the relation tuples defined in the validation file, either directly
+	// Relationships are the relationships defined in the validation file, either directly
 	// or in the relationships block.
-	Tuples []*core.RelationTuple
+	Relationships []tuple.Relationship
 
 	// ParsedFiles are the underlying parsed validation files.
 	ParsedFiles []ValidationFile
@@ -59,11 +57,11 @@ func PopulateFromFiles(ctx context.Context, ds datastore.Datastore, filePaths []
 // PopulateFromFilesContents populates the given datastore with the namespaces and tuples found in
 // the validation file(s) contents specified.
 func PopulateFromFilesContents(ctx context.Context, ds datastore.Datastore, filesContents map[string][]byte) (*PopulatedValidationFile, datastore.Revision, error) {
-	var schema string
+	var schemaStr string
 	var objectDefs []*core.NamespaceDefinition
 	var caveatDefs []*core.CaveatDefinition
-	var tuples []*core.RelationTuple
-	var updates []*core.RelationTupleUpdate
+	var rels []tuple.Relationship
+	var updates []tuple.RelationshipUpdate
 
 	var revision datastore.Revision
 
@@ -92,19 +90,23 @@ func PopulateFromFilesContents(ctx context.Context, ds datastore.Datastore, file
 		if parsed.Schema.CompiledSchema != nil {
 			defs := parsed.Schema.CompiledSchema.ObjectDefinitions
 			if len(defs) > 0 {
-				schema += parsed.Schema.Schema + "\n\n"
+				schemaStr += parsed.Schema.Schema + "\n\n"
 			}
 
-			log.Ctx(ctx).Info().Str("filePath", filePath).Int("schemaDefinitionCount", len(parsed.Schema.CompiledSchema.OrderedDefinitions)).Msg("adding schema definitions")
+			log.Ctx(ctx).Info().Str("filePath", filePath).
+				Int("definitionCount", len(defs)).
+				Int("caveatDefinitionCount", len(parsed.Schema.CompiledSchema.CaveatDefinitions)).
+				Int("schemaDefinitionCount", len(parsed.Schema.CompiledSchema.OrderedDefinitions)).
+				Msg("adding schema definitions")
+
 			objectDefs = append(objectDefs, defs...)
 			caveatDefs = append(caveatDefs, parsed.Schema.CompiledSchema.CaveatDefinitions...)
 		}
 
 		// Parse relationships for updates.
 		for _, rel := range parsed.Relationships.Relationships {
-			tpl := tuple.MustFromRelationship[*v1.ObjectReference, *v1.SubjectReference, *v1.ContextualizedCaveat](rel)
-			updates = append(updates, tuple.Touch(tpl))
-			tuples = append(tuples, tpl)
+			updates = append(updates, tuple.Touch(rel))
+			rels = append(rels, rel)
 		}
 	}
 
@@ -116,18 +118,15 @@ func PopulateFromFilesContents(ctx context.Context, ds datastore.Datastore, file
 			return err
 		}
 
+		res := schema.ResolverForDatastoreReader(rwt).WithPredefinedElements(schema.PredefinedElements{
+			Definitions: objectDefs,
+			Caveats:     caveatDefs,
+		})
+		ts := schema.NewTypeSystem(res)
 		// Validate and write the object definitions.
 		for _, objectDef := range objectDefs {
-			ts, err := typesystem.NewNamespaceTypeSystem(objectDef,
-				typesystem.ResolverForDatastoreReader(rwt).WithPredefinedElements(typesystem.PredefinedElements{
-					Namespaces: objectDefs,
-				}))
-			if err != nil {
-				return err
-			}
-
 			ctx := dsctx.ContextWithDatastore(ctx, ds)
-			vts, terr := ts.Validate(ctx)
+			vts, terr := ts.GetValidatedDefinition(ctx, objectDef.GetName())
 			if terr != nil {
 				return terr
 			}
@@ -145,17 +144,17 @@ func PopulateFromFilesContents(ctx context.Context, ds datastore.Datastore, file
 		return err
 	})
 
-	slicez.ForEachChunk(updates, 500, func(chunked []*core.RelationTupleUpdate) {
+	slicez.ForEachChunk(updates, 500, func(chunked []tuple.RelationshipUpdate) {
 		if err != nil {
 			return
 		}
 
-		chunkedTuples := make([]*core.RelationTuple, 0, len(chunked))
+		chunkedRels := make([]tuple.Relationship, 0, len(chunked))
 		for _, update := range chunked {
-			chunkedTuples = append(chunkedTuples, update.Tuple)
+			chunkedRels = append(chunkedRels, update.Relationship)
 		}
 		revision, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-			err = relationships.ValidateRelationshipsForCreateOrTouch(ctx, rwt, chunkedTuples)
+			err = relationships.ValidateRelationshipsForCreateOrTouch(ctx, rwt, chunkedRels...)
 			if err != nil {
 				return err
 			}
@@ -168,5 +167,5 @@ func PopulateFromFilesContents(ctx context.Context, ds datastore.Datastore, file
 		return nil, nil, err
 	}
 
-	return &PopulatedValidationFile{schema, objectDefs, caveatDefs, tuples, files}, revision, err
+	return &PopulatedValidationFile{schemaStr, objectDefs, caveatDefs, rels, files}, revision, err
 }

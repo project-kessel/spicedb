@@ -17,13 +17,16 @@ func NewSingleflightDatastoreProxy(d datastore.Datastore) datastore.Datastore {
 
 type singleflightProxy struct {
 	headRevGroup  singleflight.Group[string, datastore.Revision]
-	optRevGroup   singleflight.Group[string, datastore.Revision]
 	checkRevGroup singleflight.Group[string, string]
 	statsGroup    singleflight.Group[string, datastore.Stats]
 	delegate      datastore.Datastore
 }
 
 var _ datastore.Datastore = (*singleflightProxy)(nil)
+
+func (p *singleflightProxy) MetricsID() (string, error) {
+	return p.delegate.MetricsID()
+}
 
 func (p *singleflightProxy) SnapshotReader(rev datastore.Revision) datastore.Reader {
 	return p.delegate.SnapshotReader(rev)
@@ -34,10 +37,9 @@ func (p *singleflightProxy) ReadWriteTx(ctx context.Context, f datastore.TxUserF
 }
 
 func (p *singleflightProxy) OptimizedRevision(ctx context.Context) (datastore.Revision, error) {
-	rev, _, err := p.optRevGroup.Do(ctx, "", func(ctx context.Context) (datastore.Revision, error) {
-		return p.delegate.OptimizedRevision(ctx)
-	})
-	return rev, err
+	// NOTE: Optimized revisions are singleflighted by the underlying datastore via the
+	// CachedOptimizedRevisions struct.
+	return p.delegate.OptimizedRevision(ctx)
 }
 
 func (p *singleflightProxy) CheckRevision(ctx context.Context, revision datastore.Revision) error {
@@ -58,7 +60,7 @@ func (p *singleflightProxy) RevisionFromString(serialized string) (datastore.Rev
 	return p.delegate.RevisionFromString(serialized)
 }
 
-func (p *singleflightProxy) Watch(ctx context.Context, afterRevision datastore.Revision, options datastore.WatchOptions) (<-chan *datastore.RevisionChanges, <-chan error) {
+func (p *singleflightProxy) Watch(ctx context.Context, afterRevision datastore.Revision, options datastore.WatchOptions) (<-chan datastore.RevisionChanges, <-chan error) {
 	return p.delegate.Watch(ctx, afterRevision, options)
 }
 
@@ -71,6 +73,10 @@ func (p *singleflightProxy) Statistics(ctx context.Context) (datastore.Stats, er
 
 func (p *singleflightProxy) Features(ctx context.Context) (*datastore.Features, error) {
 	return p.delegate.Features(ctx)
+}
+
+func (p *singleflightProxy) OfflineFeatures() (*datastore.Features, error) {
+	return p.delegate.OfflineFeatures()
 }
 
 func (p *singleflightProxy) ReadyState(ctx context.Context) (datastore.ReadyState, error) {

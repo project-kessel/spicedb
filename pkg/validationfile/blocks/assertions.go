@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
+	"github.com/ccoveille/go-safecast"
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/authzed/spicedb/pkg/spiceerrors"
@@ -37,7 +37,7 @@ type Assertion struct {
 
 	// Relationship is the parsed relationship on which the assertion is being
 	// run.
-	Relationship *v1.Relationship
+	Relationship tuple.Relationship
 
 	// CaveatContext is the caveat context for the assertion, if any.
 	CaveatContext map[string]any
@@ -81,38 +81,47 @@ func (a *Assertion) UnmarshalYAML(node *yamlv3.Node) error {
 
 	trimmed := strings.TrimSpace(relationshipWithContextString)
 
+	line, err := safecast.ToUint64(node.Line)
+	if err != nil {
+		return err
+	}
+	column, err := safecast.ToUint64(node.Column)
+	if err != nil {
+		return err
+	}
+
 	// Check for caveat context.
 	parts := strings.SplitN(trimmed, " with ", 2)
 	if len(parts) == 0 {
-		return spiceerrors.NewErrorWithSource(
+		return spiceerrors.NewWithSourceError(
 			fmt.Errorf("error parsing assertion `%s`", trimmed),
 			trimmed,
-			uint64(node.Line),
-			uint64(node.Column),
+			line,
+			column,
 		)
 	}
 
-	tpl := tuple.Parse(strings.TrimSpace(parts[0]))
-	if tpl == nil {
-		return spiceerrors.NewErrorWithSource(
-			fmt.Errorf("error parsing relationship in assertion `%s`", trimmed),
+	relationship, err := tuple.Parse(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return spiceerrors.NewWithSourceError(
+			fmt.Errorf("error parsing relationship in assertion `%s`: %w", trimmed, err),
 			trimmed,
-			uint64(node.Line),
-			uint64(node.Column),
+			line,
+			column,
 		)
 	}
 
-	a.Relationship = tuple.MustToRelationship(tpl)
+	a.Relationship = relationship
 
 	if len(parts) == 2 {
 		caveatContextMap := make(map[string]any, 0)
 		err := json.Unmarshal([]byte(parts[1]), &caveatContextMap)
 		if err != nil {
-			return spiceerrors.NewErrorWithSource(
+			return spiceerrors.NewWithSourceError(
 				fmt.Errorf("error parsing caveat context in assertion `%s`: %w", trimmed, err),
 				trimmed,
-				uint64(node.Line),
-				uint64(node.Column),
+				line,
+				column,
 			)
 		}
 

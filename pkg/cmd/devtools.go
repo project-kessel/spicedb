@@ -28,6 +28,7 @@ import (
 	v0svc "github.com/authzed/spicedb/internal/services/v0"
 	"github.com/authzed/spicedb/pkg/cmd/server"
 	"github.com/authzed/spicedb/pkg/cmd/termination"
+	"github.com/authzed/spicedb/pkg/cmd/util"
 )
 
 func RegisterDevtoolsFlags(cmd *cobra.Command) {
@@ -42,6 +43,8 @@ func RegisterDevtoolsFlags(cmd *cobra.Command) {
 	cmd.Flags().String("s3-bucket", "", "s3 bucket name for s3 share store")
 	cmd.Flags().String("s3-endpoint", "", "s3 endpoint for s3 share store")
 	cmd.Flags().String("s3-region", "auto", "s3 region for s3 share store")
+
+	util.RegisterCommonFlags(cmd)
 }
 
 func NewDevtoolsCommand(programName string) *cobra.Command {

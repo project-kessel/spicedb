@@ -3,54 +3,92 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 
+	"github.com/authzed/ctxkey"
 	"github.com/magefile/mage/mg"
 	"github.com/magefile/mage/sh"
 )
 
 type Test mg.Namespace
 
+var (
+	emptyEnv map[string]string
+	ctxMyKey = ctxkey.New[bool]()
+)
+
 // All Runs all test suites
-func (t Test) All() error {
+func (t Test) All(ctx context.Context) error {
 	ds := Testds{}
 	c := Testcons{}
-	mg.Deps(t.Unit, t.Integration, t.Image, t.Analyzers,
+	cover := parseCommandLineFlags()
+	ctx = ctxMyKey.WithValue(ctx, cover)
+	mg.CtxDeps(ctx, t.Unit, t.Integration, t.Steelthread, t.Image, t.Analyzers,
 		ds.Crdb, ds.Postgres, ds.Spanner, ds.Mysql,
 		c.Crdb, c.Spanner, c.Postgres, c.Mysql)
-	return nil
+
+	if !cover {
+		return nil
+	}
+
+	return combineCoverage()
 }
 
-// Runs the unit tests and generates a coverage report
-func (Test) UnitCover() error {
-	mg.Deps(Test{}.Unit)
+// UnitCover Runs the unit tests and generates a coverage report
+func (t Test) UnitCover(ctx context.Context) error {
+	if err := t.unit(ctx, true); err != nil {
+		return err
+	}
 	fmt.Println("Running coverage...")
 	return sh.RunV("go", "tool", "cover", "-html=coverage.txt")
 }
 
 // Unit Runs the unit tests
-func (Test) Unit() error {
+func (t Test) Unit(ctx context.Context) error {
+	return t.unit(ctx, false)
+}
+
+func (Test) unit(ctx context.Context, coverage bool) error {
 	fmt.Println("running unit tests")
-	return goTest("./...", "-tags", "ci,skipintegrationtests", "-race", "-timeout", "10m", "-covermode=atomic", "-count=1", "-coverprofile=coverage.txt")
+	args := []string{"-tags", "ci,skipintegrationtests", "-race", "-timeout", "20m", "-count=1"}
+	if coverage {
+		args = append(args, "-covermode=atomic", "-coverprofile=coverage.txt")
+	}
+	return goTest(ctx, "./...", args...)
 }
 
 // Image Run tests that run the built image
-func (Test) Image() error {
+func (Test) Image(ctx context.Context) error {
 	mg.Deps(Build{}.Testimage)
-	return goDirTest("./cmd/spicedb", "./...", "-tags", "docker,image")
+	return goDirTest(ctx, "./cmd/spicedb", "./...", "-tags", "docker,image")
 }
 
 // Integration Run integration tests
-func (Test) Integration() error {
+func (Test) Integration(ctx context.Context) error {
 	mg.Deps(checkDocker)
-	return goTest("./internal/services/integrationtesting/...", "-tags", "ci,docker", "-timeout", "15m")
+	return goTest(ctx, "./internal/services/integrationtesting/...", "-tags", "ci,docker", "-timeout", "15m")
+}
+
+// Steelthread Run steelthread tests
+func (Test) Steelthread(ctx context.Context) error {
+	fmt.Println("running steel thread tests")
+	return goTest(ctx, "./internal/services/steelthreadtesting/...", "-tags", "steelthread,docker,image,ci", "-timeout", "15m", "-v")
+}
+
+// RegenSteelthread Regenerate the steelthread tests
+func (Test) RegenSteelthread() error {
+	fmt.Println("regenerating steel thread tests")
+	return RunSh(goCmdForTests(), WithV(), WithDir("."), WithEnv(map[string]string{
+		"REGENERATE_STEEL_RESULTS": "true",
+	}), WithArgs("test", "./internal/services/steelthreadtesting/...", "-tags", "steelthread,docker,image,ci", "-timeout", "15m", "-v"))("go")
 }
 
 // Analyzers Run the analyzer unit tests
-func (Test) Analyzers() error {
-	return goDirTest("./tools/analyzers", "./...")
+func (Test) Analyzers(ctx context.Context) error {
+	return goDirTest(ctx, "./tools/analyzers", "./...")
 }
 
 // Wasm Run wasm browser tests
@@ -69,52 +107,101 @@ func (Test) Wasm() error {
 type Testds mg.Namespace
 
 // Crdb Run datastore tests for crdb
-func (Testds) Crdb() error {
-	return datastoreTest("crdb")
+func (tds Testds) Crdb(ctx context.Context) error {
+	return tds.crdb(ctx, "")
+}
+
+func (tds Testds) CrdbVer(ctx context.Context, version string) error {
+	return tds.crdb(ctx, version)
+}
+
+func (Testds) crdb(ctx context.Context, version string) error {
+	return datastoreTest(ctx, "crdb", map[string]string{
+		"CRDB_TEST_VERSION": version,
+	})
 }
 
 // Spanner Run datastore tests for spanner
-func (Testds) Spanner() error {
-	return datastoreTest("spanner")
+func (Testds) Spanner(ctx context.Context) error {
+	return datastoreTest(ctx, "spanner", emptyEnv)
 }
 
 // Postgres Run datastore tests for postgres
-func (Testds) Postgres() error {
-	return datastoreTest("postgres", "postgres")
+func (tds Testds) Postgres(ctx context.Context) error {
+	return tds.postgres(ctx, "")
+}
+
+func (tds Testds) PostgresVer(ctx context.Context, version string) error {
+	return tds.postgres(ctx, version)
+}
+
+func (Testds) postgres(ctx context.Context, version string) error {
+	return datastoreTest(ctx, "postgres", map[string]string{
+		"POSTGRES_TEST_VERSION": version,
+	}, "postgres")
 }
 
 // Pgbouncer Run datastore tests for postgres with Pgbouncer
-func (Testds) Pgbouncer() error {
-	return datastoreTest("postgres", "pgbouncer")
+func (tds Testds) Pgbouncer(ctx context.Context) error {
+	return tds.pgbouncer(ctx, "")
+}
+
+func (tds Testds) PgbouncerVer(ctx context.Context, version string) error {
+	return tds.pgbouncer(ctx, version)
+}
+
+func (Testds) pgbouncer(ctx context.Context, version string) error {
+	return datastoreTest(ctx, "postgres", map[string]string{
+		"POSTGRES_TEST_VERSION": version,
+	}, "pgbouncer")
 }
 
 // Mysql Run datastore tests for mysql
-func (Testds) Mysql() error {
-	return datastoreTest("mysql")
+func (Testds) Mysql(ctx context.Context) error {
+	return datastoreTest(ctx, "mysql", emptyEnv)
 }
 
-func datastoreTest(datastore string, tags ...string) error {
+func datastoreTest(ctx context.Context, datastore string, env map[string]string, tags ...string) error {
 	mergedTags := append([]string{"ci", "docker"}, tags...)
 	tagString := strings.Join(mergedTags, ",")
 	mg.Deps(checkDocker)
-	return goTest(fmt.Sprintf("./internal/datastore/%s/...", datastore), "-tags", tagString, "-timeout", "10m")
+	return goDirTestWithEnv(ctx, ".", fmt.Sprintf("./internal/datastore/%s/...", datastore), env, "-tags", tagString, "-timeout", "20m")
 }
 
 type Testcons mg.Namespace
 
 // Crdb Run consistency tests for crdb
-func (Testcons) Crdb() error {
-	return consistencyTest("cockroachdb")
+func (tc Testcons) Crdb(ctx context.Context) error {
+	return tc.crdb(ctx, "")
+}
+
+func (tc Testcons) CrdbVer(ctx context.Context, version string) error {
+	return tc.crdb(ctx, version)
+}
+
+func (Testcons) crdb(ctx context.Context, version string) error {
+	return consistencyTest(ctx, "crdb", map[string]string{
+		"CRDB_TEST_VERSION": version,
+	})
 }
 
 // Spanner Run consistency tests for spanner
-func (Testcons) Spanner() error {
-	return consistencyTest("spanner")
+func (Testcons) Spanner(ctx context.Context) error {
+	return consistencyTest(ctx, "spanner", emptyEnv)
 }
 
-// Postgres Run consistency tests for postgres
-func (Testcons) Postgres() error {
-	return consistencyTest("postgres")
+func (tc Testcons) Postgres(ctx context.Context) error {
+	return tc.postgres(ctx, "")
+}
+
+func (tc Testcons) PostgresVer(ctx context.Context, version string) error {
+	return tc.postgres(ctx, version)
+}
+
+func (Testcons) postgres(ctx context.Context, version string) error {
+	return consistencyTest(ctx, "postgres", map[string]string{
+		"POSTGRES_TEST_VERSION": version,
+	})
 }
 
 // Pgbouncer Run consistency tests for postgres with pgbouncer
@@ -124,15 +211,21 @@ func (Testcons) Pgbouncer() error {
 	return nil
 }
 
-// Mysql Run consistency tests for mysql
-func (Testcons) Mysql() error {
-	return consistencyTest("mysql")
+func (Testcons) PgbouncerVer(version string) error {
+	println("postgres+pgbouncer consistency tests are not implemented")
+	return nil
 }
 
-func consistencyTest(datastore string) error {
+// Mysql Run consistency tests for mysql
+func (Testcons) Mysql(ctx context.Context) error {
+	return consistencyTest(ctx, "mysql", emptyEnv)
+}
+
+func consistencyTest(ctx context.Context, datastore string, env map[string]string) error {
 	mg.Deps(checkDocker)
-	return goTest("./internal/services/integrationtesting/...",
+	return goDirTestWithEnv(ctx, ".", "./internal/services/integrationtesting/...",
+		env,
 		"-tags", "ci,docker,datastoreconsistency",
-		"-timeout", "10m",
+		"-timeout", "20m",
 		"-run", fmt.Sprintf("TestConsistencyPerDatastore/%s", datastore))
 }

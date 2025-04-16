@@ -7,18 +7,11 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/samber/lo"
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
 )
-
-func sliceMap(s []string, f func(value string) string) []string {
-	mapped := make([]string, 0, len(s))
-	for _, value := range s {
-		mapped = append(mapped, f(value))
-	}
-	return mapped
-}
 
 var disallowedDowncastTypes = map[string]bool{
 	"int8":    true,
@@ -44,7 +37,7 @@ func Analyzer() *analysis.Analyzer {
 		Run: func(pass *analysis.Pass) (any, error) {
 			// Check for a skipped package.
 			if len(*skipPkg) > 0 {
-				skipped := sliceMap(strings.Split(*skipPkg, ","), strings.TrimSpace)
+				skipped := lo.Map(strings.Split(*skipPkg, ","), func(skipped string, _ int) string { return strings.TrimSpace(skipped) })
 				for _, s := range skipped {
 					if strings.Contains(pass.Pkg.Path(), s) {
 						return nil, nil
@@ -55,7 +48,7 @@ func Analyzer() *analysis.Analyzer {
 			// Check for a skipped file.
 			skipFilePatterns := make([]string, 0)
 			if len(*skipFiles) > 0 {
-				skipFilePatterns = sliceMap(strings.Split(*skipFiles, ","), strings.TrimSpace)
+				skipFilePatterns = lo.Map(strings.Split(*skipPkg, ","), func(skipped string, _ int) string { return strings.TrimSpace(skipped) })
 			}
 			for _, pattern := range skipFilePatterns {
 				_, err := regexp.Compile(pattern)

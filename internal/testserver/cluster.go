@@ -137,12 +137,12 @@ func (r *SafeManualResolver) Close() {}
 
 // TestClusterWithDispatch creates a cluster with `size` nodes
 // The cluster has a real dispatch stack that uses bufconn grpc connections
-func TestClusterWithDispatch(t testing.TB, size uint, ds datastore.Datastore) ([]*grpc.ClientConn, func()) {
-	return TestClusterWithDispatchAndCacheConfig(t, size, ds)
+func TestClusterWithDispatch(t testing.TB, size uint, ds datastore.Datastore, additionalServerOptions ...server.ConfigOption) ([]*grpc.ClientConn, func()) {
+	return TestClusterWithDispatchAndCacheConfig(t, size, ds, additionalServerOptions...)
 }
 
 // TestClusterWithDispatchAndCacheConfig creates a cluster with `size` nodes and with cache toggled.
-func TestClusterWithDispatchAndCacheConfig(t testing.TB, size uint, ds datastore.Datastore) ([]*grpc.ClientConn, func()) {
+func TestClusterWithDispatchAndCacheConfig(t testing.TB, size uint, ds datastore.Datastore, additionalServerOptions ...server.ConfigOption) ([]*grpc.ClientConn, func()) {
 	// each cluster gets a unique prefix since grpc resolution is process-global
 	prefix := getPrefix(t)
 
@@ -212,9 +212,10 @@ func TestClusterWithDispatchAndCacheConfig(t testing.TB, size uint, ds datastore
 			}),
 			server.WithDispatchClusterMetricsPrefix(fmt.Sprintf("%s_%d_dispatch", prefix, i)),
 		}
+		serverOptions = append(serverOptions, additionalServerOptions...)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		srv, err := server.NewConfigWithOptions(serverOptions...).Complete(ctx)
+		srv, err := server.NewConfigWithOptionsAndDefaults(serverOptions...).Complete(ctx)
 		require.NoError(t, err)
 
 		go func() {
@@ -223,9 +224,11 @@ func TestClusterWithDispatchAndCacheConfig(t testing.TB, size uint, ds datastore
 		cancelFuncs = append(cancelFuncs, cancel)
 
 		dialers = append(dialers, srv.DispatchNetDialContext)
+
+		// TODO: move off of WithBlock and WithReturnConnectionError
 		conn, err := srv.GRPCDialContext(ctx,
-			grpc.WithReturnConnectionError(),
-			grpc.WithBlock(),
+			grpc.WithReturnConnectionError(), // nolint: staticcheck
+			grpc.WithBlock(),                 // nolint: staticcheck
 			grpc.WithConnectParams(grpc.ConnectParams{
 				Backoff: backoff.Config{
 					BaseDelay:  1 * time.Second,

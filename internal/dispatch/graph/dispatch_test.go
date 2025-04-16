@@ -7,14 +7,16 @@ import (
 
 	"github.com/authzed/spicedb/internal/dispatch"
 	"github.com/authzed/spicedb/internal/graph"
-	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	v1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
 	"github.com/authzed/spicedb/pkg/tuple"
 
 	"github.com/stretchr/testify/require"
 )
 
+const veryLargeLimit = 1000000000
+
 func TestDispatchChunking(t *testing.T) {
+	t.Parallel()
 	schema := `
 		definition user {
 			relation self: user
@@ -25,22 +27,23 @@ func TestDispatchChunking(t *testing.T) {
 			permission view = owner->self
 		}`
 
-	resources := make([]*core.RelationTuple, 0, math.MaxUint16+1)
-	enabled := make([]*core.RelationTuple, 0, math.MaxUint16+1)
+	resources := make([]tuple.Relationship, 0, math.MaxUint16+1)
+	enabled := make([]tuple.Relationship, 0, math.MaxUint16+1)
 	for i := 0; i < math.MaxUint16+1; i++ {
-		resources = append(resources, tuple.Parse(fmt.Sprintf("res:res1#owner@user:user%d", i)))
-		enabled = append(enabled, tuple.Parse(fmt.Sprintf("user:user%d#self@user:user%d", i, i)))
+		resources = append(resources, tuple.MustParse(fmt.Sprintf("res:res1#owner@user:user%d", i)))
+		enabled = append(enabled, tuple.MustParse(fmt.Sprintf("user:user%d#self@user:user%d", i, i)))
 	}
 
 	ctx, dispatcher, revision := newLocalDispatcherWithSchemaAndRels(t, schema, append(enabled, resources...))
 
 	t.Run("check", func(t *testing.T) {
+		t.Parallel()
 		for _, tpl := range resources[:1] {
 			checkResult, err := dispatcher.DispatchCheck(ctx, &v1.DispatchCheckRequest{
-				ResourceRelation: RR(tpl.ResourceAndRelation.Namespace, "view"),
-				ResourceIds:      []string{tpl.ResourceAndRelation.ObjectId},
+				ResourceRelation: RR(tpl.Resource.ObjectType, "view").ToCoreRR(),
+				ResourceIds:      []string{tpl.Resource.ObjectID},
 				ResultsSetting:   v1.DispatchCheckRequest_ALLOW_SINGLE_RESULT,
-				Subject:          ONR(tpl.Subject.Namespace, tpl.Subject.ObjectId, graph.Ellipsis),
+				Subject:          tuple.CoreONR(tpl.Subject.ObjectType, tpl.Subject.ObjectID, graph.Ellipsis),
 				Metadata: &v1.ResolverMeta{
 					AtRevision:     revision.String(),
 					DepthRemaining: 50,
@@ -49,17 +52,21 @@ func TestDispatchChunking(t *testing.T) {
 
 			require.NoError(t, err)
 			require.NotNil(t, checkResult)
-			require.NotEmpty(t, checkResult.ResultsByResourceId, "expected membership for resource %s", tpl.ResourceAndRelation.ObjectId)
-			require.Equal(t, v1.ResourceCheckResult_MEMBER, checkResult.ResultsByResourceId[tpl.ResourceAndRelation.ObjectId].Membership)
+			require.NotEmpty(t, checkResult.ResultsByResourceId, "expected membership for resource %s", tpl.Resource.ObjectID)
+			require.Equal(t, v1.ResourceCheckResult_MEMBER, checkResult.ResultsByResourceId[tpl.Resource.ObjectID].Membership)
 		}
 	})
 
-	t.Run("lookup-resources", func(t *testing.T) {
+	t.Run("lookup-resources2", func(t *testing.T) {
+		t.Parallel()
+
 		for _, tpl := range resources[:1] {
-			stream := dispatch.NewCollectingDispatchStream[*v1.DispatchLookupResourcesResponse](ctx)
-			err := dispatcher.DispatchLookupResources(&v1.DispatchLookupResourcesRequest{
-				ObjectRelation: RR(tpl.ResourceAndRelation.Namespace, "view"),
-				Subject:        ONR(tpl.Subject.Namespace, tpl.Subject.ObjectId, graph.Ellipsis),
+			stream := dispatch.NewCollectingDispatchStream[*v1.DispatchLookupResources2Response](ctx)
+			err := dispatcher.DispatchLookupResources2(&v1.DispatchLookupResources2Request{
+				ResourceRelation: RR(tpl.Resource.ObjectType, "view").ToCoreRR(),
+				SubjectRelation:  RR(tpl.Subject.ObjectType, graph.Ellipsis).ToCoreRR(),
+				SubjectIds:       []string{tpl.Subject.ObjectID},
+				TerminalSubject:  tuple.CoreONR(tpl.Subject.ObjectType, tpl.Subject.ObjectID, graph.Ellipsis),
 				Metadata: &v1.ResolverMeta{
 					AtRevision:     revision.String(),
 					DepthRemaining: 50,
@@ -75,13 +82,15 @@ func TestDispatchChunking(t *testing.T) {
 	})
 
 	t.Run("lookup-subjects", func(t *testing.T) {
+		t.Parallel()
+
 		for _, tpl := range resources[:1] {
 			stream := dispatch.NewCollectingDispatchStream[*v1.DispatchLookupSubjectsResponse](ctx)
 
 			err := dispatcher.DispatchLookupSubjects(&v1.DispatchLookupSubjectsRequest{
-				ResourceRelation: RR(tpl.ResourceAndRelation.Namespace, "view"),
-				ResourceIds:      []string{tpl.ResourceAndRelation.ObjectId},
-				SubjectRelation:  RR(tpl.Subject.Namespace, graph.Ellipsis),
+				ResourceRelation: RR(tpl.Resource.ObjectType, "view").ToCoreRR(),
+				ResourceIds:      []string{tpl.Resource.ObjectID},
+				SubjectRelation:  RR(tpl.Subject.ObjectType, graph.Ellipsis).ToCoreRR(),
 				Metadata: &v1.ResolverMeta{
 					AtRevision:     revision.String(),
 					DepthRemaining: 50,

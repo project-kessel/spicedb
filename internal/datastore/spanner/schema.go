@@ -16,6 +16,7 @@ const (
 	colTimestamp        = "timestamp"
 	colCaveatName       = "caveat_name"
 	colCaveatContext    = "caveat_context"
+	colExpiration       = "expires_at"
 
 	tableCaveat         = "caveat"
 	colName             = "name"
@@ -25,9 +26,15 @@ const (
 	tableMetadata = "metadata"
 	colUniqueID   = "unique_id"
 
-	tableCounters = "relationship_estimate_counters"
-	colID         = "id"
-	colCount      = "count"
+	tableRelationshipCounter     = "relationship_counter"
+	colCounterName               = "name"
+	colCounterSerializedFilter   = "serialized_filter"
+	colCounterCurrentCount       = "current_count"
+	colCounterUpdatedAtTimestamp = "updated_at_timestamp"
+
+	tableTransactionMetadata = "transaction_metadata"
+	colTransactionTag        = "transaction_tag"
+	colMetadata              = "metadata"
 )
 
 var allRelationshipCols = []string{
@@ -40,4 +47,5 @@ var allRelationshipCols = []string{
 	colTimestamp,
 	colCaveatName,
 	colCaveatContext,
+	colExpiration,
 }

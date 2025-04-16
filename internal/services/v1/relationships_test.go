@@ -6,17 +6,21 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	"github.com/authzed/grpcutil"
+	"github.com/ccoveille/go-safecast"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/authzed/spicedb/internal/datastore/memdb"
 	tf "github.com/authzed/spicedb/internal/testfixtures"
@@ -292,6 +296,8 @@ func TestReadRelationships(t *testing.T) {
 								testExpected[k] = struct{}{}
 							}
 
+							uintPageSize, err := safecast.ToUint32(pageSize)
+							require.NoError(err)
 							for i := 0; i < 20; i++ {
 								stream, err := client.ReadRelationships(context.Background(), &v1.ReadRelationshipsRequest{
 									Consistency: &v1.Consistency{
@@ -300,7 +306,7 @@ func TestReadRelationships(t *testing.T) {
 										},
 									},
 									RelationshipFilter: tc.filter,
-									OptionalLimit:      uint32(pageSize),
+									OptionalLimit:      uintPageSize,
 									OptionalCursor:     currentCursor,
 								})
 								require.NoError(err)
@@ -323,9 +329,9 @@ func TestReadRelationships(t *testing.T) {
 									dsFilter, err := datastore.RelationshipsFilterFromPublicFilter(tc.filter)
 									require.NoError(err)
 
-									require.True(dsFilter.Test(tuple.MustFromRelationship(rel.Relationship)), "relationship did not match filter: %v", rel.Relationship)
+									require.True(dsFilter.Test(tuple.FromV1Relationship(rel.Relationship)), "relationship did not match filter: %v", rel.Relationship)
 
-									relString := tuple.MustRelString(rel.Relationship)
+									relString := tuple.MustV1RelString(rel.Relationship)
 									_, found := tc.expected[relString]
 									require.True(found, "relationship was not expected: %s", relString)
 
@@ -363,7 +369,7 @@ func TestWriteRelationships(t *testing.T) {
 	client := v1.NewPermissionsServiceClient(conn)
 	t.Cleanup(cleanup)
 
-	toWrite := []*core.RelationTuple{
+	toWrite := []tuple.Relationship{
 		tuple.MustParse("document:totallynew#parent@folder:plans"),
 		tuple.MustParse("document:--base64YWZzZGZh-ZHNmZHPwn5iK8J+YivC/fmIrwn5iK==#owner@user:--base64YWZzZGZh-ZHNmZHPwn5iK8J+YivC/fmIrwn5iK=="),
 		tuple.MustParse("document:veryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryincrediblysuuperlong#owner@user:veryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryincrediblysuuperlong"),
@@ -373,11 +379,11 @@ func TestWriteRelationships(t *testing.T) {
 	resp, err := client.WriteRelationships(context.Background(), &v1.WriteRelationshipsRequest{
 		Updates: []*v1.RelationshipUpdate{{
 			Operation:    v1.RelationshipUpdate_OPERATION_CREATE,
-			Relationship: tuple.MustToRelationship(toWrite[0]),
+			Relationship: tuple.ToV1Relationship(toWrite[0]),
 		}},
 		OptionalPreconditions: []*v1.Precondition{{
 			Operation: v1.Precondition_OPERATION_MUST_MATCH,
-			Filter:    tuple.MustToFilter(toWrite[0]),
+			Filter:    tuple.ToV1Filter(toWrite[0]),
 		}},
 	})
 	require.Nil(resp)
@@ -392,7 +398,7 @@ func TestWriteRelationships(t *testing.T) {
 		"precondition_subject_type",
 	)
 
-	existing := tuple.Parse(tf.StandardTuples[0])
+	existing := tuple.MustParse(tf.StandardRelationships[0])
 	require.NotNil(existing)
 
 	// Write with a succeeding precondition
@@ -400,14 +406,14 @@ func TestWriteRelationships(t *testing.T) {
 	for _, tpl := range toWrite {
 		toWriteUpdates = append(toWriteUpdates, &v1.RelationshipUpdate{
 			Operation:    v1.RelationshipUpdate_OPERATION_CREATE,
-			Relationship: tuple.MustToRelationship(tpl),
+			Relationship: tuple.ToV1Relationship(tpl),
 		})
 	}
 	resp, err = client.WriteRelationships(context.Background(), &v1.WriteRelationshipsRequest{
 		Updates: toWriteUpdates,
 		OptionalPreconditions: []*v1.Precondition{{
 			Operation: v1.Precondition_OPERATION_MUST_MATCH,
-			Filter:    tuple.MustToFilter(existing),
+			Filter:    tuple.ToV1Filter(existing),
 		}},
 	})
 	require.NoError(err)
@@ -417,8 +423,8 @@ func TestWriteRelationships(t *testing.T) {
 	// Ensure the written relationships exist
 	for _, tpl := range toWrite {
 		findWritten := &v1.RelationshipFilter{
-			ResourceType:       tpl.ResourceAndRelation.Namespace,
-			OptionalResourceId: tpl.ResourceAndRelation.ObjectId,
+			ResourceType:       tpl.Resource.ObjectType,
+			OptionalResourceId: tpl.Resource.ObjectID,
 		}
 
 		stream, err := client.ReadRelationships(context.Background(), &v1.ReadRelationshipsRequest{
@@ -427,7 +433,8 @@ func TestWriteRelationships(t *testing.T) {
 		require.NoError(err)
 		rel, err := stream.Recv()
 		require.NoError(err)
-		relStr, err := tuple.StringRelationship(rel.Relationship)
+
+		relStr, err := tuple.V1StringRelationship(rel.Relationship)
 		require.NoError(err)
 		require.Equal(tuple.MustString(tpl), relStr)
 
@@ -438,7 +445,7 @@ func TestWriteRelationships(t *testing.T) {
 		deleted, err := client.WriteRelationships(context.Background(), &v1.WriteRelationshipsRequest{
 			Updates: []*v1.RelationshipUpdate{{
 				Operation:    v1.RelationshipUpdate_OPERATION_DELETE,
-				Relationship: tuple.MustToRelationship(tpl),
+				Relationship: tuple.ToV1Relationship(tpl),
 			}},
 		})
 		require.NoError(err)
@@ -469,10 +476,34 @@ func TestDeleteRelationshipViaWriteNoop(t *testing.T) {
 	_, err := client.WriteRelationships(context.Background(), &v1.WriteRelationshipsRequest{
 		Updates: []*v1.RelationshipUpdate{{
 			Operation:    v1.RelationshipUpdate_OPERATION_DELETE,
-			Relationship: tuple.MustToRelationship(toDelete),
+			Relationship: tuple.ToV1Relationship(toDelete),
 		}},
 	})
 	require.NoError(err)
+}
+
+func TestWriteExpiringRelationships(t *testing.T) {
+	req := require.New(t)
+
+	conn, cleanup, _, _ := testserver.NewTestServer(req, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
+	client := v1.NewPermissionsServiceClient(conn)
+	t.Cleanup(cleanup)
+
+	toWrite := tuple.MustParse("document:companyplan#expiring_viewer@user:johndoe#...[expiration:2300-01-01T00:00:00Z]")
+	relWritten := tuple.ToV1Relationship(toWrite)
+	writeReq := &v1.WriteRelationshipsRequest{
+		Updates: []*v1.RelationshipUpdate{{
+			Operation:    v1.RelationshipUpdate_OPERATION_CREATE,
+			Relationship: relWritten,
+		}},
+	}
+
+	resp, err := client.WriteRelationships(context.Background(), writeReq)
+	req.NoError(err)
+
+	// read relationship back
+	relRead := readFirst(req, client, resp.WrittenAt, relWritten)
+	req.True(proto.Equal(relWritten, relRead))
 }
 
 func TestWriteCaveatedRelationships(t *testing.T) {
@@ -488,12 +519,13 @@ func TestWriteCaveatedRelationships(t *testing.T) {
 			caveatCtx, err := structpb.NewStruct(map[string]any{"expectedSecret": "hi"})
 			req.NoError(err)
 
-			toWrite.Caveat = &core.ContextualizedCaveat{
+			toWrite.OptionalCaveat = &core.ContextualizedCaveat{
 				CaveatName: "doesnotexist",
 				Context:    caveatCtx,
 			}
-			toWrite.Caveat.Context = caveatCtx
-			relWritten := tuple.MustToRelationship(toWrite)
+			toWrite.OptionalCaveat.Context = caveatCtx
+
+			relWritten := tuple.ToV1Relationship(toWrite)
 			writeReq := &v1.WriteRelationshipsRequest{
 				Updates: []*v1.RelationshipUpdate{{
 					Operation:    v1.RelationshipUpdate_OPERATION_CREATE,
@@ -518,9 +550,9 @@ func TestWriteCaveatedRelationships(t *testing.T) {
 			req.True(proto.Equal(relWritten, relRead))
 
 			// issue the deletion
-			relToDelete := tuple.MustToRelationship(tuple.MustParse("document:companyplan#caveated_viewer@user:johndoe#..."))
+			relToDelete := tuple.ToV1Relationship(tuple.MustParse("document:companyplan#caveated_viewer@user:johndoe#..."))
 			if deleteWithCaveat {
-				relToDelete = tuple.MustToRelationship(tuple.MustParse("document:companyplan#caveated_viewer@user:johndoe#...[test]"))
+				relToDelete = tuple.ToV1Relationship(tuple.MustParse("document:companyplan#caveated_viewer@user:johndoe#...[test]"))
 			}
 
 			deleteReq := &v1.WriteRelationshipsRequest{
@@ -603,6 +635,24 @@ func rel(resType, resID, relation, subType, subID, subRel string) *v1.Relationsh
 	}
 }
 
+func relWithExpiration(resType, resID, relation, subType, subID, subRel string, expiration time.Time) *v1.Relationship {
+	return &v1.Relationship{
+		Resource: &v1.ObjectReference{
+			ObjectType: resType,
+			ObjectId:   resID,
+		},
+		Relation: relation,
+		Subject: &v1.SubjectReference{
+			Object: &v1.ObjectReference{
+				ObjectType: subType,
+				ObjectId:   subID,
+			},
+			OptionalRelation: subRel,
+		},
+		OptionalExpiresAt: timestamppb.New(expiration),
+	}
+}
+
 func relWithCaveat(resType, resID, relation, subType, subID, subRel, caveatName string) *v1.Relationship {
 	return &v1.Relationship{
 		Resource: &v1.ObjectReference{
@@ -621,6 +671,72 @@ func relWithCaveat(resType, resID, relation, subType, subID, subRel, caveatName 
 			CaveatName: caveatName,
 		},
 	}
+}
+
+func mustRelWithCaveatAndContext(resType, resID, relation, subType, subID, subRel, caveatName string, context map[string]any) *v1.Relationship {
+	sctx, err := structpb.NewStruct(context)
+	if err != nil {
+		panic(err)
+	}
+
+	return &v1.Relationship{
+		Resource: &v1.ObjectReference{
+			ObjectType: resType,
+			ObjectId:   resID,
+		},
+		Relation: relation,
+		Subject: &v1.SubjectReference{
+			Object: &v1.ObjectReference{
+				ObjectType: subType,
+				ObjectId:   subID,
+			},
+			OptionalRelation: subRel,
+		},
+		OptionalCaveat: &v1.ContextualizedCaveat{
+			CaveatName: caveatName,
+			Context:    sctx,
+		},
+	}
+}
+
+func relationshipForBulkTesting(nsAndRel struct {
+	namespace string
+	relation  string
+}, i int,
+) *v1.Relationship {
+	if nsAndRel.relation == "caveated_viewer" {
+		return mustRelWithCaveatAndContext(
+			nsAndRel.namespace,
+			strconv.Itoa(i),
+			nsAndRel.relation,
+			tf.UserNS.Name,
+			strconv.Itoa(i),
+			"",
+			"test",
+			map[string]any{"secret": strconv.Itoa(i)},
+		)
+	}
+
+	if nsAndRel.relation == "expiring_viewer" {
+		return relWithExpiration(
+			nsAndRel.namespace,
+			strconv.Itoa(i),
+			nsAndRel.relation,
+			tf.UserNS.Name,
+			strconv.Itoa(i),
+			"",
+			time.Now().Add(time.Hour),
+		)
+	}
+
+	return rel(
+		nsAndRel.namespace,
+		strconv.Itoa(i),
+		nsAndRel.relation,
+		tf.UserNS.Name,
+		strconv.Itoa(i),
+		"",
+	)
 }
 
 func TestInvalidWriteRelationship(t *testing.T) {
@@ -1151,9 +1267,12 @@ func TestDeleteRelationships(t *testing.T) {
 				}
 				require.NoError(err)
 				require.NotNil(resp.DeletedAt)
+
 				rev, err := zedtoken.DecodeRevision(resp.DeletedAt, ds)
 				require.NoError(err)
 				require.True(rev.GreaterThan(revision))
+
+				require.Equal(uint64(len(tc.deleted)), resp.RelationshipsDeletedCount)
 				require.EqualValues(standardTuplesWithout(tc.deleted), readAll(require, client, resp.DeletedAt))
 			})
 		}
@@ -1191,7 +1310,26 @@ func TestDeleteRelationshipsBeyondAllowedLimit(t *testing.T) {
 		OptionalAllowPartialDeletions: false,
 	})
 	require.Error(err)
-	require.Contains(err.Error(), "value must be inside range [0, 1000]")
+	require.Contains(err.Error(), "provided limit 1005 is greater than maximum allowed of 1000")
+}
+
+func TestReadRelationshipsBeyondAllowedLimit(t *testing.T) {
+	require := require.New(t)
+	conn, cleanup, _, _ := testserver.NewTestServer(require, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
+	client := v1.NewPermissionsServiceClient(conn)
+	t.Cleanup(cleanup)
+
+	resp, err := client.ReadRelationships(context.Background(), &v1.ReadRelationshipsRequest{
+		RelationshipFilter: &v1.RelationshipFilter{
+			ResourceType: "document",
+		},
+		OptionalLimit: 1005,
+	})
+	require.NoError(err)
+
+	_, err = resp.Recv()
+	require.Error(err)
+	require.Contains(err.Error(), "provided limit 1005 is greater than maximum allowed of 1000")
 }
 
 func TestDeleteRelationshipsBeyondLimitPartial(t *testing.T) {
@@ -1221,6 +1359,8 @@ func TestDeleteRelationshipsBeyondLimitPartial(t *testing.T) {
 			t.Cleanup(cleanup)
 
 			iterations := 0
+			uintBatchSize, err := safecast.ToUint32(batchSize)
+			require.NoError(err)
 			for i := 0; i < 10; i++ {
 				iterations++
 
@@ -1233,13 +1373,16 @@ func TestDeleteRelationshipsBeyondLimitPartial(t *testing.T) {
 					RelationshipFilter: &v1.RelationshipFilter{
 						ResourceType: "document",
 					},
-					OptionalLimit:                 uint32(batchSize),
+					OptionalLimit:                 uintBatchSize,
 					OptionalAllowPartialDeletions: true,
 				})
 				require.NoError(err)
 
 				afterDelete := readOfType(require, "document", client, resp.DeletedAt)
 				require.LessOrEqual(len(beforeDelete)-len(afterDelete), batchSize)
+
+				bs, _ := safecast.ToUint64(batchSize)
+				require.LessOrEqual(resp.RelationshipsDeletedCount, bs)
 
 				if i == 0 {
 					require.Equal(v1.DeleteRelationshipsResponse_DELETION_PROGRESS_PARTIAL, resp.DeletionProgress)
@@ -1318,6 +1461,113 @@ func TestDeleteRelationshipsPreconditionsOverLimit(t *testing.T) {
 
 	require.Error(err)
 	require.Contains(err.Error(), "precondition count of 2 is greater than maximum allowed of 1")
+}
+
+func TestWriteRelationshipsWithMetadata(t *testing.T) {
+	require := require.New(t)
+	conn, cleanup, _, beforeWriteRev := testserver.NewTestServerWithConfig(
+		require,
+		testTimedeltas[0],
+		memdb.DisableGC,
+		true,
+		testserver.ServerConfig{
+			MaxPreconditionsCount: 10,
+			MaxUpdatesPerWrite:    10,
+		},
+		tf.StandardDatastoreWithData,
+	)
+	t.Cleanup(cleanup)
+
+	client := v1.NewPermissionsServiceClient(conn)
+
+	metadata, err := structpb.NewStruct(map[string]any{
+		"foo": "123546",
+	})
+	require.NoError(err)
+
+	_, err = client.WriteRelationships(context.Background(), &v1.WriteRelationshipsRequest{
+		OptionalTransactionMetadata: metadata,
+		Updates: []*v1.RelationshipUpdate{
+			{
+				Operation:    v1.RelationshipUpdate_OPERATION_TOUCH,
+				Relationship: rel("document", "newdoc", "parent", "folder", "afolder", ""),
+			},
+		},
+	})
+
+	require.NoError(err)
+
+	beforeWriteToken := zedtoken.MustNewFromRevision(beforeWriteRev)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	watchClient := v1.NewWatchServiceClient(conn)
+
+	stream, err := watchClient.Watch(ctx, &v1.WatchRequest{OptionalStartCursor: beforeWriteToken})
+	require.NoError(err)
+
+	resp, err := stream.Recv()
+	require.NoError(err)
+	require.Equal(metadata, resp.OptionalTransactionMetadata)
+}
+
+func TestWriteRelationshipsMetadataOverLimit(t *testing.T) {
+	require := require.New(t)
+	conn, cleanup, _, _ := testserver.NewTestServerWithConfig(
+		require,
+		testTimedeltas[0],
+		memdb.DisableGC,
+		true,
+		testserver.ServerConfig{
+			MaxPreconditionsCount: 1,
+			MaxUpdatesPerWrite:    1,
+		},
+		tf.StandardDatastoreWithData,
+	)
+	client := v1.NewPermissionsServiceClient(conn)
+	t.Cleanup(cleanup)
+
+	metadata, err := structpb.NewStruct(map[string]any{
+		"foo": strings.Repeat("hithere", 65000),
+	})
+	require.NoError(err)
+
+	_, err = client.WriteRelationships(context.Background(), &v1.WriteRelationshipsRequest{
+		OptionalTransactionMetadata: metadata,
+	})
+
+	require.Error(err)
+	require.Contains(err.Error(), "metadata size of 455010 is greater than maximum allowed of 65000")
+}
+
+func TestDeleteRelationshipsMetadataOverLimit(t *testing.T) {
+	require := require.New(t)
+	conn, cleanup, _, _ := testserver.NewTestServerWithConfig(
+		require,
+		testTimedeltas[0],
+		memdb.DisableGC,
+		true,
+		testserver.ServerConfig{
+			MaxPreconditionsCount: 1,
+			MaxUpdatesPerWrite:    1,
+		},
+		tf.StandardDatastoreWithData,
+	)
+	client := v1.NewPermissionsServiceClient(conn)
+	t.Cleanup(cleanup)
+
+	metadata, err := structpb.NewStruct(map[string]any{
+		"foo": strings.Repeat("hithere", 65000),
+	})
+	require.NoError(err)
+
+	_, err = client.DeleteRelationships(context.Background(), &v1.DeleteRelationshipsRequest{
+		OptionalTransactionMetadata: metadata,
+		RelationshipFilter:          &v1.RelationshipFilter{},
+	})
+
+	require.Error(err)
+	require.Contains(err.Error(), "metadata size of 455010 is greater than maximum allowed of 65000")
 }
 
 func TestWriteRelationshipsPreconditionsOverLimit(t *testing.T) {
@@ -1462,7 +1712,7 @@ func TestReadRelationshipsWithTimeout(t *testing.T) {
 			counter++
 			updates = append(updates, &v1.RelationshipUpdate{
 				Operation:    v1.RelationshipUpdate_OPERATION_CREATE,
-				Relationship: tuple.MustToRelationship(tuple.Parse(fmt.Sprintf("document:doc%d#viewer@user:someguy", counter))),
+				Relationship: tuple.ToV1Relationship(tuple.MustParse(fmt.Sprintf("document:doc%d#viewer@user:someguy", counter))),
 			})
 		}
 
@@ -1550,7 +1800,7 @@ func readOfType(require *require.Assertions, resourceType string, client v1.Perm
 		}
 		require.NoError(err)
 
-		got[tuple.MustRelString(rel.Relationship)] = struct{}{}
+		got[tuple.MustV1RelString(rel.Relationship)] = struct{}{}
 	}
 	return got
 }
@@ -1566,8 +1816,8 @@ func readAll(require *require.Assertions, client v1.PermissionsServiceClient, to
 }
 
 func standardTuplesWithout(without map[string]struct{}) map[string]struct{} {
-	out := make(map[string]struct{}, len(tf.StandardTuples)-len(without))
-	for _, t := range tf.StandardTuples {
+	out := make(map[string]struct{}, len(tf.StandardRelationships)-len(without))
+	for _, t := range tf.StandardRelationships {
 		t = tuple.MustString(tuple.MustParse(t))
 		if _, ok := without[t]; ok {
 			continue
@@ -1595,7 +1845,7 @@ func TestManyConcurrentWriteRelationshipsReturnsSerializationErrorOnMemdb(t *tes
 			for j := 0; j < 500; j++ {
 				updates = append(updates, &v1.RelationshipUpdate{
 					Operation:    v1.RelationshipUpdate_OPERATION_CREATE,
-					Relationship: tuple.MustToRelationship(tuple.MustParse(fmt.Sprintf("document:doc-%d-%d#viewer@user:tom", i, j))),
+					Relationship: tuple.ToV1Relationship(tuple.MustParse(fmt.Sprintf("document:doc-%d-%d#viewer@user:tom", i, j))),
 				})
 			}
 

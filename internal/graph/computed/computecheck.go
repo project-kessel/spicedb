@@ -8,9 +8,9 @@ import (
 	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/genutil/slicez"
-	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	v1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
 	"github.com/authzed/spicedb/pkg/spiceerrors"
+	"github.com/authzed/spicedb/pkg/tuple"
 )
 
 // DebugOption defines the various debug level options for Checks.
@@ -40,12 +40,13 @@ const (
 
 // CheckParameters are the parameters for the ComputeCheck call. *All* are required.
 type CheckParameters struct {
-	ResourceType  *core.RelationReference
-	Subject       *core.ObjectAndRelation
+	ResourceType  tuple.RelationReference
+	Subject       tuple.ObjectAndRelation
 	CaveatContext map[string]any
 	AtRevision    datastore.Revision
 	MaximumDepth  uint32
 	DebugOption   DebugOption
+	CheckHints    []*v1.CheckHint
 }
 
 // ComputeCheck computes a check result for the given resource and subject, computing any
@@ -55,11 +56,17 @@ func ComputeCheck(
 	d dispatch.Check,
 	params CheckParameters,
 	resourceID string,
+	dispatchChunkSize uint16,
 ) (*v1.ResourceCheckResult, *v1.ResponseMeta, error) {
-	resultsMap, meta, err := computeCheck(ctx, d, params, []string{resourceID})
+	resultsMap, meta, di, err := computeCheck(ctx, d, params, []string{resourceID}, dispatchChunkSize)
 	if err != nil {
 		return nil, meta, err
 	}
+
+	spiceerrors.DebugAssert(func() bool {
+		return (len(di) == 0 && meta.DebugInfo == nil) || (len(di) == 1 && meta.DebugInfo != nil)
+	}, "mismatch in debug information returned from computeCheck")
+
 	return resultsMap[resourceID], meta, err
 }
 
@@ -70,26 +77,22 @@ func ComputeBulkCheck(
 	d dispatch.Check,
 	params CheckParameters,
 	resourceIDs []string,
-) (map[string]*v1.ResourceCheckResult, *v1.ResponseMeta, error) {
-	return computeCheck(ctx, d, params, resourceIDs)
+	dispatchChunkSize uint16,
+) (map[string]*v1.ResourceCheckResult, *v1.ResponseMeta, []*v1.DebugInformation, error) {
+	return computeCheck(ctx, d, params, resourceIDs, dispatchChunkSize)
 }
 
 func computeCheck(ctx context.Context,
 	d dispatch.Check,
 	params CheckParameters,
 	resourceIDs []string,
-) (map[string]*v1.ResourceCheckResult, *v1.ResponseMeta, error) {
+	dispatchChunkSize uint16,
+) (map[string]*v1.ResourceCheckResult, *v1.ResponseMeta, []*v1.DebugInformation, error) {
 	debugging := v1.DispatchCheckRequest_NO_DEBUG
 	if params.DebugOption == BasicDebuggingEnabled {
 		debugging = v1.DispatchCheckRequest_ENABLE_BASIC_DEBUGGING
-		if len(resourceIDs) > 1 {
-			return nil, nil, spiceerrors.MustBugf("debugging can only be enabled for a single resource ID")
-		}
 	} else if params.DebugOption == TraceDebuggingEnabled {
 		debugging = v1.DispatchCheckRequest_ENABLE_TRACE_DEBUGGING
-		if len(resourceIDs) > 1 {
-			return nil, nil, spiceerrors.MustBugf("debugging can only be enabled for a single resource ID")
-		}
 	}
 
 	setting := v1.DispatchCheckRequest_REQUIRE_ALL_RESULTS
@@ -103,23 +106,31 @@ func computeCheck(ctx context.Context,
 
 	bf, err := v1.NewTraversalBloomFilter(uint(params.MaximumDepth))
 	if err != nil {
-		return nil, nil, spiceerrors.MustBugf("failed to create new traversal bloom filter")
+		return nil, nil, nil, spiceerrors.MustBugf("failed to create new traversal bloom filter")
 	}
 
+	caveatRunner := cexpr.NewCaveatRunner()
+
 	// TODO(jschorr): Should we make this run in parallel via the preloadedTaskRunner?
-	_, err = slicez.ForEachChunkUntil(resourceIDs, datastore.FilterMaximumIDCount, func(resourceIDsToCheck []string) (bool, error) {
+	debugInfo := make([]*v1.DebugInformation, 0)
+	_, err = slicez.ForEachChunkUntil(resourceIDs, dispatchChunkSize, func(resourceIDsToCheck []string) (bool, error) {
 		checkResult, err := d.DispatchCheck(ctx, &v1.DispatchCheckRequest{
-			ResourceRelation: params.ResourceType,
+			ResourceRelation: params.ResourceType.ToCoreRR(),
 			ResourceIds:      resourceIDsToCheck,
 			ResultsSetting:   setting,
-			Subject:          params.Subject,
+			Subject:          params.Subject.ToCoreONR(),
 			Metadata: &v1.ResolverMeta{
 				AtRevision:     params.AtRevision.String(),
 				DepthRemaining: params.MaximumDepth,
 				TraversalBloom: bf,
 			},
-			Debug: debugging,
+			Debug:      debugging,
+			CheckHints: params.CheckHints,
 		})
+
+		if checkResult.Metadata.DebugInfo != nil {
+			debugInfo = append(debugInfo, checkResult.Metadata.DebugInfo)
+		}
 
 		if len(resourceIDs) == 1 {
 			metadata = checkResult.Metadata
@@ -128,6 +139,7 @@ func computeCheck(ctx context.Context,
 				DispatchCount:       metadata.DispatchCount + checkResult.Metadata.DispatchCount,
 				DepthRequired:       max(metadata.DepthRequired, checkResult.Metadata.DepthRequired),
 				CachedDispatchCount: metadata.CachedDispatchCount + checkResult.Metadata.CachedDispatchCount,
+				DebugInfo:           nil,
 			}
 		}
 
@@ -136,7 +148,7 @@ func computeCheck(ctx context.Context,
 		}
 
 		for _, resourceID := range resourceIDsToCheck {
-			computed, err := computeCaveatedCheckResult(ctx, params, resourceID, checkResult)
+			computed, err := computeCaveatedCheckResult(ctx, caveatRunner, params, resourceID, checkResult)
 			if err != nil {
 				return false, err
 			}
@@ -145,10 +157,10 @@ func computeCheck(ctx context.Context,
 
 		return true, nil
 	})
-	return results, metadata, err
+	return results, metadata, debugInfo, err
 }
 
-func computeCaveatedCheckResult(ctx context.Context, params CheckParameters, resourceID string, checkResult *v1.DispatchCheckResponse) (*v1.ResourceCheckResult, error) {
+func computeCaveatedCheckResult(ctx context.Context, runner *cexpr.CaveatRunner, params CheckParameters, resourceID string, checkResult *v1.DispatchCheckResponse) (*v1.ResourceCheckResult, error) {
 	result, ok := checkResult.ResultsByResourceId[resourceID]
 	if !ok {
 		return &v1.ResourceCheckResult{
@@ -163,7 +175,7 @@ func computeCaveatedCheckResult(ctx context.Context, params CheckParameters, res
 	ds := datastoremw.MustFromContext(ctx)
 	reader := ds.SnapshotReader(params.AtRevision)
 
-	caveatResult, err := cexpr.RunCaveatExpression(ctx, result.Expression, params.CaveatContext, reader, cexpr.RunCaveatExpressionNoDebugging)
+	caveatResult, err := runner.RunCaveatExpression(ctx, result.Expression, params.CaveatContext, reader, cexpr.RunCaveatExpressionNoDebugging)
 	if err != nil {
 		return nil, err
 	}
@@ -172,6 +184,7 @@ func computeCaveatedCheckResult(ctx context.Context, params CheckParameters, res
 		missingFields, _ := caveatResult.MissingVarNames()
 		return &v1.ResourceCheckResult{
 			Membership:        v1.ResourceCheckResult_CAVEATED_MEMBER,
+			Expression:        result.Expression,
 			MissingExprFields: missingFields,
 		}, nil
 	}

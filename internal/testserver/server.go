@@ -11,11 +11,11 @@ import (
 
 	"github.com/authzed/spicedb/internal/datastore/memdb"
 	"github.com/authzed/spicedb/internal/dispatch/graph"
-	"github.com/authzed/spicedb/internal/middleware/consistency"
 	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/pkg/cmd/server"
 	"github.com/authzed/spicedb/pkg/cmd/util"
 	"github.com/authzed/spicedb/pkg/datastore"
+	"github.com/authzed/spicedb/pkg/middleware/consistency"
 	"github.com/authzed/spicedb/pkg/middleware/logging"
 )
 
@@ -27,20 +27,24 @@ type ServerConfig struct {
 	StreamingAPITimeout        time.Duration
 }
 
+var DefaultTestServerConfig = ServerConfig{
+	MaxUpdatesPerWrite:         1000,
+	MaxPreconditionsCount:      1000,
+	StreamingAPITimeout:        30 * time.Second,
+	MaxRelationshipContextSize: 25000,
+}
+
+type DatastoreInitFunc func(datastore.Datastore, *require.Assertions) (datastore.Datastore, datastore.Revision)
+
 // NewTestServer creates a new test server, using defaults for the config.
 func NewTestServer(require *require.Assertions,
 	revisionQuantization time.Duration,
 	gcWindow time.Duration,
 	schemaPrefixRequired bool,
-	dsInitFunc func(datastore.Datastore, *require.Assertions) (datastore.Datastore, datastore.Revision),
+	dsInitFunc DatastoreInitFunc,
 ) (*grpc.ClientConn, func(), datastore.Datastore, datastore.Revision) {
 	return NewTestServerWithConfig(require, revisionQuantization, gcWindow, schemaPrefixRequired,
-		ServerConfig{
-			MaxUpdatesPerWrite:         1000,
-			MaxPreconditionsCount:      1000,
-			StreamingAPITimeout:        30 * time.Second,
-			MaxRelationshipContextSize: 25000,
-		},
+		DefaultTestServerConfig,
 		dsInitFunc)
 }
 
@@ -50,15 +54,28 @@ func NewTestServerWithConfig(require *require.Assertions,
 	gcWindow time.Duration,
 	schemaPrefixRequired bool,
 	config ServerConfig,
-	dsInitFunc func(datastore.Datastore, *require.Assertions) (datastore.Datastore, datastore.Revision),
+	dsInitFunc DatastoreInitFunc,
 ) (*grpc.ClientConn, func(), datastore.Datastore, datastore.Revision) {
 	emptyDS, err := memdb.NewMemdbDatastore(0, revisionQuantization, gcWindow)
 	require.NoError(err)
+
+	return NewTestServerWithConfigAndDatastore(require, revisionQuantization, gcWindow, schemaPrefixRequired, config, emptyDS, dsInitFunc)
+}
+
+func NewTestServerWithConfigAndDatastore(require *require.Assertions,
+	revisionQuantization time.Duration,
+	gcWindow time.Duration,
+	schemaPrefixRequired bool,
+	config ServerConfig,
+	emptyDS datastore.Datastore,
+	dsInitFunc DatastoreInitFunc,
+) (*grpc.ClientConn, func(), datastore.Datastore, datastore.Revision) {
 	ds, revision := dsInitFunc(emptyDS, require)
 	ctx, cancel := context.WithCancel(context.Background())
-	srv, err := server.NewConfigWithOptions(
+	srv, err := server.NewConfigWithOptionsAndDefaults(
+		server.WithEnableExperimentalRelationshipExpiration(true),
 		server.WithDatastore(ds),
-		server.WithDispatcher(graph.NewLocalOnlyDispatcher(10)),
+		server.WithDispatcher(graph.NewLocalOnlyDispatcher(10, 100)),
 		server.WithDispatchMaxDepth(50),
 		server.WithMaximumPreconditionCount(config.MaxPreconditionsCount),
 		server.WithMaximumUpdatesPerWrite(config.MaxUpdatesPerWrite),
@@ -90,7 +107,7 @@ func NewTestServerWithConfig(require *require.Assertions,
 					},
 					{
 						Name:       "consistency",
-						Middleware: consistency.UnaryServerInterceptor(),
+						Middleware: consistency.UnaryServerInterceptor("testserver"),
 					},
 					{
 						Name:       "servicespecific",
@@ -113,7 +130,7 @@ func NewTestServerWithConfig(require *require.Assertions,
 					},
 					{
 						Name:       "consistency",
-						Middleware: consistency.StreamServerInterceptor(),
+						Middleware: consistency.StreamServerInterceptor("testserver"),
 					},
 					{
 						Name:       "servicespecific",
@@ -129,7 +146,8 @@ func NewTestServerWithConfig(require *require.Assertions,
 		require.NoError(srv.Run(ctx))
 	}()
 
-	conn, err := srv.GRPCDialContext(ctx, grpc.WithBlock())
+	// TODO: move off of WithBlock
+	conn, err := srv.GRPCDialContext(ctx, grpc.WithBlock()) // nolint: staticcheck
 	require.NoError(err)
 
 	return conn, func() {

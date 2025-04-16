@@ -8,8 +8,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"resenje.org/singleflight"
@@ -82,21 +80,16 @@ func (d *Dispatcher) DispatchCheck(ctx context.Context, req *v1.DispatchCheckReq
 		return d.delegate.DispatchCheck(ctx, req)
 	}
 
-	primary := false
-	v, isShared, err := d.checkGroup.Do(ctx, keyString, func(innerCtx context.Context) (*v1.DispatchCheckResponse, error) {
-		primary = true
+	sharedResp, isShared, err := d.checkGroup.Do(ctx, keyString, func(innerCtx context.Context) (*v1.DispatchCheckResponse, error) {
 		return d.delegate.DispatchCheck(innerCtx, req)
 	})
 
-	singleFlightCount.WithLabelValues("DispatchCheck", strconv.FormatBool(isShared)).Inc()
-	if err != nil {
-		return &v1.DispatchCheckResponse{Metadata: &v1.ResponseMeta{DispatchCount: 1}}, err
+	if sharedResp == nil {
+		sharedResp = &v1.DispatchCheckResponse{Metadata: &v1.ResponseMeta{DispatchCount: 1}}
 	}
 
-	span := trace.SpanFromContext(ctx)
-	singleflighted := isShared && !primary
-	span.SetAttributes(attribute.Bool("singleflight", singleflighted))
-	return v, err
+	singleFlightCount.WithLabelValues("DispatchCheck", strconv.FormatBool(isShared)).Inc()
+	return sharedResp, err
 }
 
 func (d *Dispatcher) DispatchExpand(ctx context.Context, req *v1.DispatchExpandRequest) (*v1.DispatchExpandResponse, error) {
@@ -142,12 +135,8 @@ func (d *Dispatcher) DispatchExpand(ctx context.Context, req *v1.DispatchExpandR
 	return v, err
 }
 
-func (d *Dispatcher) DispatchReachableResources(req *v1.DispatchReachableResourcesRequest, stream dispatch.ReachableResourcesStream) error {
-	return d.delegate.DispatchReachableResources(req, stream)
-}
-
-func (d *Dispatcher) DispatchLookupResources(req *v1.DispatchLookupResourcesRequest, stream dispatch.LookupResourcesStream) error {
-	return d.delegate.DispatchLookupResources(req, stream)
+func (d *Dispatcher) DispatchLookupResources2(req *v1.DispatchLookupResources2Request, stream dispatch.LookupResources2Stream) error {
+	return d.delegate.DispatchLookupResources2(req, stream)
 }
 
 func (d *Dispatcher) DispatchLookupSubjects(req *v1.DispatchLookupSubjectsRequest, stream dispatch.LookupSubjectsStream) error {

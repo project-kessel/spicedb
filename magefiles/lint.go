@@ -85,11 +85,18 @@ func (Lint) Analyzers() error {
 		"-nilvaluecheck.disallowed-nil-return-type-paths=*github.com/authzed/spicedb/pkg/proto/dispatch/v1.DispatchCheckResponse,*github.com/authzed/spicedb/pkg/proto/dispatch/v1.DispatchExpandResponse,*github.com/authzed/spicedb/pkg/proto/dispatch/v1.DispatchLookupResponse",
 		"-exprstatementcheck",
 		"-exprstatementcheck.disallowed-expr-statement-types=*github.com/rs/zerolog.Event:MarshalZerologObject:missing Send or Msg on zerolog log Event",
-		"-closeafterusagecheck",
-		"-closeafterusagecheck.must-be-closed-after-usage-types=github.com/authzed/spicedb/pkg/datastore.RelationshipIterator",
-		"-closeafterusagecheck.skip-pkg=github.com/authzed/spicedb/pkg/datastore,github.com/authzed/spicedb/internal/datastore,github.com/authzed/spicedb/internal/testfixtures",
 		"-paniccheck",
 		"-paniccheck.skip-files=_test,zz_",
+		"-zerologmarshalcheck",
+		"-zerologmarshalcheck.skip-files=_test,zz_",
+		"-protomarshalcheck",
+		// Skip generated protobuf files for this check
+		// Also skip test where we're explicitly using proto.Marshal to assert
+		// that the proto.Marshal behavior matches foo.MarshalVT()
+		"-protomarshalcheck.skip-files=.pb,serialization_test.go",
+		// Skip our dispatch codec logic that explicitly calls MarshalVT with proto.Marshal as a fallback
+		// Skip our internal telemetry reporter which uses a prometheus proto definition that we don't control
+		"-protomarshalcheck.skip-pkg=github.com/authzed/spicedb/pkg/proto/dispatch/v1,github.com/authzed/spicedb/internal/telemetry",
 		"github.com/authzed/spicedb/...",
 	)
 }
@@ -100,9 +107,9 @@ func (Lint) Vulncheck() error {
 	return RunSh("go", WithV())("run", "golang.org/x/vuln/cmd/govulncheck", "-show", "verbose", "./...")
 }
 
-// Buf Format
+// BufFormat runs buf format command
 func (l Lint) BufFormat() error {
-	return RunSh("go", Tool())("run", "github.com/bufbuild/buf/cmd/buf", "format", "--diff", "--write")
+	return RunSh("go", Tool())("run", "github.com/bufbuild/buf/cmd/buf", "format", "--diff", "--write", "../")
 }
 
 // Trivy Run Trivy

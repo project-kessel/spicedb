@@ -7,10 +7,8 @@ import (
 
 	"github.com/authzed/spicedb/internal/graph/computed"
 	"github.com/authzed/spicedb/pkg/datastore"
-	core "github.com/authzed/spicedb/pkg/proto/core/v1"
+	"github.com/authzed/spicedb/pkg/tuple"
 )
-
-var MaxBulkCheckDispatchChunkSize = datastore.FilterMaximumIDCount
 
 type groupedCheckParameters struct {
 	params      *computed.CheckParameters
@@ -21,6 +19,7 @@ type groupingParameters struct {
 	atRevision           datastore.Revision
 	maximumAPIDepth      uint32
 	maxCaveatContextSize int
+	withTracing          bool
 }
 
 // groupItems takes a slice of CheckBulkPermissionsRequestItem and groups them based
@@ -57,19 +56,17 @@ func checkParametersFromCheckBulkPermissionsRequestItem(
 	params groupingParameters,
 	caveatContext map[string]any,
 ) *computed.CheckParameters {
+	debugOption := computed.NoDebugging
+	if params.withTracing {
+		debugOption = computed.BasicDebuggingEnabled
+	}
+
 	return &computed.CheckParameters{
-		ResourceType: &core.RelationReference{
-			Namespace: bc.Resource.ObjectType,
-			Relation:  bc.Permission,
-		},
-		Subject: &core.ObjectAndRelation{
-			Namespace: bc.Subject.Object.ObjectType,
-			ObjectId:  bc.Subject.Object.ObjectId,
-			Relation:  normalizeSubjectRelation(bc.Subject),
-		},
+		ResourceType:  tuple.RR(bc.Resource.ObjectType, bc.Permission),
+		Subject:       tuple.ONR(bc.Subject.Object.ObjectType, bc.Subject.Object.ObjectId, normalizeSubjectRelation(bc.Subject)),
 		CaveatContext: caveatContext,
 		AtRevision:    params.atRevision,
 		MaximumDepth:  params.maximumAPIDepth,
-		DebugOption:   computed.NoDebugging,
+		DebugOption:   debugOption,
 	}
 }

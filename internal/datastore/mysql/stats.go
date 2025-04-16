@@ -6,9 +6,11 @@ import (
 	"fmt"
 
 	"github.com/Masterminds/squirrel"
+	"github.com/ccoveille/go-safecast"
 
 	"github.com/authzed/spicedb/internal/datastore/common"
 	"github.com/authzed/spicedb/pkg/datastore"
+	"github.com/authzed/spicedb/pkg/spiceerrors"
 )
 
 const (
@@ -51,7 +53,7 @@ func (mds *Datastore) Statistics(ctx context.Context) (datastore.Stats, error) {
 	if !count.Valid || count.Int64 == 0 {
 		// If we get a count of zero, its possible the information schema table has not yet
 		// been updated, so we use a slower count(*) call.
-		query, args, err := mds.QueryBuilder.CountTupleQuery.ToSql()
+		query, args, err := mds.QueryBuilder.CountRelsQuery.ToSql()
 		if err != nil {
 			return datastore.Stats{}, err
 		}
@@ -74,10 +76,15 @@ func (mds *Datastore) Statistics(ctx context.Context) (datastore.Stats, error) {
 		return datastore.Stats{}, fmt.Errorf("unable to load namespaces: %w", err)
 	}
 
+	uintCount, err := safecast.ToUint64(count.Int64)
+	if err != nil {
+		return datastore.Stats{}, spiceerrors.MustBugf("could not cast count to uint64: %v", err)
+	}
+
 	return datastore.Stats{
 		UniqueID:                   uniqueID,
 		ObjectTypeStatistics:       datastore.ComputeObjectTypeStats(nsDefs),
-		EstimatedRelationshipCount: uint64(count.Int64),
+		EstimatedRelationshipCount: uintCount,
 	}, nil
 }
 

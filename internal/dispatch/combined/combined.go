@@ -3,6 +3,7 @@
 package combined
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/authzed/spicedb/internal/dispatch/keys"
 	"github.com/authzed/spicedb/internal/dispatch/remote"
 	"github.com/authzed/spicedb/internal/dispatch/singleflight"
+	"github.com/authzed/spicedb/internal/grpchelpers"
 	log "github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/pkg/cache"
 	v1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
@@ -25,17 +27,19 @@ import (
 type Option func(*optionState)
 
 type optionState struct {
-	metricsEnabled         bool
-	prometheusSubsystem    string
-	upstreamAddr           string
-	upstreamCAPath         string
-	grpcPresharedKey       string
-	grpcDialOpts           []grpc.DialOption
-	cache                  cache.Cache
-	concurrencyLimits      graph.ConcurrencyLimits
-	remoteDispatchTimeout  time.Duration
-	secondaryUpstreamAddrs map[string]string
-	secondaryUpstreamExprs map[string]string
+	metricsEnabled              bool
+	prometheusSubsystem         string
+	upstreamAddr                string
+	upstreamCAPath              string
+	grpcPresharedKey            string
+	grpcDialOpts                []grpc.DialOption
+	cache                       cache.Cache[keys.DispatchCacheKey, any]
+	concurrencyLimits           graph.ConcurrencyLimits
+	remoteDispatchTimeout       time.Duration
+	secondaryUpstreamAddrs      map[string]string
+	secondaryUpstreamExprs      map[string]string
+	dispatchChunkSize           uint16
+	startingPrimaryHedgingDelay time.Duration
 }
 
 // MetricsEnabled enables issuing prometheus metrics
@@ -101,7 +105,7 @@ func GrpcDialOpts(opts ...grpc.DialOption) Option {
 }
 
 // Cache sets the cache for the dispatcher.
-func Cache(c cache.Cache) Option {
+func Cache(c cache.Cache[keys.DispatchCacheKey, any]) Option {
 	return func(state *optionState) {
 		state.cache = c
 	}
@@ -114,11 +118,27 @@ func ConcurrencyLimits(limits graph.ConcurrencyLimits) Option {
 	}
 }
 
+// DispatchChunkSize sets the maximum number of items to be dispatched in a single dispatch request
+func DispatchChunkSize(dispatchChunkSize uint16) Option {
+	return func(state *optionState) {
+		state.dispatchChunkSize = dispatchChunkSize
+	}
+}
+
 // RemoteDispatchTimeout sets the maximum timeout for a remote dispatch.
 // Defaults to 60s (as defined in the remote dispatcher).
 func RemoteDispatchTimeout(remoteDispatchTimeout time.Duration) Option {
 	return func(state *optionState) {
 		state.remoteDispatchTimeout = remoteDispatchTimeout
+	}
+}
+
+// StartingPrimaryHedgingDelay sets the starting delay for primary hedging for a remote
+// dispatch.
+// Defaults to 0, which uses the default defined in the remote dispatcher.
+func StartingPrimaryHedgingDelay(startingPrimaryHedgingDelay time.Duration) Option {
+	return func(state *optionState) {
+		state.startingPrimaryHedgingDelay = startingPrimaryHedgingDelay
 	}
 }
 
@@ -140,7 +160,12 @@ func NewDispatcher(options ...Option) (dispatch.Dispatcher, error) {
 		return nil, err
 	}
 
-	redispatch := graph.NewDispatcher(cachingRedispatch, opts.concurrencyLimits)
+	chunkSize := opts.dispatchChunkSize
+	if chunkSize == 0 {
+		chunkSize = 100
+		log.Warn().Msgf("CombinedDispatcher: dispatchChunkSize not set, defaulting to %d", chunkSize)
+	}
+	redispatch := graph.NewDispatcher(cachingRedispatch, opts.concurrencyLimits, chunkSize)
 	redispatch = singleflight.New(redispatch, &keys.CanonicalKeyHandler{})
 
 	// If an upstream is specified, create a cluster dispatcher.
@@ -159,14 +184,14 @@ func NewDispatcher(options ...Option) (dispatch.Dispatcher, error) {
 
 		opts.grpcDialOpts = append(opts.grpcDialOpts, grpc.WithDefaultCallOptions(grpc.UseCompressor("s2")))
 
-		conn, err := grpc.Dial(opts.upstreamAddr, opts.grpcDialOpts...)
+		conn, err := grpchelpers.Dial(context.Background(), opts.upstreamAddr, opts.grpcDialOpts...)
 		if err != nil {
 			return nil, err
 		}
 
 		secondaryClients := make(map[string]remote.SecondaryDispatch, len(opts.secondaryUpstreamAddrs))
 		for name, addr := range opts.secondaryUpstreamAddrs {
-			secondaryConn, err := grpc.Dial(addr, opts.grpcDialOpts...)
+			secondaryConn, err := grpchelpers.Dial(context.Background(), addr, opts.grpcDialOpts...)
 			if err != nil {
 				return nil, err
 			}
@@ -185,11 +210,14 @@ func NewDispatcher(options ...Option) (dispatch.Dispatcher, error) {
 			secondaryExprs[name] = parsed
 		}
 
-		redispatch = remote.NewClusterDispatcher(v1.NewDispatchServiceClient(conn), conn, remote.ClusterDispatcherConfig{
+		re, err := remote.NewClusterDispatcher(v1.NewDispatchServiceClient(conn), conn, remote.ClusterDispatcherConfig{
 			KeyHandler:             &keys.CanonicalKeyHandler{},
 			DispatchOverallTimeout: opts.remoteDispatchTimeout,
-		}, secondaryClients, secondaryExprs)
-		redispatch = singleflight.New(redispatch, &keys.CanonicalKeyHandler{})
+		}, secondaryClients, secondaryExprs, opts.startingPrimaryHedgingDelay)
+		if err != nil {
+			return nil, err
+		}
+		redispatch = singleflight.New(re, &keys.CanonicalKeyHandler{})
 	}
 
 	cachingRedispatch.SetDelegate(redispatch)

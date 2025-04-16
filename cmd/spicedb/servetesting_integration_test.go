@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"github.com/authzed/grpcutil"
 	"github.com/google/uuid"
 	"github.com/ory/dockertest/v3"
+	"github.com/ory/dockertest/v3/docker"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -82,7 +84,7 @@ func TestTestServer(t *testing.T) {
 	// Try writing a simple relationship against readonly and ensure it fails.
 	_, err = rov1client.WriteRelationships(context.Background(), &v1.WriteRelationshipsRequest{
 		Updates: []*v1.RelationshipUpdate{
-			tuple.UpdateToRelationshipUpdate(tuple.Create(relationship)),
+			tuple.MustUpdateToV1RelationshipUpdate(tuple.Create(relationship)),
 		},
 	})
 	require.Equal("rpc error: code = Unavailable desc = service read-only", err.Error())
@@ -90,7 +92,7 @@ func TestTestServer(t *testing.T) {
 	// Write a simple relationship.
 	_, err = v1client.WriteRelationships(context.Background(), &v1.WriteRelationshipsRequest{
 		Updates: []*v1.RelationshipUpdate{
-			tuple.UpdateToRelationshipUpdate(tuple.Create(relationship)),
+			tuple.MustUpdateToV1RelationshipUpdate(tuple.Create(relationship)),
 		},
 	})
 	require.NoError(err)
@@ -177,7 +179,7 @@ type spicedbHandle struct {
 	cleanup          func()
 }
 
-const retryCount = 5
+const retryCount = 8
 
 func newTester(t *testing.T, containerOpts *dockertest.RunOptions, token string, withExistingSchema bool) (*spicedbHandle, error) {
 	for i := 0; i < retryCount; i++ {
@@ -186,7 +188,7 @@ func newTester(t *testing.T, containerOpts *dockertest.RunOptions, token string,
 			return nil, fmt.Errorf("could not connect to docker: %w", err)
 		}
 
-		pool.MaxWait = 30 * time.Second
+		pool.MaxWait = 60 * time.Second
 
 		resource, err := pool.RunWithOptions(containerOpts)
 		if err != nil {
@@ -240,7 +242,22 @@ func newTester(t *testing.T, containerOpts *dockertest.RunOptions, token string,
 			return err
 		})
 		if err != nil {
-			fmt.Printf("got error on startup: %v\n", err)
+			stream := new(bytes.Buffer)
+
+			waitCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+
+			lerr := pool.Client.Logs(docker.LogsOptions{
+				Context:      waitCtx,
+				OutputStream: stream,
+				ErrorStream:  stream,
+				Stdout:       true,
+				Stderr:       true,
+				Container:    resource.Container.ID,
+			})
+			require.NoError(t, lerr)
+
+			fmt.Printf("got error on startup: %v\ncontainer logs: %s\n", err, stream.String())
 			cleanup()
 			continue
 		}

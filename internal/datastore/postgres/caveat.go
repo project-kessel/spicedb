@@ -7,22 +7,24 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/authzed/spicedb/internal/datastore/postgres/schema"
 	"github.com/authzed/spicedb/pkg/datastore"
+	"github.com/authzed/spicedb/pkg/genutil/mapz"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 
 	sq "github.com/Masterminds/squirrel"
 )
 
 var (
-	writeCaveat = psql.Insert(tableCaveat).Columns(colCaveatName, colCaveatDefinition)
+	writeCaveat = psql.Insert(schema.TableCaveat).Columns(schema.ColCaveatName, schema.ColCaveatDefinition)
 	listCaveat  = psql.
-			Select(colCaveatDefinition, colCreatedXid).
-			From(tableCaveat).
-			OrderBy(colCaveatName)
+			Select(schema.ColCaveatDefinition, schema.ColCreatedXid).
+			From(schema.TableCaveat).
+			OrderBy(schema.ColCaveatName)
 	readCaveat = psql.
-			Select(colCaveatDefinition, colCreatedXid).
-			From(tableCaveat)
-	deleteCaveat = psql.Update(tableCaveat).Where(sq.Eq{colDeletedXid: liveDeletedTxnID})
+			Select(schema.ColCaveatDefinition, schema.ColCreatedXid).
+			From(schema.TableCaveat)
+	deleteCaveat = psql.Update(schema.TableCaveat).Where(sq.Eq{schema.ColDeletedXid: liveDeletedTxnID})
 )
 
 const (
@@ -33,8 +35,8 @@ const (
 )
 
 func (r *pgReader) ReadCaveatByName(ctx context.Context, name string) (*core.CaveatDefinition, datastore.Revision, error) {
-	filteredReadCaveat := r.filterer(readCaveat)
-	sql, args, err := filteredReadCaveat.Where(sq.Eq{colCaveatName: name}).ToSql()
+	filteredReadCaveat := r.aliveFilter(readCaveat)
+	sql, args, err := filteredReadCaveat.Where(sq.Eq{schema.ColCaveatName: name}).ToSql()
 	if err != nil {
 		return nil, datastore.NoRevision, fmt.Errorf(errReadCaveat, err)
 	}
@@ -75,10 +77,10 @@ func (r *pgReader) ListAllCaveats(ctx context.Context) ([]datastore.RevisionedCa
 func (r *pgReader) lookupCaveats(ctx context.Context, caveatNames []string) ([]datastore.RevisionedCaveat, error) {
 	caveatsWithNames := listCaveat
 	if len(caveatNames) > 0 {
-		caveatsWithNames = caveatsWithNames.Where(sq.Eq{colCaveatName: caveatNames})
+		caveatsWithNames = caveatsWithNames.Where(sq.Eq{schema.ColCaveatName: caveatNames})
 	}
 
-	filteredListCaveat := r.filterer(caveatsWithNames)
+	filteredListCaveat := r.aliveFilter(caveatsWithNames)
 	sql, args, err := filteredListCaveat.ToSql()
 	if err != nil {
 		return nil, fmt.Errorf(errListCaveats, err)
@@ -116,7 +118,7 @@ func (rwt *pgReadWriteTXN) WriteCaveats(ctx context.Context, caveats []*core.Cav
 		return nil
 	}
 	write := writeCaveat
-	writtenCaveatNames := make([]string, 0, len(caveats))
+	writtenCaveatNames := mapz.NewSet[string]()
 	for _, caveat := range caveats {
 		definitionBytes, err := caveat.MarshalVT()
 		if err != nil {
@@ -124,11 +126,13 @@ func (rwt *pgReadWriteTXN) WriteCaveats(ctx context.Context, caveats []*core.Cav
 		}
 		valuesToWrite := []any{caveat.Name, definitionBytes}
 		write = write.Values(valuesToWrite...)
-		writtenCaveatNames = append(writtenCaveatNames, caveat.Name)
+		if !writtenCaveatNames.Add(caveat.Name) {
+			return fmt.Errorf("duplicate caveat name %q", caveat.Name)
+		}
 	}
 
 	// mark current caveats as deleted
-	err := rwt.deleteCaveatsFromNames(ctx, writtenCaveatNames)
+	err := rwt.deleteCaveatsFromNames(ctx, writtenCaveatNames.AsSlice())
 	if err != nil {
 		return fmt.Errorf(errWriteCaveats, err)
 	}
@@ -151,8 +155,8 @@ func (rwt *pgReadWriteTXN) DeleteCaveats(ctx context.Context, names []string) er
 
 func (rwt *pgReadWriteTXN) deleteCaveatsFromNames(ctx context.Context, names []string) error {
 	sql, args, err := deleteCaveat.
-		Set(colDeletedXid, rwt.newXID).
-		Where(sq.Eq{colCaveatName: names}).
+		Set(schema.ColDeletedXid, rwt.newXID).
+		Where(sq.Eq{schema.ColCaveatName: names}).
 		ToSql()
 	if err != nil {
 		return fmt.Errorf(errDeleteCaveats, err)
