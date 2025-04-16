@@ -19,8 +19,7 @@ FROM base AS health-probe-builder
 WORKDIR /go/src/app
 RUN git clone https://github.com/authzed/grpc-health-probe.git
 WORKDIR /go/src/app/grpc-health-probe
-# Bump this when moving to go 1.23+
-RUN git checkout aefcf1106afeb10e87df1649b21fd20d2ef79d2f
+RUN git checkout 9c07eb880c5e87df5dc79dedb58fbc3ad12b2fd4
 RUN GOEXPERIMENT=strictfipsruntime,boringcrypto CGO_ENABLED=1 GOBIN=/go/bin go install -a -tags netgo -ldflags=-w
 
 # Final stage
