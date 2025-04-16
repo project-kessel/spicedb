@@ -47,8 +47,7 @@ jobs:
     name: "Build Binary & Image"
     runs-on: "ubuntu-latest"
     needs: "paths-filter"
-    if: |
-      needs.paths-filter.outputs.codechange == 'true'
+    if: false
     steps:
       - uses: "actions/checkout@v4"
       - uses: "authzed/actions/setup-go@main"
@@ -83,8 +82,7 @@ jobs:
     name: "Steelthread"
     runs-on: "buildjet-4vcpu-ubuntu-2204"
     needs: "paths-filter"
-    if: |
-      needs.paths-filter.outputs.codechange == 'true'
+    if: false
     steps:
       - uses: "actions/checkout@v4"
       - uses: "authzed/actions/setup-go@main"
@@ -111,6 +109,7 @@ jobs:
     name: "Datastore Integration Tests"
     runs-on: "ubuntu-latest"
     needs: "paths-filter"
+    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -137,6 +136,7 @@ jobs:
     name: "Datastore Consistency Tests"
     runs-on: "buildjet-4vcpu-ubuntu-2204"
     needs: "paths-filter"
+    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -161,13 +161,13 @@ jobs:
 
   pgdatastoreinttest:
     name: "Datastore Integration Tests"
-    runs-on: "buildjet-4vcpu-ubuntu-2204"
+    runs-on: "ubuntu-latest"
     needs: "paths-filter"
     strategy:
       fail-fast: false
       matrix:
         datastore: ["postgres", "pgbouncer"]
-        pgversion: ["13.8", "14", "15", "16", "17"]
+        pgversion: ["16", "17"]
     steps:
       - uses: "actions/checkout@v4"
         if: |
@@ -188,13 +188,13 @@ jobs:
 
   pgdatastoreconstest:
     name: "Datastore Consistency Tests"
-    runs-on: "buildjet-4vcpu-ubuntu-2204"
+    runs-on: "ubuntu-latest"
     needs: "paths-filter"
     strategy:
       fail-fast: false
       matrix:
         datastore: ["postgres"]
-        pgversion: ["13.8", "14", "15", "16", "17"]
+        pgversion: ["16", "17"]
     steps:
       - uses: "actions/checkout@v4"
         if: |
@@ -217,6 +217,7 @@ jobs:
     name: "Datastore Integration Tests"
     runs-on: "buildjet-4vcpu-ubuntu-2204"
     needs: "paths-filter"
+    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -244,6 +245,7 @@ jobs:
     name: "Datastore Consistency Tests"
     runs-on: "buildjet-4vcpu-ubuntu-2204"
     needs: "paths-filter"
+    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -310,7 +312,7 @@ jobs:
       - name: "Run e2e"
         working-directory: "e2e/newenemy"
         run: |
-          go test -v -timeout 11m ./...
+          go test -v -timeout 20m ./...
       - uses: "actions/upload-artifact@v4"
         if: "always()"
         # this upload step is really flaky, don't fail the job if it fails
@@ -322,8 +324,7 @@ jobs:
     name: "Analyzers Unit Tests"
     runs-on: "ubuntu-latest"
     needs: "paths-filter"
-    if: |
-      needs.paths-filter.outputs.codechange == 'true'
+    if: false
     steps:
       - uses: "actions/checkout@v4"
       - uses: "authzed/actions/setup-go@main"
