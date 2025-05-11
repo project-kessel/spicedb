@@ -12,7 +12,7 @@ require (
 	github.com/envoyproxy/protoc-gen-validate v1.0.4
 	github.com/google/uuid v1.1.2
 	github.com/magefile/mage v1.15.0
-	github.com/planetscale/vtprotobuf v0.6.1-0.20240409071808-615f978279ca
+	github.com/planetscale/vtprotobuf ba97887b0a25
 	golang.org/x/tools v0.22.0
 	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.3.0
 	google.golang.org/protobuf v1.34.2
