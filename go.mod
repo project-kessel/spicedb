@@ -190,7 +190,7 @@ require (
 	github.com/certifi/gocertifi v0.0.0-20210507211836-431795d63e8d // indirect
 	github.com/charithe/durationcheck v0.0.10 // indirect
 	github.com/chavacava/garif v0.1.0 // indirect
-	github.com/ckaznocha/intrange v0.3.0 // indirect
+	github.com/ckaznocha/intrange v0.3.1 // indirect
 	github.com/cncf/xds/go v0.0.0-20241223141626-cff3c89139a3 // indirect
 	github.com/containerd/continuity v0.4.3 // indirect
 	github.com/curioswitch/go-reassign v0.3.0 // indirect
