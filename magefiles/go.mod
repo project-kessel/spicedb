@@ -10,12 +10,12 @@ require (
 	github.com/bufbuild/buf v1.35.1
 	github.com/ecordell/optgen v0.0.9
 	github.com/envoyproxy/protoc-gen-validate v1.0.4
-	github.com/google/uuid v1.1.2
+	github.com/google/uuid v1.6.0
 	github.com/magefile/mage v1.15.0
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240409071808-615f978279ca
 	golang.org/x/tools v0.22.0
 	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.3.0
-	google.golang.org/protobuf v1.34.2
+	google.golang.org/protobuf v1.35.1
 	mvdan.cc/gofumpt v0.6.0
 )
 
@@ -23,8 +23,8 @@ require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.34.2-20240508200655-46a4cf4ba109.2 // indirect
 	buf.build/gen/go/bufbuild/registry/connectrpc/go v1.16.2-20240610164129-660609bc46d3.1 // indirect
 	buf.build/gen/go/bufbuild/registry/protocolbuffers/go v1.34.2-20240610164129-660609bc46d3.2 // indirect
-	connectrpc.com/connect v1.16.2 // indirect
-	connectrpc.com/otelconnect v0.7.0 // indirect
+	connectrpc.com/connect v1.17.0 // indirect
+	connectrpc.com/otelconnect v0.7.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20230124172434-306776ec8161 // indirect
 	github.com/Microsoft/go-winio v0.6.1 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.0 // indirect
@@ -89,11 +89,11 @@ require (
 	github.com/stoewer/go-strcase v1.3.0 // indirect
 	github.com/vbatts/tar-split v0.11.5 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.49.0 // indirect
-	go.opentelemetry.io/otel v1.24.0 // indirect
+	go.opentelemetry.io/otel v1.29.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.24.0 // indirect
-	go.opentelemetry.io/otel/metric v1.24.0 // indirect
-	go.opentelemetry.io/otel/sdk v1.24.0 // indirect
-	go.opentelemetry.io/otel/trace v1.24.0 // indirect
+	go.opentelemetry.io/otel/metric v1.29.0 // indirect
+	go.opentelemetry.io/otel/sdk v1.29.0 // indirect
+	go.opentelemetry.io/otel/trace v1.29.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
