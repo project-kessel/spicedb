@@ -54,8 +54,8 @@ github.com/Microsoft/go-winio v0.6.1 h1:9/kr64B9VUZrLm5YYwbGtUJnMgqWVOdUAXu6Migc
 github.com/Microsoft/go-winio v0.6.1/go.mod h1:LRdKpFKfdobln8UmuiYcKPot9D2v6svN5+sAH+4kjUM=
 github.com/agnivade/wasmbrowsertest v0.10.0 h1:kAJoj/1NraZiCOP5S8FC/8iU/3hwZyc6l9kxXjvPJiI=
 github.com/agnivade/wasmbrowsertest v0.10.0/go.mod h1:fL1DzIi4hpO6WPZaA93RJx84/eyVP7Z5fXV0kWyktz4=
-github.com/antlr4-go/antlr/v4 v4.13.0 h1:lxCg3LAv+EUK6t1i0y1V6/SLeUi0eKEKdhQAlS8TVTI=
-github.com/antlr4-go/antlr/v4 v4.13.0/go.mod h1:pfChB/xh/Unjila75QW7+VU4TSnWnnk9UTnmpPaOR2g=
+github.com/antlr4-go/antlr/v4 v4.13.1 h1:SqQKkuVZ+zWkMMNkjy5FZe5mr5WURWnlpmOuzYWrPrQ=
+github.com/antlr4-go/antlr/v4 v4.13.1/go.mod h1:GKmUxMtwp6ZgGwZSva4eWPC5mS6vUAmOABFgjdkM7Nw=
 github.com/authzed/ctxkey v0.0.0-20250127172433-d71cd97e3833 h1:rby2719UdmcOltB30ALyPY4Lozz9nkYSpjqnBiHXBQI=
 github.com/authzed/ctxkey v0.0.0-20250127172433-d71cd97e3833/go.mod h1:wnimjr5RPPouIhZQ3ztDBLMUKKuUroj3U9Jy0PxeaEE=
 github.com/bufbuild/buf v1.35.1 h1:aiCi/YFOg7eXKZeveWb2ZhnmLFwUMM/FnDCM0roFp+M=
