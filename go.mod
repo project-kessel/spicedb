@@ -8,7 +8,7 @@ go 1.23.1
 require github.com/authzed/cel-go v0.20.2
 
 // See: https://github.com/envoyproxy/go-control-plane/issues/1074
-replace github.com/envoyproxy/go-control-plane => github.com/envoyproxy/go-control-plane v0.13.2
+replace github.com/envoyproxy/go-control-plane => github.com/envoyproxy/go-control-plane v0.13.4
 
 replace github.com/influxdata/tdigest => github.com/hdrodz/tdigest v0.0.0-20230422191141-29913c04928d
 
