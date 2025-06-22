@@ -37,7 +37,7 @@ require (
 	github.com/chromedp/sysutil v1.0.0 // indirect
 	github.com/containerd/stargz-snapshotter/estargz v0.15.1 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.4 // indirect
-	github.com/creasty/defaults v1.7.0 // indirect
+	github.com/creasty/defaults v1.8.0 // indirect
 	github.com/dave/jennifer v1.6.1 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/cli v26.1.4+incompatible // indirect
