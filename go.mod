@@ -108,7 +108,7 @@ require (
 	go.uber.org/goleak v1.3.0
 	golang.org/x/exp v0.0.0-20240909161429-701f63a606c0
 	golang.org/x/mod v0.24.0
-	golang.org/x/sync v0.12.0
+	golang.org/x/sync v0.15.0
 	golang.org/x/time v0.10.0
 	golang.org/x/vuln v1.1.4
 	google.golang.org/api v0.223.0
