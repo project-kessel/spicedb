@@ -85,7 +85,7 @@ require (
 	github.com/prometheus/common v0.62.0
 	github.com/rs/cors v1.11.1
 	github.com/rs/xid v1.6.0
-	github.com/rs/zerolog v1.33.0
+	github.com/rs/zerolog v1.34.0
 	github.com/samber/lo v1.49.1
 	github.com/samber/slog-zerolog/v2 v2.7.3
 	github.com/schollz/progressbar/v3 v3.18.0
