@@ -48,7 +48,7 @@ require (
 	github.com/go-logr/zerologr v1.2.3
 	github.com/go-sql-driver/mysql v1.9.0
 	github.com/gogo/protobuf v1.3.2
-	github.com/golang/snappy v0.0.4
+	github.com/golang/snappy v1.0.0
 	github.com/golangci/golangci-lint v1.64.7
 	github.com/google/go-cmp v0.7.0
 	github.com/google/go-github/v43 v43.0.0
