@@ -86,7 +86,7 @@ require (
 	github.com/rs/cors v1.11.1
 	github.com/rs/xid v1.6.0
 	github.com/rs/zerolog v1.33.0
-	github.com/samber/lo v1.49.1
+	github.com/samber/lo v1.51.0
 	github.com/samber/slog-zerolog/v2 v2.7.3
 	github.com/schollz/progressbar/v3 v3.18.0
 	github.com/scylladb/go-set v1.0.2
