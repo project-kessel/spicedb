@@ -32,9 +32,9 @@ require (
 	github.com/bufbuild/protoplugin v0.0.0-20240323223605-e2735f6c31ee // indirect
 	github.com/bufbuild/protovalidate-go v0.6.2 // indirect
 	github.com/bufbuild/protoyaml-go v0.1.9 // indirect
-	github.com/chromedp/cdproto v0.0.0-20240801214329-3f85d328b335 // indirect
+	github.com/chromedp/cdproto v0.0.0-20250706212322-41fb261d0659 // indirect
 	github.com/chromedp/chromedp v0.10.0 // indirect
-	github.com/chromedp/sysutil v1.0.0 // indirect
+	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/containerd/stargz-snapshotter/estargz v0.15.1 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.4 // indirect
 	github.com/creasty/defaults v1.7.0 // indirect
@@ -51,6 +51,7 @@ require (
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-chi/chi/v5 v5.0.14 // indirect
 	github.com/go-interpreter/wagon v0.6.0 // indirect
+	github.com/go-json-experiment/json v0.0.0-20250211171154-1ae217ad3535 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gobwas/httphead v0.1.0 // indirect
