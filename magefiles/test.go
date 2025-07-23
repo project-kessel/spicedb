@@ -225,5 +225,5 @@ func consistencyTest(ctx context.Context, datastore string, env map[string]strin
 	args := []string{
 		"-tags", "ci,docker,datastoreconsistency",
 		"-timeout", "20m",
-		"-run", fmt.Sprintf("TestConsistencyPerDatastore/%s", datastore))
+		"-run", fmt.Sprintf("TestConsistencyPerDatastore/%s", datastore),
 }
