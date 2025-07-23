@@ -222,9 +222,9 @@ func (Testcons) Mysql(ctx context.Context) error {
 
 func consistencyTest(ctx context.Context, datastore string, env map[string]string) error {
 	mg.Deps(checkDocker)
-	args := []string{
+	return goDirTestWithEnv(ctx, ".", "./internal/services/integrationtesting/...",
+		env,
 		"-tags", "ci,docker,datastoreconsistency",
 		"-timeout", "20m",
-		"-run", fmt.Sprintf("TestConsistencyPerDatastore/%s", datastore),
-	}
+		"-run", fmt.Sprintf("TestConsistencyPerDatastore/%s", datastore))
 }
