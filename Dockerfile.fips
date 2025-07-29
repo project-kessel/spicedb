@@ -22,8 +22,8 @@ WORKDIR /go/src/app/grpc-health-probe
 RUN git checkout 9d30dbbc7936d5fff08d4cf6abc6444777977b39
 RUN GOEXPERIMENT=strictfipsruntime,boringcrypto CGO_ENABLED=1 GOBIN=/go/bin go install -a -tags netgo -ldflags=-w
 
-# Final stage
-FROM base
+# use clean base without build tools
+FROM registry.access.redhat.com/ubi9/ubi-minimal:9.6-1752587672
 COPY --from=health-probe-builder /go/bin/grpc-health-probe /bin/grpc_health_probe
 COPY --from=spicedb-builder /go/src/app/spicedb /usr/local/bin/spicedb
 ENV PATH="$PATH:/usr/local/bin"
