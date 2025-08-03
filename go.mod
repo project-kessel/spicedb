@@ -15,7 +15,7 @@ replace github.com/envoyproxy/go-control-plane => github.com/envoyproxy/go-contr
 
 // This repository contains additional fixes that are not upstream.
 // https://github.com/hdrodz/tdigest/commits/fix-oob-access
-replace github.com/influxdata/tdigest => github.com/hdrodz/tdigest v0.0.0-20230422191729-3d4528d8cfec
+replace github.com/influxdata/tdigest => github.com/hdrodz/tdigest v0.0.0-20210216194612-fc98d27c9e8b
 
 require (
 	buf.build/gen/go/prometheus/prometheus/protocolbuffers/go v1.36.6-20250320161912-af2aab87b1b3.1
