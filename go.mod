@@ -11,7 +11,7 @@ require github.com/authzed/cel-go v0.20.2
 replace github.com/fsnotify/fsnotify => github.com/fsnotify/fsnotify v1.9.0
 
 // See: https://github.com/envoyproxy/go-control-plane/issues/1074
-replace github.com/envoyproxy/go-control-plane => github.com/envoyproxy/go-control-plane v0.13.2
+replace github.com/envoyproxy/go-control-plane => github.com/envoyproxy/go-control-plane v0.13.4
 
 // This repository contains additional fixes that are not upstream.
 // https://github.com/hdrodz/tdigest/commits/fix-oob-access

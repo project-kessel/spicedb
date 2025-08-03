@@ -5,7 +5,7 @@ go 1.24.0
 toolchain go1.24.4
 
 // See: https://github.com/envoyproxy/go-control-plane/issues/1074
-replace github.com/envoyproxy/go-control-plane => github.com/envoyproxy/go-control-plane v0.13.2
+replace github.com/envoyproxy/go-control-plane => github.com/envoyproxy/go-control-plane v0.13.4
 
 replace github.com/authzed/spicedb => ../
 
