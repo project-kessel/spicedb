@@ -54,8 +54,8 @@ github.com/Microsoft/go-winio v0.6.1 h1:9/kr64B9VUZrLm5YYwbGtUJnMgqWVOdUAXu6Migc
 github.com/Microsoft/go-winio v0.6.1/go.mod h1:LRdKpFKfdobln8UmuiYcKPot9D2v6svN5+sAH+4kjUM=
 github.com/agnivade/wasmbrowsertest v0.11.0 h1:Feg5lmJzfC3j9nMgOxRZdYqzYtt93MvcFG29KeRt2VI=
 github.com/agnivade/wasmbrowsertest v0.11.0/go.mod h1:kgT4RR8m3auEg0UdL0uOj/0hCjRt5yQQNb4kjUY5GgU=
-github.com/antlr4-go/antlr/v4 v4.13.0 h1:lxCg3LAv+EUK6t1i0y1V6/SLeUi0eKEKdhQAlS8TVTI=
-github.com/antlr4-go/antlr/v4 v4.13.0/go.mod h1:pfChB/xh/Unjila75QW7+VU4TSnWnnk9UTnmpPaOR2g=
+github.com/antlr4-go/antlr/v4 v4.13.1 h1:SqQKkuVZ+zWkMMNkjy5FZe5mr5WURWnlpmOuzYWrPrQ=
+github.com/antlr4-go/antlr/v4 v4.13.1/go.mod h1:GKmUxMtwp6ZgGwZSva4eWPC5mS6vUAmOABFgjdkM7Nw=
 github.com/bufbuild/buf v1.35.1 h1:aiCi/YFOg7eXKZeveWb2ZhnmLFwUMM/FnDCM0roFp+M=
 github.com/bufbuild/buf v1.35.1/go.mod h1:SM7b5QW3FkQPNkkqIa/9UWzLOoe51la+GGZpEgH9b68=
 github.com/bufbuild/protocompile v0.14.0 h1:z3DW4IvXE5G/uTOnSQn+qwQQxvhckkTWLS/0No/o7KU=
