@@ -8,12 +8,12 @@ require (
 	github.com/agnivade/wasmbrowsertest v0.11.0
 	github.com/bufbuild/buf v1.35.1
 	github.com/ecordell/optgen v0.0.9
-	github.com/envoyproxy/protoc-gen-validate v1.0.4
+	github.com/envoyproxy/protoc-gen-validate v1.2.1
 	github.com/magefile/mage v1.15.0
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240409071808-615f978279ca
 	golang.org/x/tools v0.22.0
 	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.3.0
-	google.golang.org/protobuf v1.34.2
+	google.golang.org/protobuf v1.36.3
 	mvdan.cc/gofumpt v0.6.0
 )
 
@@ -68,7 +68,7 @@ require (
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/klauspost/pgzip v1.2.6 // indirect
-	github.com/lyft/protoc-gen-star/v2 v2.0.3 // indirect
+	github.com/lyft/protoc-gen-star/v2 v2.0.4-0.20230330145011-496ad1ac90a4 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
