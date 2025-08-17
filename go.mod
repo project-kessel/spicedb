@@ -70,7 +70,7 @@ require (
 	github.com/lithammer/fuzzysearch v1.1.8
 	github.com/lthibault/jitterbug v2.0.0+incompatible
 	github.com/mattn/go-isatty v0.0.20
-	github.com/maypok86/otter/v2 v2.1.0
+	github.com/maypok86/otter/v2 v2.2.1
 	github.com/mostynb/go-grpc-compression v1.2.3
 	github.com/muesli/mango-cobra v1.2.0
 	github.com/muesli/roff v0.1.0
@@ -418,7 +418,7 @@ require (
 	golang.org/x/exp/typeparams v0.0.0-20250210185358-939b2ce775ac // indirect
 	golang.org/x/net v0.41.0 // indirect
 	golang.org/x/oauth2 v0.30.0 // indirect
-	golang.org/x/sys v0.33.0 // indirect
+	golang.org/x/sys v0.34.0 // indirect
 	golang.org/x/telemetry v0.0.0-20240522233618-39ace7a40ae7 // indirect
 	golang.org/x/term v0.32.0 // indirect
 	golang.org/x/text v0.26.0 // indirect
