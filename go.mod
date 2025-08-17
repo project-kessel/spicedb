@@ -36,7 +36,7 @@ require (
 	github.com/bits-and-blooms/bloom/v3 v3.7.0
 	github.com/caio/go-tdigest/v4 v4.0.1
 	github.com/ccoveille/go-safecast v1.6.1
-	github.com/cenkalti/backoff/v4 v4.3.0
+	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/cloudspannerecosystem/spanner-change-streams-tail v0.3.1
 	github.com/creasty/defaults v1.8.0
@@ -118,7 +118,10 @@ require (
 	sigs.k8s.io/controller-runtime v0.21.0
 )
 
-require golang.org/x/vuln v1.1.4 // indirect
+require (
+	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
+	golang.org/x/vuln v1.1.4 // indirect
+)
 
 // Most tools are managed in the magefiles module. These tools are just
 // the ones that can't run from a submodule at the moment.

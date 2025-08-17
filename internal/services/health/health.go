@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/cenkalti/backoff/v4"
+	"github.com/cenkalti/backoff/v5"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/authzed/grpcutil"
