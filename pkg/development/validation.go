@@ -7,7 +7,7 @@ import (
 
 	"github.com/ccoveille/go-safecast"
 	"github.com/google/go-cmp/cmp"
-	yaml "gopkg.in/yaml.v2"
+	yaml "gopkg.in/yaml.v3"
 
 	"github.com/authzed/spicedb/internal/developmentmembership"
 	log "github.com/authzed/spicedb/internal/logging"
