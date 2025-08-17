@@ -11,10 +11,10 @@ require (
 	github.com/envoyproxy/protoc-gen-validate v1.0.4
 	github.com/magefile/mage v1.15.0
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240409071808-615f978279ca
-	golang.org/x/tools v0.22.0
+	golang.org/x/tools v0.32.0
 	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.3.0
 	google.golang.org/protobuf v1.34.2
-	mvdan.cc/gofumpt v0.6.0
+	mvdan.cc/gofumpt v0.8.0
 )
 
 require (
@@ -98,7 +98,7 @@ require (
 	go.uber.org/zap v1.27.0 // indirect
 	golang.org/x/crypto v0.37.0 // indirect
 	golang.org/x/exp v0.0.0-20240613232115-7f521ea00fb8 // indirect
-	golang.org/x/mod v0.18.0 // indirect
+	golang.org/x/mod v0.24.0 // indirect
 	golang.org/x/net v0.39.0 // indirect
 	golang.org/x/sync v0.13.0 // indirect
 	golang.org/x/sys v0.32.0 // indirect
