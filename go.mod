@@ -118,7 +118,10 @@ require (
 	sigs.k8s.io/controller-runtime v0.21.0
 )
 
-require golang.org/x/vuln v1.1.4 // indirect
+require (
+	github.com/ashanbrown/forbidigo v1.6.0 // indirect
+	golang.org/x/vuln v1.1.4 // indirect
+)
 
 // Most tools are managed in the magefiles module. These tools are just
 // the ones that can't run from a submodule at the moment.
@@ -171,7 +174,6 @@ require (
 	github.com/alingse/asasalint v0.0.11 // indirect
 	github.com/alingse/nilnesserr v0.2.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.0 // indirect
-	github.com/ashanbrown/forbidigo v1.6.0 // indirect
 	github.com/ashanbrown/makezero v1.2.0 // indirect
 	github.com/authzed/ctxkey v0.0.0-20250226155515-d49f99185584
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.69 // indirect
