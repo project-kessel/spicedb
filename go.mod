@@ -88,7 +88,7 @@ require (
 	github.com/samber/slog-zerolog/v2 v2.7.3
 	github.com/schollz/progressbar/v3 v3.18.0
 	github.com/sean-/sysexits v1.0.0
-	github.com/sercand/kuberesolver/v5 v5.1.1
+	github.com/sercand/kuberesolver/v6 v6.0.1
 	github.com/shopspring/decimal v1.4.0
 	github.com/sourcegraph/go-lsp v0.0.0-20240223163137-f80c5dd31dfd
 	github.com/sourcegraph/jsonrpc2 v0.2.1
@@ -223,7 +223,7 @@ require (
 	github.com/fatih/structtag v1.2.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/firefart/nonamedreturns v1.0.6 // indirect
-	github.com/fsnotify/fsnotify v1.7.0 // indirect
+	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.7.0 // indirect
 	github.com/fzipp/gocyclo v0.6.0 // indirect
 	github.com/ghostiam/protogetter v0.3.15 // indirect
