@@ -10,7 +10,7 @@ replace github.com/envoyproxy/go-control-plane => github.com/envoyproxy/go-contr
 replace github.com/authzed/spicedb => ../
 
 require (
-	github.com/authzed/authzed-go v1.4.1
+	github.com/authzed/authzed-go v1.5.0
 	github.com/authzed/grpcutil v0.0.0-20240123194739-2ea1e3d2d98b
 	github.com/authzed/spicedb v1.29.5
 	github.com/brianvoe/gofakeit/v6 v6.23.2
