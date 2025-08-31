@@ -118,7 +118,10 @@ require (
 	sigs.k8s.io/controller-runtime v0.21.0
 )
 
-require golang.org/x/vuln v1.1.4 // indirect
+require (
+	github.com/hashicorp/go-immutable-radix v1.3.1 // indirect
+	golang.org/x/vuln v1.1.4 // indirect
+)
 
 // Most tools are managed in the magefiles module. These tools are just
 // the ones that can't run from a submodule at the moment.
@@ -270,7 +273,6 @@ require (
 	github.com/gostaticanalysis/forcetypeassert v0.2.0 // indirect
 	github.com/gostaticanalysis/nilerr v0.1.1 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0 // indirect
-	github.com/hashicorp/go-immutable-radix v1.3.1 // indirect
 	github.com/hashicorp/go-immutable-radix/v2 v2.1.0 // indirect
 	github.com/hashicorp/go-version v1.7.0 // indirect
 	github.com/hashicorp/golang-lru v0.5.4 // indirect
