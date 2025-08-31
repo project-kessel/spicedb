@@ -118,7 +118,10 @@ require (
 	sigs.k8s.io/controller-runtime v0.21.0
 )
 
-require golang.org/x/vuln v1.1.4 // indirect
+require (
+	golang.org/x/vuln v1.1.4 // indirect
+	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
+)
 
 // Most tools are managed in the magefiles module. These tools are just
 // the ones that can't run from a submodule at the moment.
@@ -424,7 +427,6 @@ require (
 	golang.org/x/text v0.26.0 // indirect
 	golang.org/x/tools v0.34.0 // indirect
 	google.golang.org/genproto v0.0.0-20250505200425-f936aa4a68b2 // indirect
-	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	honnef.co/go/tools v0.6.1 // indirect
