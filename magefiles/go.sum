@@ -118,8 +118,8 @@ github.com/docker/go-connections v0.5.0 h1:USnMq7hx7gwdVZq1L49hLXaFtUdTADjXGp+uj
 github.com/docker/go-connections v0.5.0/go.mod h1:ov60Kzw0kKElRwhNs9UlUHAE/F9Fe6GLaXnqyDdmEXc=
 github.com/docker/go-units v0.5.0 h1:69rxXcBk27SvSaaxTtLh/8llcHD8vYHT7WSdRZ/jvr4=
 github.com/docker/go-units v0.5.0/go.mod h1:fgPhTUdO+D/Jk86RDLlptpiXQzgHJF7gydDDbaIK4Dk=
-github.com/ecordell/optgen v0.0.9 h1:kmRMqOkbNsWayOnZSk2m5SeGaOTOc7amfi+MAnaMOeI=
-github.com/ecordell/optgen v0.0.9/go.mod h1:+YZ4tk5pNGMoeH+Y4F4HeDDj0SLOlIgMMNae7az4h5g=
+github.com/ecordell/optgen v0.1.1 h1:ovcjYgTfxQzDgNVTVfr+ziHBfoCcetsar6v/gE93ezs=
+github.com/ecordell/optgen v0.1.1/go.mod h1:+YZ4tk5pNGMoeH+Y4F4HeDDj0SLOlIgMMNae7az4h5g=
 github.com/edsrzf/mmap-go v1.0.0 h1:CEBF7HpRnUCSJgGUb5h1Gm7e3VkmVDrR8lvWVLtrOFw=
 github.com/edsrzf/mmap-go v1.0.0/go.mod h1:YO35OhQPt3KJa3ryjFM5Bs14WD66h8eGKpfaBNrHW5M=
 github.com/envoyproxy/go-control-plane v0.9.0/go.mod h1:YTl/9mNaCwkRvm6d1a2C3ymFceY/DCBVvsKhRF0iEA4=

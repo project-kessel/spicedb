@@ -7,7 +7,7 @@ toolchain go1.24.2
 require (
 	github.com/agnivade/wasmbrowsertest v0.11.0
 	github.com/bufbuild/buf v1.35.1
-	github.com/ecordell/optgen v0.0.9
+	github.com/ecordell/optgen v0.1.1
 	github.com/envoyproxy/protoc-gen-validate v1.0.4
 	github.com/magefile/mage v1.15.0
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240409071808-615f978279ca
