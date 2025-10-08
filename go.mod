@@ -106,7 +106,7 @@ require (
 	golang.org/x/exp v0.0.0-20240909161429-701f63a606c0
 	golang.org/x/mod v0.25.0
 	golang.org/x/sync v0.15.0
-	golang.org/x/time v0.12.0
+	golang.org/x/time v0.14.0
 	google.golang.org/api v0.236.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20250603155806-513f23925822
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250603155806-513f23925822
