@@ -1,12 +1,12 @@
 # use `crane digest <image>` to get the multi-platform sha256
-FROM golang:1.24.4-alpine3.21@sha256:56a23791af0f77c87b049230ead03bd8c3ad41683415ea4595e84ce7eada121a AS spicedb-builder
+FROM golang:1.25.2-alpine3.21@sha256:01346535ae797d5bc7301aa6518051e9a66adf813fc99e09872a06417759f913 AS spicedb-builder
 WORKDIR /go/src/app
 RUN apk update && apk add --no-cache git
 COPY . .
 RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/go/pkg/mod CGO_ENABLED=0 go build -v ./cmd/...
 
 # use `crane digest <image>` to get the multi-platform sha256
-FROM golang:1.24.4-alpine3.21@sha256:56a23791af0f77c87b049230ead03bd8c3ad41683415ea4595e84ce7eada121a AS health-probe-builder
+FROM golang:1.25.2-alpine3.21@sha256:01346535ae797d5bc7301aa6518051e9a66adf813fc99e09872a06417759f913 AS health-probe-builder
 WORKDIR /go/src/app
 RUN apk update && apk add --no-cache git
 RUN git clone https://github.com/authzed/grpc-health-probe.git
