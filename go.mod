@@ -94,7 +94,7 @@ require (
 	github.com/sourcegraph/jsonrpc2 v0.2.1
 	github.com/spf13/cobra v1.9.1
 	github.com/spf13/pflag v1.0.6
-	github.com/stretchr/testify v1.10.0
+	github.com/stretchr/testify v1.11.1
 	go.opencensus.io v0.24.0
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.60.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0
@@ -118,7 +118,10 @@ require (
 	sigs.k8s.io/controller-runtime v0.21.0
 )
 
-require golang.org/x/vuln v1.1.4 // indirect
+require (
+	github.com/go-openapi/swag/jsonname v0.25.1 // indirect
+	golang.org/x/vuln v1.1.4 // indirect
+)
 
 // Most tools are managed in the magefiles module. These tools are just
 // the ones that can't run from a submodule at the moment.
@@ -233,8 +236,8 @@ require (
 	github.com/go-logfmt/logfmt v0.5.1 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/go-openapi/jsonpointer v0.21.0 // indirect
-	github.com/go-openapi/jsonreference v0.20.2 // indirect
+	github.com/go-openapi/jsonpointer v0.22.1 // indirect
+	github.com/go-openapi/jsonreference v0.21.2 // indirect
 	github.com/go-openapi/swag v0.23.0 // indirect
 	github.com/go-toolsmith/astcast v1.1.0 // indirect
 	github.com/go-toolsmith/astcopy v1.1.0 // indirect
