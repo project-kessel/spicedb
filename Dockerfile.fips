@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/ubi9/ubi-minimal:9.6-1760515502 AS base
+FROM registry.access.redhat.com/ubi9/ubi-minimal:9.7-1762956380 AS base
 ARG TARGETARCH
 USER root
 RUN microdnf install -y tar gzip make which git gcc go-toolset
@@ -23,7 +23,7 @@ RUN git checkout 0269ef8dd3a89d40ea5ed0a27a3d421278c6c9e1
 RUN GOEXPERIMENT=strictfipsruntime,boringcrypto CGO_ENABLED=1 GOBIN=/go/bin go install -a -tags netgo -ldflags=-w
 
 # use clean base without build tools
-FROM registry.access.redhat.com/ubi9/ubi-minimal:9.6-1760515502
+FROM registry.access.redhat.com/ubi9/ubi-minimal:9.7-1762956380
 COPY --from=health-probe-builder /go/bin/grpc-health-probe /bin/grpc_health_probe
 COPY --from=spicedb-builder /go/src/app/spicedb /usr/local/bin/spicedb
 ENV PATH="$PATH:/usr/local/bin"
