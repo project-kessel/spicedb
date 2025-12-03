@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# yaml-language-server: $schema=https://goreleaser.com/static/schema-pro.json
 ---
 version: 2
 git:
@@ -7,6 +7,7 @@ git:
 before:
   hooks:
     - "go run mage.go gen:completions"
+    - "go run mage.go gen:manpages"
 builds:
   - main: "./cmd/spicedb"
     env:
@@ -18,14 +19,17 @@ builds:
       - "amd64"
       - "arm64"
     mod_timestamp: "{{ .CommitTimestamp }}"
+    tags:
+      - "memoryprotection"
     ldflags:
-      - "-s -w"
+      - "-s -w -checklinkname=0"
       - "-X github.com/jzelinskie/cobrautil/v2.Version=v{{ .Version }}"
 archives:
   - files:
       - "README.md"
       - "LICENSE"
       - "completions/*"
+      - "manpages/*"
 nfpms:
   - vendor: "authzed inc."
     homepage: "https://spicedb.io"
@@ -48,6 +52,10 @@ nfpms:
           mode: 0644
       - src: "./completions/spicedb.zsh"
         dst: "/usr/share/zsh/vendor-completions/_spicedb"
+        file_info:
+          mode: 0644
+      - src: "./manpages/spicedb.1"
+        dst: "/usr/share/man/man1/spicedb.1"
         file_info:
           mode: 0644
 furies:
@@ -89,7 +97,7 @@ brews:
         if build.head?
           versionVar = "github.com/jzelinskie/cobrautil/v2.Version"
           versionCmd = "$(git describe --always --abbrev=7 --dirty --tags)"
-          system "go build --ldflags '-s -w -X #{versionVar}=#{versionCmd}' ./cmd/spicedb"
+          system "go build -tags memoryprotection --ldflags '-s -w -checklinkname=0 -X #{versionVar}=#{versionCmd}' ./cmd/spicedb"
         end
         bin.install "spicedb"
         generate_completions_from_executable(bin/"spicedb", "completion", shells: [:bash, :zsh, :fish])

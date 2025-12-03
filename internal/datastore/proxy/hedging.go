@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -151,7 +152,7 @@ func newHedgingProxyWithTimeSource(
 	timeSource clock.Clock,
 ) (datastore.Datastore, error) {
 	if initialSlowRequestThreshold < 0 {
-		return nil, fmt.Errorf("initial slow request threshold negative")
+		return nil, errors.New("initial slow request threshold negative")
 	}
 
 	if maxSampleCount < minMaxRequestsThreshold {
@@ -159,7 +160,7 @@ func newHedgingProxyWithTimeSource(
 	}
 
 	if hedgingQuantile <= 0.0 || hedgingQuantile >= 1.0 {
-		return nil, fmt.Errorf("hedgingQuantile must be in the range (0.0-1.0) exclusive")
+		return nil, errors.New("hedgingQuantile must be in the range (0.0-1.0) exclusive")
 	}
 
 	return hedgingProxy{
@@ -188,7 +189,7 @@ func (hp hedgingProxy) OptimizedRevision(ctx context.Context) (rev datastore.Rev
 
 	hp.revisionHedger(ctx, subreq)
 
-	return
+	return rev, err
 }
 
 func (hp hedgingProxy) HeadRevision(ctx context.Context) (rev datastore.Revision, err error) {
@@ -204,7 +205,7 @@ func (hp hedgingProxy) HeadRevision(ctx context.Context) (rev datastore.Revision
 
 	hp.headRevisionHedger(ctx, subreq)
 
-	return
+	return rev, err
 }
 
 func (hp hedgingProxy) SnapshotReader(rev datastore.Revision) datastore.Reader {
@@ -235,7 +236,7 @@ func (hp hedgingReader) ReadNamespaceByName(
 
 	hp.p.readNamespaceHedger(ctx, subreq)
 
-	return
+	return ns, createdAt, err
 }
 
 func (hp hedgingReader) QueryRelationships(
@@ -284,5 +285,5 @@ func (hp hedgingReader) executeQuery(
 
 	hp.p.queryTuplesHedger(ctx, subreq)
 
-	return
+	return delegateIterator, err
 }

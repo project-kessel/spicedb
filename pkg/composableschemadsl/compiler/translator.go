@@ -3,12 +3,13 @@ package compiler
 import (
 	"bufio"
 	"container/list"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	"github.com/jzelinskie/stringz"
 	"github.com/rs/zerolog/log"
 
@@ -333,9 +334,14 @@ func getSourcePosition(dslNode *dslNode, mapper input.PositionMapper) *core.Sour
 		return nil
 	}
 
-	// We're okay with these being zero if the cast fails.
-	uintLine, _ := safecast.ToUint64(line)
-	uintCol, _ := safecast.ToUint64(col)
+	uintLine, err := safecast.Convert[uint64](line)
+	if err != nil {
+		uintLine = 0
+	}
+	uintCol, err := safecast.Convert[uint64](col)
+	if err != nil {
+		uintCol = 0
+	}
 
 	return &core.SourcePosition{
 		ZeroIndexedLineNumber:     uintLine,
@@ -513,9 +519,9 @@ func translateExpressionDirect(tctx *translationContext, expressionNode *dslNode
 		if err != nil {
 			return nil, err
 		}
-		leftOps := collapseOps(leftOperation, lookup)
-		rightOps := collapseOps(rightOperation, lookup)
-		ops := append(leftOps, rightOps...)
+		var ops []*core.SetOperation_Child
+		ops = append(ops, collapseOps(leftOperation, lookup)...)
+		ops = append(ops, collapseOps(rightOperation, lookup)...)
 		return builder(ops[0], ops[1:]...), nil
 	}
 
@@ -745,7 +751,7 @@ func addWithCaveats(tctx *translationContext, typeRefNode *dslNode, ref *core.Al
 	}
 
 	if len(caveats) != 1 {
-		return fmt.Errorf("only one caveat is currently allowed per type reference")
+		return errors.New("only one caveat is currently allowed per type reference")
 	}
 
 	name, err := caveats[0].GetString(dslshape.NodeCaveatPredicateCaveat)

@@ -52,6 +52,10 @@ func (p *indexcheckingProxy) MetricsID() (string, error) {
 	return p.delegate.MetricsID()
 }
 
+func (p *indexcheckingProxy) UniqueID(ctx context.Context) (string, error) {
+	return p.delegate.UniqueID(ctx)
+}
+
 func (p *indexcheckingProxy) OptimizedRevision(ctx context.Context) (datastore.Revision, error) {
 	return p.delegate.OptimizedRevision(ctx)
 }
@@ -210,8 +214,8 @@ func (rwt *indexcheckingRWT) WriteNamespaces(ctx context.Context, newConfigs ...
 	return rwt.delegate.WriteNamespaces(ctx, newConfigs...)
 }
 
-func (rwt *indexcheckingRWT) DeleteNamespaces(ctx context.Context, nsNames ...string) error {
-	return rwt.delegate.DeleteNamespaces(ctx, nsNames...)
+func (rwt *indexcheckingRWT) DeleteNamespaces(ctx context.Context, nsNames []string, delOption datastore.DeleteNamespacesRelationshipsOption) error {
+	return rwt.delegate.DeleteNamespaces(ctx, nsNames, delOption)
 }
 
 func (rwt *indexcheckingRWT) DeleteRelationships(ctx context.Context, filter *v1.RelationshipFilter, options ...options.DeleteOptionsOption) (uint64, bool, error) {

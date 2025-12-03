@@ -8,7 +8,6 @@ import (
 	"github.com/fatih/color"
 	"github.com/jzelinskie/cobrautil/v2"
 	"github.com/jzelinskie/cobrautil/v2/cobraotel"
-	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 
 	"github.com/authzed/spicedb/internal/telemetry"
@@ -48,6 +47,15 @@ var (
 		MaxCost:             "70%",
 		CacheKindForTesting: "",
 	}
+
+	lr3ChunkCacheDefaults = &server.CacheConfig{
+		Name:                "lr3_chunk",
+		Enabled:             true,
+		Metrics:             false,
+		NumCounters:         10_000,
+		MaxCost:             "50MiB",
+		CacheKindForTesting: "",
+	}
 )
 
 func BoldBlue(name string) string {
@@ -62,13 +70,10 @@ func RegisterServeFlags(cmd *cobra.Command, config *server.Config) error {
 	nfs := cobrautil.NewNamedFlagSets(cmd)
 
 	grpcFlagSet := nfs.FlagSet(BoldBlue("gRPC"))
-	// Flags for logging
-	grpcFlagSet.BoolVar(&config.EnableRequestLogs, "grpc-log-requests-enabled", false, "logs API request payloads")
-	grpcFlagSet.BoolVar(&config.EnableResponseLogs, "grpc-log-responses-enabled", false, "logs API response payloads")
 
 	// Flags for the gRPC API server
 	util.RegisterGRPCServerFlags(grpcFlagSet, &config.GRPCServer, "grpc", "gRPC", ":50051", true)
-	grpcFlagSet.StringSliceVar(&config.PresharedSecureKey, PresharedKeyFlag, []string{}, "preshared key(s) to require for authenticated requests")
+	grpcFlagSet.StringSliceVar(&config.PresharedSecureKey, PresharedKeyFlag, []string{}, "(required) preshared key(s) that must be provided by clients to authenticate requests")
 	grpcFlagSet.DurationVar(&config.ShutdownGracePeriod, "grpc-shutdown-grace-period", 0*time.Second, "amount of time after receiving sigint to continue serving")
 	if err := cobra.MarkFlagRequired(grpcFlagSet, PresharedKeyFlag); err != nil {
 		return fmt.Errorf("failed to mark flag as required: %w", err)
@@ -76,7 +81,7 @@ func RegisterServeFlags(cmd *cobra.Command, config *server.Config) error {
 
 	// Flags for HTTP gateway
 	httpFlags := nfs.FlagSet(BoldBlue("HTTP"))
-	util.RegisterHTTPServerFlags(httpFlags, &config.HTTPGateway, "http", "gateway", ":8443", false)
+	util.RegisterHTTPServerFlags(httpFlags, &config.HTTPGateway, "http", "proxy", ":8443", false)
 	httpFlags.StringVar(&config.HTTPGatewayUpstreamAddr, "http-upstream-override-addr", "", "Override the upstream to point to a different gRPC server")
 	if err := httpFlags.MarkHidden("http-upstream-override-addr"); err != nil {
 		return fmt.Errorf("failed to mark flag as hidden: %w", err)
@@ -106,7 +111,7 @@ func RegisterServeFlags(cmd *cobra.Command, config *server.Config) error {
 	apiFlags.Uint16Var(&config.MaximumUpdatesPerWrite, "write-relationships-max-updates-per-call", 1000, "maximum number of updates allowed for WriteRelationships calls")
 	apiFlags.IntVar(&config.MaxCaveatContextSize, "max-caveat-context-size", 4096, "maximum allowed size of request caveat context in bytes. A value of zero or less means no limit")
 	apiFlags.IntVar(&config.MaxRelationshipContextSize, "max-relationship-context-size", 25000, "maximum allowed size of the context to be stored in a relationship")
-	apiFlags.DurationVar(&config.StreamingAPITimeout, "streaming-api-response-delay-timeout", 30*time.Second, "max duration time elapsed between messages sent by the server-side to the client (responses) before the stream times out")
+	apiFlags.DurationVar(&config.StreamingAPITimeout, "streaming-api-response-delay-timeout", 30*time.Second, "maximum time that streaming APIs (LookupSubjects, LookupResources, ReadRelationships and ExportBulkRelationships) can be allowed to run but no response be sent to the client before the stream times out")
 	apiFlags.DurationVar(&config.WatchHeartbeat, "watch-api-heartbeat", 1*time.Second, "heartbeat time on the watch in the API. 0 means to default to the datastore's minimum.")
 	apiFlags.Uint32Var(&config.MaxReadRelationshipsLimit, "max-read-relationships-limit", 1000, "maximum number of relationships that can be read in a single request")
 	apiFlags.Uint32Var(&config.MaxDeleteRelationshipsLimit, "max-delete-relationships-limit", 1000, "maximum number of relationships that can be deleted in a single request")
@@ -114,6 +119,7 @@ func RegisterServeFlags(cmd *cobra.Command, config *server.Config) error {
 	apiFlags.Uint32Var(&config.MaxBulkExportRelationshipsLimit, "max-bulk-export-relationships-limit", 10_000, "maximum number of relationships that can be exported in a single request")
 	apiFlags.BoolVar(&config.EnableRevisionHeartbeat, "enable-revision-heartbeat", true, "enables support for revision heartbeat, used to create a synthetic revision on an interval defined by the quantization window (postgres only)")
 	apiFlags.BoolVar(&config.EnablePerformanceInsightMetrics, "enable-performance-insight-metrics", false, "enables performance insight metrics, which are used to track the latency of API calls by shape")
+	apiFlags.StringVar(&config.MismatchZedTokenBehavior, "mismatch-zed-token-behavior", "full-consistency", "behavior to enforce when an API call receives a zedtoken that was originally intended for a different kind of datastore. One of: full-consistency (treat as a full-consistency call, ignoring the zedtoken), min-latency (treat as a min-latency call, ignoring the zedtoken), error (return an error). defaults to full-consistency for safety.")
 
 	datastoreFlags := nfs.FlagSet(BoldBlue("Datastore"))
 	// Flags for the datastore
@@ -161,33 +167,46 @@ func RegisterServeFlags(cmd *cobra.Command, config *server.Config) error {
 
 	experimentalFlags := nfs.FlagSet(BoldBlue("Experimental"))
 	// Flags for experimental features
-	experimentalFlags.BoolVar(&config.EnableExperimentalLookupResources, "enable-experimental-lookup-resources", true, "enables the experimental version of the lookup resources API")
-	if err := experimentalFlags.MarkDeprecated("enable-experimental-lookup-resources", "The old implementation of LookupResources has been removed and this flag is a no-op. This flag will be removed in the future."); err != nil {
+	experimentalFlags.StringVar(&config.ExperimentalQueryPlan, "experimental-query-plan", "", "if non-empty, the version of the experimental query plan to use: `check` or empty")
+	if err := experimentalFlags.MarkHidden("experimental-query-plan"); err != nil {
+		return fmt.Errorf("failed to mark flag as hidden: %w", err)
+	}
+	experimentalFlags.StringVar(&config.ExperimentalLookupResourcesVersion, "experimental-lookup-resources-version", "", "if non-empty, the version of the experimental lookup resources API to use: `lr3` or empty")
+	experimentalFlags.BoolVar(&config.EnableRelationshipExpiration, "enable-experimental-relationship-expiration", true, "enables experimental support for relationship expiration")
+	if err := experimentalFlags.MarkHidden("enable-experimental-relationship-expiration"); err != nil {
+		return fmt.Errorf("failed to mark flag as hidden: %w", err)
+	}
+	if err := experimentalFlags.MarkDeprecated("enable-experimental-relationship-expiration", "it is enabled by default and no longer needs to be set."); err != nil {
 		return fmt.Errorf("failed to mark flag as deprecated: %w", err)
 	}
-	if !config.EnableExperimentalLookupResources {
-		log.Warn().
-			Bool("value", false).
-			Msg("The old implementation of LookupResources is no longer available, and a `false` value is no longer valid. Please remove this flag.")
-	}
-
-	experimentalFlags.BoolVar(&config.EnableExperimentalRelationshipExpiration, "enable-experimental-relationship-expiration", false, "enables experimental support for first-class relationship expiration")
-	experimentalFlags.BoolVar(&config.EnableExperimentalWatchableSchemaCache, "enable-experimental-watchable-schema-cache", false, "enables the experimental schema cache which makes use of the Watch API for automatic updates")
+	experimentalFlags.BoolVar(&config.EnableExperimentalWatchableSchemaCache, "enable-experimental-watchable-schema-cache", false, "enables the experimental schema cache, which uses the Watch API to keep the schema up to date")
 	// TODO: these two could reasonably be put in either the Dispatch group or the Experimental group. Is there a preference?
 	experimentalFlags.StringToStringVar(&config.DispatchSecondaryUpstreamAddrs, "experimental-dispatch-secondary-upstream-addrs", nil, "secondary upstream addresses for dispatches, each with a name")
 	experimentalFlags.StringToStringVar(&config.DispatchSecondaryUpstreamExprs, "experimental-dispatch-secondary-upstream-exprs", nil, "map from request type to its associated CEL expression, which returns the secondary upstream(s) to be used for the request")
 	experimentalFlags.StringToStringVar(&config.DispatchSecondaryMaximumPrimaryHedgingDelays, "experimental-dispatch-secondary-maximum-primary-hedging-delays", nil, "maximum number of hedging delays to use for each request type to delay the primary request. default is 5ms")
 
-	observabilityFlags := nfs.FlagSet(BoldBlue("Observability"))
-	// Flags for observability and profiling
+	// Deprecated flags for experimental features
+	experimentalFlags.BoolVar(&config.EnableExperimentalLookupResources, "enable-experimental-lookup-resources", false, "do not use; this flag is unused and will be removed in a future version")
+	if err := experimentalFlags.MarkDeprecated("enable-experimental-lookup-resources", "do not use; this flag is unused and will be removed in a future version"); err != nil {
+		return fmt.Errorf("failed to mark flag as deprecated: %w", err)
+	}
+
+	server.MustRegisterCacheFlags(experimentalFlags, "lookup-resources-chunk-cache", &config.LR3ResourceChunkCacheConfig, lr3ChunkCacheDefaults)
+
+	tracingFlags := nfs.FlagSet(BoldBlue("Tracing"))
+	// Flags for tracing
 	// NOTE: cobraotel.New takes service name as an arg rather than command name.
 	otel := cobraotel.New("spicedb")
-	otel.RegisterFlags(observabilityFlags)
-	runtime.RegisterFlags(observabilityFlags)
+	otel.RegisterFlags(tracingFlags)
 
-	metricsFlags := nfs.FlagSet(BoldBlue("Metrics Server"))
+	loggingFlagSet := nfs.FlagSet(BoldBlue("Logging"))
+	loggingFlagSet.BoolVar(&config.EnableRequestLogs, "grpc-log-requests-enabled", false, "enable logging of API request payloads")
+	loggingFlagSet.BoolVar(&config.EnableResponseLogs, "grpc-log-responses-enabled", false, "enable logging of API response payloads")
+
+	metricsFlags := nfs.FlagSet(BoldBlue("Metrics & Profiling"))
 	// Flags for metrics
 	util.RegisterHTTPServerFlags(metricsFlags, &config.MetricsAPI, "metrics", "metrics", ":9090", true)
+	runtime.RegisterFlags(metricsFlags)
 
 	telemetryFlags := nfs.FlagSet(BoldBlue("Telemetry"))
 	// Flags for telemetry
@@ -217,7 +236,7 @@ func NewServeCommand(programName string, config *server.Config) *cobra.Command {
 	return &cobra.Command{
 		Use:     "serve",
 		Short:   "serve the permissions database",
-		Long:    "A database that stores, computes, and validates application permissions",
+		Long:    "start a SpiceDB server",
 		PreRunE: server.DefaultPreRunE(programName),
 		RunE: termination.PublishError(func(cmd *cobra.Command, args []string) error {
 			server, err := config.Complete(cmd.Context())

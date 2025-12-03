@@ -131,11 +131,11 @@ func (mds *Datastore) loadChanges(
 ) (changes []datastore.RevisionChanges, newRevision uint64, err error) {
 	newRevision, err = mds.loadRevision(ctx)
 	if err != nil {
-		return
+		return changes, newRevision, err
 	}
 
 	if newRevision == afterRevision {
-		return
+		return changes, newRevision, err
 	}
 
 	stagedChanges := common.NewChanges(revisions.TransactionIDKeyFunc, options.Content, options.MaximumBufferedChangesByteSize)
@@ -148,19 +148,20 @@ func (mds *Datastore) loadChanges(
 		},
 	}).ToSql()
 	if err != nil {
-		return
+		return changes, newRevision, err
 	}
 
 	rows, err := mds.db.QueryContext(ctx, sql, args...)
 	if err != nil {
-		if errors.Is(ctx.Err(), context.Canceled) {
+		switch {
+		case errors.Is(ctx.Err(), context.Canceled):
 			err = datastore.NewWatchCanceledErr()
-		} else if common.IsCancellationError(err) {
+		case common.IsCancellationError(err):
 			err = datastore.NewWatchCanceledErr()
-		} else if common.IsResettableError(err) {
+		case common.IsResettableError(err):
 			err = datastore.NewWatchTemporaryErr(err)
 		}
-		return
+		return changes, newRevision, err
 	}
 	defer common.LogOnError(ctx, rows.Close)
 
@@ -176,14 +177,14 @@ func (mds *Datastore) loadChanges(
 		}
 
 		if len(metadata) > 0 {
-			if err := stagedChanges.SetRevisionMetadata(ctx, revisions.NewForTransactionID(txnID), metadata); err != nil {
+			if err := stagedChanges.AddRevisionMetadata(ctx, revisions.NewForTransactionID(txnID), metadata); err != nil {
 				return nil, 0, err
 			}
 		}
 	}
 	rows.Close()
-	if err = rows.Err(); err != nil {
-		return
+	if rows.Err() != nil {
+		return changes, newRevision, err
 	}
 
 	// Load the changes relationships for the revision range.
@@ -198,7 +199,7 @@ func (mds *Datastore) loadChanges(
 		},
 	}).ToSql()
 	if err != nil {
-		return
+		return changes, newRevision, err
 	}
 
 	rows, err = mds.db.QueryContext(ctx, sql, args...)
@@ -206,7 +207,7 @@ func (mds *Datastore) loadChanges(
 		if errors.Is(err, context.Canceled) {
 			err = datastore.NewWatchCanceledErr()
 		}
-		return
+		return changes, newRevision, err
 	}
 	defer common.LogOnError(ctx, rows.Close)
 
@@ -236,7 +237,7 @@ func (mds *Datastore) loadChanges(
 			&deletedTxn,
 		)
 		if err != nil {
-			return
+			return changes, newRevision, err
 		}
 
 		relationship := tuple.Relationship{
@@ -257,25 +258,25 @@ func (mds *Datastore) loadChanges(
 
 		relationship.OptionalCaveat, err = common.ContextualizedCaveatFrom(caveatName, caveatContext)
 		if err != nil {
-			return
+			return changes, newRevision, err
 		}
 
 		if createdTxn > afterRevision && createdTxn <= newRevision {
 			if err = stagedChanges.AddRelationshipChange(ctx, revisions.NewForTransactionID(createdTxn), relationship, tuple.UpdateOperationTouch); err != nil {
-				return
+				return changes, newRevision, err
 			}
 		}
 
 		if deletedTxn > afterRevision && deletedTxn <= newRevision {
 			if err = stagedChanges.AddRelationshipChange(ctx, revisions.NewForTransactionID(deletedTxn), relationship, tuple.UpdateOperationDelete); err != nil {
-				return
+				return changes, newRevision, err
 			}
 		}
 	}
 	if err = rows.Err(); err != nil {
-		return
+		return changes, newRevision, err
 	}
 
 	changes, err = stagedChanges.AsRevisionChanges(revisions.TransactionIDKeyLessThanFunc)
-	return
+	return changes, newRevision, err
 }

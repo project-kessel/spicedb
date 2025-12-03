@@ -78,6 +78,7 @@ func (c *Config) ToOption() ConfigOption {
 		to.DispatchPrimaryDelayForTesting = c.DispatchPrimaryDelayForTesting
 		to.DispatchCacheConfig = c.DispatchCacheConfig
 		to.ClusterDispatchCacheConfig = c.ClusterDispatchCacheConfig
+		to.LR3ResourceChunkCacheConfig = c.LR3ResourceChunkCacheConfig
 		to.DisableV1SchemaAPI = c.DisableV1SchemaAPI
 		to.V1SchemaAdditiveOnly = c.V1SchemaAdditiveOnly
 		to.MaximumUpdatesPerWrite = c.MaximumUpdatesPerWrite
@@ -90,12 +91,16 @@ func (c *Config) ToOption() ConfigOption {
 		to.MaxLookupResourcesLimit = c.MaxLookupResourcesLimit
 		to.MaxBulkExportRelationshipsLimit = c.MaxBulkExportRelationshipsLimit
 		to.EnableExperimentalLookupResources = c.EnableExperimentalLookupResources
-		to.EnableExperimentalRelationshipExpiration = c.EnableExperimentalRelationshipExpiration
+		to.ExperimentalLookupResourcesVersion = c.ExperimentalLookupResourcesVersion
+		to.ExperimentalQueryPlan = c.ExperimentalQueryPlan
+		to.EnableRelationshipExpiration = c.EnableRelationshipExpiration
 		to.EnableRevisionHeartbeat = c.EnableRevisionHeartbeat
 		to.EnablePerformanceInsightMetrics = c.EnablePerformanceInsightMetrics
+		to.MismatchZedTokenBehavior = c.MismatchZedTokenBehavior
 		to.MetricsAPI = c.MetricsAPI
 		to.UnaryMiddlewareModification = c.UnaryMiddlewareModification
 		to.StreamingMiddlewareModification = c.StreamingMiddlewareModification
+		to.MemoryProtectionEnabled = c.MemoryProtectionEnabled
 		to.DispatchUnaryMiddleware = c.DispatchUnaryMiddleware
 		to.DispatchStreamingMiddleware = c.DispatchStreamingMiddleware
 		to.SilentlyDisableTelemetry = c.SilentlyDisableTelemetry
@@ -150,6 +155,7 @@ func (c Config) DebugMap() map[string]any {
 	debugMap["DispatchSecondaryMaximumPrimaryHedgingDelays"] = helpers.DebugValue(c.DispatchSecondaryMaximumPrimaryHedgingDelays, false)
 	debugMap["DispatchCacheConfig"] = helpers.DebugValue(c.DispatchCacheConfig, false)
 	debugMap["ClusterDispatchCacheConfig"] = helpers.DebugValue(c.ClusterDispatchCacheConfig, false)
+	debugMap["LR3ResourceChunkCacheConfig"] = helpers.DebugValue(c.LR3ResourceChunkCacheConfig, false)
 	debugMap["DisableV1SchemaAPI"] = helpers.DebugValue(c.DisableV1SchemaAPI, false)
 	debugMap["V1SchemaAdditiveOnly"] = helpers.DebugValue(c.V1SchemaAdditiveOnly, false)
 	debugMap["MaximumUpdatesPerWrite"] = helpers.DebugValue(c.MaximumUpdatesPerWrite, false)
@@ -162,10 +168,14 @@ func (c Config) DebugMap() map[string]any {
 	debugMap["MaxLookupResourcesLimit"] = helpers.DebugValue(c.MaxLookupResourcesLimit, false)
 	debugMap["MaxBulkExportRelationshipsLimit"] = helpers.DebugValue(c.MaxBulkExportRelationshipsLimit, false)
 	debugMap["EnableExperimentalLookupResources"] = helpers.DebugValue(c.EnableExperimentalLookupResources, false)
-	debugMap["EnableExperimentalRelationshipExpiration"] = helpers.DebugValue(c.EnableExperimentalRelationshipExpiration, false)
+	debugMap["ExperimentalLookupResourcesVersion"] = helpers.DebugValue(c.ExperimentalLookupResourcesVersion, false)
+	debugMap["ExperimentalQueryPlan"] = helpers.DebugValue(c.ExperimentalQueryPlan, false)
+	debugMap["EnableRelationshipExpiration"] = helpers.DebugValue(c.EnableRelationshipExpiration, false)
 	debugMap["EnableRevisionHeartbeat"] = helpers.DebugValue(c.EnableRevisionHeartbeat, false)
 	debugMap["EnablePerformanceInsightMetrics"] = helpers.DebugValue(c.EnablePerformanceInsightMetrics, false)
+	debugMap["MismatchZedTokenBehavior"] = helpers.DebugValue(c.MismatchZedTokenBehavior, false)
 	debugMap["MetricsAPI"] = helpers.DebugValue(c.MetricsAPI, false)
+	debugMap["MemoryProtectionEnabled"] = helpers.DebugValue(c.MemoryProtectionEnabled, false)
 	debugMap["SilentlyDisableTelemetry"] = helpers.DebugValue(c.SilentlyDisableTelemetry, false)
 	debugMap["TelemetryCAOverridePath"] = helpers.DebugValue(c.TelemetryCAOverridePath, false)
 	debugMap["TelemetryEndpoint"] = helpers.DebugValue(c.TelemetryEndpoint, false)
@@ -507,6 +517,13 @@ func WithClusterDispatchCacheConfig(clusterDispatchCacheConfig CacheConfig) Conf
 	}
 }
 
+// WithLR3ResourceChunkCacheConfig returns an option that can set LR3ResourceChunkCacheConfig on a Config
+func WithLR3ResourceChunkCacheConfig(lR3ResourceChunkCacheConfig CacheConfig) ConfigOption {
+	return func(c *Config) {
+		c.LR3ResourceChunkCacheConfig = lR3ResourceChunkCacheConfig
+	}
+}
+
 // WithDisableV1SchemaAPI returns an option that can set DisableV1SchemaAPI on a Config
 func WithDisableV1SchemaAPI(disableV1SchemaAPI bool) ConfigOption {
 	return func(c *Config) {
@@ -591,10 +608,24 @@ func WithEnableExperimentalLookupResources(enableExperimentalLookupResources boo
 	}
 }
 
-// WithEnableExperimentalRelationshipExpiration returns an option that can set EnableExperimentalRelationshipExpiration on a Config
-func WithEnableExperimentalRelationshipExpiration(enableExperimentalRelationshipExpiration bool) ConfigOption {
+// WithExperimentalLookupResourcesVersion returns an option that can set ExperimentalLookupResourcesVersion on a Config
+func WithExperimentalLookupResourcesVersion(experimentalLookupResourcesVersion string) ConfigOption {
 	return func(c *Config) {
-		c.EnableExperimentalRelationshipExpiration = enableExperimentalRelationshipExpiration
+		c.ExperimentalLookupResourcesVersion = experimentalLookupResourcesVersion
+	}
+}
+
+// WithExperimentalQueryPlan returns an option that can set ExperimentalQueryPlan on a Config
+func WithExperimentalQueryPlan(experimentalQueryPlan string) ConfigOption {
+	return func(c *Config) {
+		c.ExperimentalQueryPlan = experimentalQueryPlan
+	}
+}
+
+// WithEnableRelationshipExpiration returns an option that can set EnableRelationshipExpiration on a Config
+func WithEnableRelationshipExpiration(enableRelationshipExpiration bool) ConfigOption {
+	return func(c *Config) {
+		c.EnableRelationshipExpiration = enableRelationshipExpiration
 	}
 }
 
@@ -609,6 +640,13 @@ func WithEnableRevisionHeartbeat(enableRevisionHeartbeat bool) ConfigOption {
 func WithEnablePerformanceInsightMetrics(enablePerformanceInsightMetrics bool) ConfigOption {
 	return func(c *Config) {
 		c.EnablePerformanceInsightMetrics = enablePerformanceInsightMetrics
+	}
+}
+
+// WithMismatchZedTokenBehavior returns an option that can set MismatchZedTokenBehavior on a Config
+func WithMismatchZedTokenBehavior(mismatchZedTokenBehavior string) ConfigOption {
+	return func(c *Config) {
+		c.MismatchZedTokenBehavior = mismatchZedTokenBehavior
 	}
 }
 
@@ -644,6 +682,13 @@ func WithStreamingMiddlewareModification(streamingMiddlewareModification Middlew
 func SetStreamingMiddlewareModification(streamingMiddlewareModification []MiddlewareModification[grpc.StreamServerInterceptor]) ConfigOption {
 	return func(c *Config) {
 		c.StreamingMiddlewareModification = streamingMiddlewareModification
+	}
+}
+
+// WithMemoryProtectionEnabled returns an option that can set MemoryProtectionEnabled on a Config
+func WithMemoryProtectionEnabled(memoryProtectionEnabled bool) ConfigOption {
+	return func(c *Config) {
+		c.MemoryProtectionEnabled = memoryProtectionEnabled
 	}
 }
 

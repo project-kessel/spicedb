@@ -13,6 +13,7 @@ import (
 	sppb "cloud.google.com/go/spanner/apiv1/spannerpb"
 	"github.com/cloudspannerecosystem/spanner-change-streams-tail/changestreams"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/puzpuzpuz/xsync/v4"
 	"google.golang.org/api/option"
 
 	"github.com/authzed/spicedb/internal/datastore/common"
@@ -89,12 +90,7 @@ func (sd *spannerDatastore) watch(
 	}
 
 	sendError := func(err error) {
-		if errors.Is(ctx.Err(), context.Canceled) {
-			errs <- datastore.NewWatchCanceledErr()
-			return
-		}
-
-		if common.IsCancellationError(err) {
+		if errors.Is(ctx.Err(), context.Canceled) || common.IsCancellationError(err) {
 			errs <- datastore.NewWatchCanceledErr()
 			return
 		}
@@ -178,11 +174,11 @@ func (sd *spannerDatastore) watch(
 	}
 	defer reader.Close()
 
-	metadataForTransactionTag := map[string]map[string]any{}
+	metadataForTransactionTag := xsync.Map[string, TransactionMetadata]{}
 
 	addMetadataForTransactionTag := func(ctx context.Context, tracked *common.Changes[revisions.TimestampRevision, int64], revision revisions.TimestampRevision, transactionTag string) error {
-		if metadata, ok := metadataForTransactionTag[transactionTag]; ok {
-			return tracked.SetRevisionMetadata(ctx, revision, metadata)
+		if metadata, ok := metadataForTransactionTag.Load(transactionTag); ok {
+			return tracked.AddRevisionMetadata(ctx, revision, metadata)
 		}
 
 		// Otherwise, load the metadata from the transactions metadata table.
@@ -191,10 +187,11 @@ func (sd *spannerDatastore) watch(
 			return err
 		}
 
-		metadataForTransactionTag[transactionTag] = transactionMetadata
-		return tracked.SetRevisionMetadata(ctx, revision, transactionMetadata)
+		metadataForTransactionTag.Store(transactionTag, transactionMetadata)
+		return tracked.AddRevisionMetadata(ctx, revision, transactionMetadata)
 	}
 
+	// NOTE: the callback below might be called concurrently across partitions.
 	err = reader.Read(ctx, func(result *changestreams.ReadResult) error {
 		// See: https://cloud.google.com/spanner/docs/change-streams/details
 		for _, record := range result.ChangeRecords {

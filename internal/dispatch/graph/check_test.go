@@ -19,7 +19,6 @@ import (
 	log "github.com/authzed/spicedb/internal/logging"
 	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/testfixtures"
-	caveattypes "github.com/authzed/spicedb/pkg/caveats/types"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/genutil/mapz"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
@@ -171,7 +170,8 @@ func TestMaxDepth(t *testing.T) {
 	revision, err := common.UpdateRelationshipsInDatastore(ctx, ds, mutation)
 	require.NoError(err)
 
-	dispatch := NewLocalOnlyDispatcher(caveattypes.Default.TypeSet, 10, 100)
+	dispatch, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
+	require.NoError(err)
 
 	_, err = dispatch.DispatchCheck(ctx, &v1.DispatchCheckRequest{
 		ResourceRelation: RR("folder", "view").ToCoreRR(),
@@ -310,7 +310,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 		{
 			"basic union",
 			`definition user {}
-		
+
 		 	 definition document {
 				relation editor: user
 				relation viewer: user
@@ -328,7 +328,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 		{
 			"basic intersection",
 			`definition user {}
-		
+
 		 	 definition document {
 				relation editor: user
 				relation viewer: user
@@ -347,7 +347,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 		{
 			"basic exclusion",
 			`definition user {}
-		
+
 		 	 definition document {
 				relation editor: user
 				relation viewer: user
@@ -365,7 +365,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 		{
 			"basic union, multiple branches",
 			`definition user {}
-		
+
 		 	 definition document {
 				relation editor: user
 				relation viewer: user
@@ -384,7 +384,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 		{
 			"basic union no permission",
 			`definition user {}
-		
+
 		 	 definition document {
 				relation editor: user
 				relation viewer: user
@@ -400,7 +400,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 		{
 			"basic intersection no permission",
 			`definition user {}
-		
+
 		 	 definition document {
 				relation editor: user
 				relation viewer: user
@@ -418,7 +418,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 		{
 			"basic exclusion no permission",
 			`definition user {}
-		
+
 		 	 definition document {
 				relation banned: user
 				relation viewer: user
@@ -437,7 +437,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 		{
 			"exclusion with multiple branches",
 			`definition user {}
-		
+
 			 definition group {
 			 	relation member: user
 				relation banned: user
@@ -464,7 +464,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 		{
 			"intersection with multiple branches",
 			`definition user {}
-		
+
 			 definition group {
 			 	relation member: user
 				relation other: user
@@ -491,7 +491,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 		{
 			"exclusion with multiple branches no permission",
 			`definition user {}
-		
+
 			 definition group {
 			 	relation member: user
 				relation banned: user
@@ -519,7 +519,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 		{
 			"intersection with multiple branches no permission",
 			`definition user {}
-		
+
 			 definition group {
 			 	relation member: user
 				relation other: user
@@ -549,7 +549,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 			 definition organization {
 			 	relation member: user
 			 }
-		
+
 		 	 definition document {
 				relation orgs: organization
 				permission view = orgs->member
@@ -572,7 +572,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 			 definition organization {
 			 	relation member: user
 			 }
-		
+
 		 	 definition document {
 				relation orgs: organization
 				permission view = orgs.any(member)
@@ -595,7 +595,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 			 definition organization {
 			 	relation member: user
 			 }
-		
+
 		 	 definition document {
 				relation orgs: organization
 				permission view = orgs.all(member)
@@ -618,7 +618,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 			 definition organization {
 			 	relation member: user
 			 }
-		
+
 		 	 definition document {
 				relation orgs: organization
 				permission view = orgs.all(member)
@@ -646,7 +646,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 			 definition someotherresource {
 			  	relation member: user
   			}
-		
+
 		 	 definition document {
 				relation orgs: organization | someotherresource
 				permission view = orgs.all(member)
@@ -674,7 +674,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 			 definition someotherresource {
 			  	relation member: user
   			}
-		
+
 		 	 definition document {
 				relation orgs: organization | someotherresource
 				permission view = orgs.all(member)
@@ -703,7 +703,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 			 definition someotherresource {
 			  	relation member: user
   			}
-		
+
 		 	 definition document {
 				relation orgs: organization | someotherresource
 				permission view = orgs.all(member)
@@ -729,7 +729,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 			 definition organization {
 			 	relation member: user
 			 }
-		
+
 		 	 definition document {
 				relation orgs: organization
 				permission view = orgs.all(member)
@@ -751,7 +751,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 			 definition organization {
 			 	relation member: user
 			 }
-		
+
 		 	 definition document {
 				relation orgs: organization
 				permission view = orgs.all(member)
@@ -1292,7 +1292,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 			 }
 
   definition user {}
-  
+
   definition role {
     relation member: user with somecaveat
   }
@@ -1324,23 +1324,23 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 			name: "caveated_with_arrows",
 			schema: `
 			 definition user {}
-  
+
 			  definition office {
 				relation parent: office
 				relation manager: user
 				permission read = manager + parent->read
 			  }
-				  
+
 			  definition group {
 				relation parent: office
 				permission read = parent->read
 			  }
-				  
+
 			  definition document {
 				relation owner: group with equals
 				permission read = owner->read
 			  }
-				  
+
 			  caveat equals(actual string, required string) {
 				actual == required
 			  }
@@ -1369,23 +1369,23 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 			name: "caveated_nested_with_intersection_arrows",
 			schema: `
 			 definition user {}
-  
+
 			  definition office {
 				relation parent: office
 				relation manager: user
 				permission read = manager + parent.all(read)
 			  }
-				  
+
 			  definition group {
 				relation parent: office
 				permission read = parent.all(read)
 			  }
-				  
+
 			  definition document {
 				relation owner: group with equals
 				permission read = owner.all(read)
 			  }
-				  
+
 			  caveat equals(actual string, required string) {
 				actual == required
 			  }
@@ -1419,7 +1419,8 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 
 			require := require.New(t)
 
-			dispatcher := NewLocalOnlyDispatcher(caveattypes.Default.TypeSet, 10, 100)
+			dispatcher, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
+			require.NoError(err)
 
 			ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
 			require.NoError(err)
@@ -1446,7 +1447,7 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 				membership = r.Membership
 			}
 
-			require.Equal(tc.expectedPermissionship, membership, fmt.Sprintf("expected permissionship %s, got %s", tc.expectedPermissionship, membership))
+			require.Equal(tc.expectedPermissionship, membership, "expected permissionship %s, got %s", tc.expectedPermissionship, membership)
 
 			if tc.expectedCaveat != nil && tc.alternativeExpectedCaveat == nil {
 				require.NotEmpty(resp.ResultsByResourceId[tc.resource.ObjectID].Expression)
@@ -1600,7 +1601,7 @@ func TestCheckWithHints(t *testing.T) {
 		{
 			"no relationships",
 			`definition user {}
-		
+
 		 	 definition document {
 				relation editor: user
 				relation viewer: user
@@ -1615,7 +1616,7 @@ func TestCheckWithHints(t *testing.T) {
 		{
 			"no relationships with matching check hint",
 			`definition user {}
-		
+
 		 	 definition document {
 				relation editor: user
 				relation viewer: user
@@ -1632,7 +1633,7 @@ func TestCheckWithHints(t *testing.T) {
 		{
 			"no relationships with unrelated check hint",
 			`definition user {}
-		
+
 		 	 definition document {
 				relation editor: user
 				relation viewer: user
@@ -1649,7 +1650,7 @@ func TestCheckWithHints(t *testing.T) {
 		{
 			"no relationships with unrelated check hint due to subject",
 			`definition user {}
-		
+
 		 	 definition document {
 				relation editor: user
 				relation viewer: user
@@ -1666,7 +1667,7 @@ func TestCheckWithHints(t *testing.T) {
 		{
 			"no relationships with matching arrow check hint",
 			`definition user {}
-		
+
    			 definition organization {
 				relation member: user
 			 }
@@ -1686,7 +1687,7 @@ func TestCheckWithHints(t *testing.T) {
 		{
 			"no relationships with non matching tupleset arrow check hint",
 			`definition user {}
-		
+
    			 definition organization {
 				relation member: user
 			 }
@@ -1706,7 +1707,7 @@ func TestCheckWithHints(t *testing.T) {
 		{
 			"no relationships with non matching computed userset arrow check hint",
 			`definition user {}
-		
+
    			 definition organization {
 				relation member: user
 			 }
@@ -1924,7 +1925,8 @@ func TestCheckWithHints(t *testing.T) {
 
 			require := require.New(t)
 
-			dispatcher := NewLocalOnlyDispatcher(caveattypes.Default.TypeSet, 10, 100)
+			dispatcher, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
+			require.NoError(err)
 
 			ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
 			require.NoError(err)
@@ -1951,10 +1953,8 @@ func TestCheckWithHints(t *testing.T) {
 			if tc.expectedPermissionship {
 				require.True(ok)
 				require.Equal(v1.ResourceCheckResult_MEMBER, resp.ResultsByResourceId[tc.resource.ObjectID].Membership)
-			} else {
-				if ok {
-					require.Equal(v1.ResourceCheckResult_NOT_MEMBER, resp.ResultsByResourceId[tc.resource.ObjectID].Membership)
-				}
+			} else if ok {
+				require.Equal(v1.ResourceCheckResult_NOT_MEMBER, resp.ResultsByResourceId[tc.resource.ObjectID].Membership)
 			}
 		})
 	}
@@ -1964,7 +1964,8 @@ func TestCheckHintsPartialApplication(t *testing.T) {
 	t.Parallel()
 	require := require.New(t)
 
-	dispatcher := NewLocalOnlyDispatcher(caveattypes.Default.TypeSet, 10, 100)
+	dispatcher, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
+	require.NoError(err)
 
 	ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
 	require.NoError(err)
@@ -2010,7 +2011,8 @@ func TestCheckHintsPartialApplicationOverArrow(t *testing.T) {
 	t.Parallel()
 	require := require.New(t)
 
-	dispatcher := NewLocalOnlyDispatcher(caveattypes.Default.TypeSet, 10, 100)
+	dispatcher, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
+	require.NoError(err)
 
 	ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
 	require.NoError(err)
@@ -2063,7 +2065,8 @@ func newLocalDispatcherWithConcurrencyLimit(t testing.TB, concurrencyLimit uint1
 
 	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require.New(t))
 
-	dispatch := NewLocalOnlyDispatcher(caveattypes.Default.TypeSet, concurrencyLimit, 100)
+	dispatch, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
+	require.NoError(t, err)
 
 	cachingDispatcher, err := caching.NewCachingDispatcher(caching.DispatchTestCache(t), false, "", &keys.CanonicalKeyHandler{})
 	require.NoError(t, err)
@@ -2085,7 +2088,8 @@ func newLocalDispatcherWithSchemaAndRels(t testing.TB, schema string, rels []tup
 
 	ds, revision := testfixtures.DatastoreFromSchemaAndTestRelationships(rawDS, schema, rels, require.New(t))
 
-	dispatch := NewLocalOnlyDispatcher(caveattypes.Default.TypeSet, 10, 100)
+	dispatch, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
+	require.NoError(t, err)
 
 	cachingDispatcher, err := caching.NewCachingDispatcher(caching.DispatchTestCache(t), false, "", &keys.CanonicalKeyHandler{})
 	require.NoError(t, err)

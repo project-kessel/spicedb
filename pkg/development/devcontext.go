@@ -6,7 +6,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	humanize "github.com/dustin/go-humanize"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
@@ -141,12 +141,19 @@ func newDevContextWithDatastore(ctx context.Context, requestContext *devinterfac
 		return nil, nil, verr
 	}
 
+	params := graph.DispatcherParameters{
+		ConcurrencyLimits:      graph.SharedConcurrencyLimits(10),
+		DispatchChunkSize:      100,
+		TypeSet:                caveattypes.Default.TypeSet,
+		RelationshipChunkCache: nil, // Disable caching for devcontext
+	}
+
 	return &DevContext{
 		Ctx:            ctx,
 		Datastore:      ds,
 		CompiledSchema: compiled,
 		Revision:       currentRevision,
-		Dispatcher:     graph.NewLocalOnlyDispatcher(caveattypes.Default.TypeSet, 10, 100),
+		Dispatcher:     graph.MustNewLocalOnlyDispatcher(params),
 	}, nil, nil
 }
 
@@ -160,11 +167,11 @@ func (dc *DevContext) RunV1InMemoryService() (*grpc.ClientConn, func(), error) {
 	s := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
 			datastoremw.UnaryServerInterceptor(dc.Datastore),
-			consistency.UnaryServerInterceptor("development"),
+			consistency.UnaryServerInterceptor("development", consistency.TreatMismatchingTokensAsError),
 		),
 		grpc.ChainStreamInterceptor(
 			datastoremw.StreamServerInterceptor(dc.Datastore),
-			consistency.StreamServerInterceptor("development"),
+			consistency.StreamServerInterceptor("development", consistency.TreatMismatchingTokensAsError),
 		),
 	)
 	ps := v1svc.NewPermissionsServer(dc.Dispatcher, v1svc.PermissionsServerConfig{
@@ -272,11 +279,11 @@ func loadCompiled(
 		errWithSource, ok := spiceerrors.AsWithSourceError(cverr)
 		if ok {
 			// NOTE: zeroes are fine here to mean "unknown"
-			lineNumber, err := safecast.ToUint32(errWithSource.LineNumber)
+			lineNumber, err := safecast.Convert[uint32](errWithSource.LineNumber)
 			if err != nil {
 				log.Err(err).Msg("could not cast lineNumber to uint32")
 			}
-			columnPosition, err := safecast.ToUint32(errWithSource.ColumnPosition)
+			columnPosition, err := safecast.Convert[uint32](errWithSource.ColumnPosition)
 			if err != nil {
 				log.Err(err).Msg("could not cast columnPosition to uint32")
 			}
@@ -303,11 +310,11 @@ func loadCompiled(
 		if terr != nil {
 			errWithSource, ok := spiceerrors.AsWithSourceError(terr)
 			// NOTE: zeroes are fine here to mean "unknown"
-			lineNumber, err := safecast.ToUint32(errWithSource.LineNumber)
+			lineNumber, err := safecast.Convert[uint32](errWithSource.LineNumber)
 			if err != nil {
 				log.Err(err).Msg("could not cast lineNumber to uint32")
 			}
-			columnPosition, err := safecast.ToUint32(errWithSource.ColumnPosition)
+			columnPosition, err := safecast.Convert[uint32](errWithSource.ColumnPosition)
 			if err != nil {
 				log.Err(err).Msg("could not cast columnPosition to uint32")
 			}
@@ -343,11 +350,11 @@ func loadCompiled(
 		errWithSource, ok := spiceerrors.AsWithSourceError(tverr)
 		if ok {
 			// NOTE: zeroes are fine here to mean "unknown"
-			lineNumber, err := safecast.ToUint32(errWithSource.LineNumber)
+			lineNumber, err := safecast.Convert[uint32](errWithSource.LineNumber)
 			if err != nil {
 				log.Err(err).Msg("could not cast lineNumber to uint32")
 			}
-			columnPosition, err := safecast.ToUint32(errWithSource.ColumnPosition)
+			columnPosition, err := safecast.Convert[uint32](errWithSource.ColumnPosition)
 			if err != nil {
 				log.Err(err).Msg("could not cast columnPosition to uint32")
 			}

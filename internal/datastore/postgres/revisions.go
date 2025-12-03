@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/authzed/spicedb/internal/datastore/postgres/common"
@@ -181,11 +181,11 @@ func ParseRevisionString(revisionStr string) (rev datastore.Revision, err error)
 		decimalRev, decimalErr := parseRevisionDecimal(revisionStr)
 		if decimalErr != nil {
 			// If decimal ALSO had an error than it was likely just a mangled original input
-			return
+			return rev, err
 		}
 		return decimalRev, nil
 	}
-	return
+	return rev, err
 }
 
 func parseRevisionProto(revisionStr string) (datastore.Revision, error) {
@@ -199,7 +199,7 @@ func parseRevisionProto(revisionStr string) (datastore.Revision, error) {
 		return datastore.NoRevision, fmt.Errorf(errRevisionFormat, err)
 	}
 
-	xminInt, err := safecast.ToInt64(decoded.Xmin)
+	xminInt, err := safecast.Convert[int64](decoded.Xmin)
 	if err != nil {
 		return datastore.NoRevision, spiceerrors.MustBugf("could not cast xmin to int64")
 	}
@@ -209,7 +209,7 @@ func parseRevisionProto(revisionStr string) (datastore.Revision, error) {
 		xips = make([]uint64, len(decoded.RelativeXips))
 		for i, relativeXip := range decoded.RelativeXips {
 			xip := xminInt + relativeXip
-			uintXip, err := safecast.ToUint64(xip)
+			uintXip, err := safecast.Convert[uint64](xip)
 			if err != nil {
 				return datastore.NoRevision, spiceerrors.MustBugf("could not cast xip to int64")
 			}
@@ -217,7 +217,7 @@ func parseRevisionProto(revisionStr string) (datastore.Revision, error) {
 		}
 	}
 
-	xmax, err := safecast.ToUint64(xminInt + decoded.RelativeXmax)
+	xmax, err := safecast.Convert[uint64](xminInt + decoded.RelativeXmax)
 	if err != nil {
 		return datastore.NoRevision, spiceerrors.MustBugf("could not cast xmax to int64")
 	}
@@ -277,7 +277,7 @@ func parseRevisionDecimal(revisionStr string) (datastore.Revision, error) {
 	if xmax > xmin {
 		// Ensure that the delta is not too large to cause memory issues or a panic.
 		if xmax-xmin > MaxLegacyXIPDelta {
-			return nil, fmt.Errorf("received revision delta in excess of that expected; are you sure you're not passing a ZedToken from an incompatible datastore?")
+			return nil, errors.New("received revision delta in excess of that expected; are you sure you're not passing a ZedToken from an incompatible datastore?")
 		}
 
 		// TODO(jschorr): Remove this deprecated code path once we have per-datastore-marked ZedTokens.
@@ -296,7 +296,7 @@ func parseRevisionDecimal(revisionStr string) (datastore.Revision, error) {
 
 var emptyMetadata = map[string]any{}
 
-func createNewTransaction(ctx context.Context, tx pgx.Tx, metadata map[string]any) (newXID xid8, newSnapshot pgSnapshot, err error) {
+func createNewTransaction(ctx context.Context, tx pgx.Tx, metadata map[string]any) (newXID xid8, newSnapshot pgSnapshot, timestamp time.Time, err error) {
 	ctx, span := tracer.Start(ctx, "createNewTransaction")
 	defer span.End()
 
@@ -304,16 +304,16 @@ func createNewTransaction(ctx context.Context, tx pgx.Tx, metadata map[string]an
 		metadata = emptyMetadata
 	}
 
-	sql, args, err := createTxn.Values(metadata).Suffix("RETURNING " + schema.ColXID + ", " + schema.ColSnapshot).ToSql()
+	sql, args, err := createTxn.Values(metadata).Suffix("RETURNING " + schema.ColXID + ", " + schema.ColSnapshot + ", " + schema.ColTimestamp).ToSql()
 	if err != nil {
-		return
+		return newXID, newSnapshot, timestamp, err
 	}
 
-	cterr := tx.QueryRow(ctx, sql, args...).Scan(&newXID, &newSnapshot)
+	cterr := tx.QueryRow(ctx, sql, args...).Scan(&newXID, &newSnapshot, &timestamp)
 	if cterr != nil {
 		err = fmt.Errorf("error when trying to create a new transaction: %w", cterr)
 	}
-	return
+	return newXID, newSnapshot, timestamp, err
 }
 
 type postgresRevision struct {
@@ -386,27 +386,29 @@ func (pr postgresRevision) OptionalNanosTimestamp() (uint64, bool) {
 // for xmax and xip list values to save bytes when encoded as varint protos.
 // For example, snapshot 1001:1004:1001,1003 becomes 1000:3:0,2.
 func (pr postgresRevision) MarshalBinary() ([]byte, error) {
-	xminInt, err := safecast.ToInt64(pr.snapshot.xmin)
+	xminInt, err := safecast.Convert[int64](pr.snapshot.xmin)
 	if err != nil {
 		return nil, spiceerrors.MustBugf("could not safely cast snapshot xip to int64: %v", err)
 	}
 	relativeXips := make([]int64, len(pr.snapshot.xipList))
 	for i, xip := range pr.snapshot.xipList {
-		intXip, err := safecast.ToInt64(xip)
+		intXip, err := safecast.Convert[int64](xip)
 		if err != nil {
 			return nil, spiceerrors.MustBugf("could not safely cast snapshot xip to int64: %v", err)
 		}
 		relativeXips[i] = intXip - xminInt
 	}
 
-	relativeXmax, err := safecast.ToInt64(pr.snapshot.xmax)
+	relativeXmax, err := safecast.Convert[int64](pr.snapshot.xmax)
 	if err != nil {
 		return nil, spiceerrors.MustBugf("could not safely cast snapshot xmax to int64: %v", err)
 	}
 	protoRevision := implv1.PostgresRevision{
-		Xmin:         pr.snapshot.xmin,
-		RelativeXmax: relativeXmax - xminInt,
-		RelativeXips: relativeXips,
+		Xmin:              pr.snapshot.xmin,
+		RelativeXmax:      relativeXmax - xminInt,
+		RelativeXips:      relativeXips,
+		OptionalTxid:      pr.optionalTxID.Uint64,
+		OptionalTimestamp: pr.optionalNanosTimestamp,
 	}
 
 	return protoRevision.MarshalVT()

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 
 	log "github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/pkg/namespace"
@@ -41,11 +41,11 @@ func warningForPosition(warningName string, message string, sourceCode string, s
 	}
 
 	// NOTE: zeroes on failure are fine here.
-	lineNumber, err := safecast.ToUint32(sourcePosition.ZeroIndexedLineNumber)
+	lineNumber, err := safecast.Convert[uint32](sourcePosition.ZeroIndexedLineNumber)
 	if err != nil {
 		log.Err(err).Msg("could not cast lineNumber to uint32")
 	}
-	columnNumber, err := safecast.ToUint32(sourcePosition.ZeroIndexedColumnPosition)
+	columnNumber, err := safecast.Convert[uint32](sourcePosition.ZeroIndexedColumnPosition)
 	if err != nil {
 		log.Err(err).Msg("could not cast columnPosition to uint32")
 	}

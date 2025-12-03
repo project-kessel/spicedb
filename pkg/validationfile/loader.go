@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 
 	log "github.com/authzed/spicedb/internal/logging"
 	dsctx "github.com/authzed/spicedb/internal/middleware/datastore"
@@ -21,7 +24,6 @@ import (
 	"github.com/authzed/spicedb/pkg/schemadsl/input"
 	"github.com/authzed/spicedb/pkg/spiceerrors"
 	"github.com/authzed/spicedb/pkg/tuple"
-	"github.com/authzed/spicedb/pkg/validationfile/blocks"
 )
 
 // PopulatedValidationFile contains the fully parsed information from a validation file.
@@ -65,7 +67,7 @@ func PopulateFromFiles(ctx context.Context, ds datastore.Datastore, caveatTypeSe
 // PopulateFromFilesContents populates the given datastore with the namespaces and tuples found in
 // the validation file(s) contents specified.
 func PopulateFromFilesContents(ctx context.Context, ds datastore.Datastore, caveatTypeSet *caveattypes.TypeSet, filesContents map[string][]byte) (*PopulatedValidationFile, datastore.Revision, error) {
-	var schemaStr string
+	var schemaBuilder strings.Builder
 	var objectDefs []*core.NamespaceDefinition
 	var caveatDefs []*core.CaveatDefinition
 	var rels []tuple.Relationship
@@ -87,15 +89,53 @@ func PopulateFromFilesContents(ctx context.Context, ds datastore.Datastore, cave
 
 		// Disallow legacy sections.
 		if len(parsed.NamespaceConfigs) > 0 {
-			return nil, revision, fmt.Errorf("definitions must be specified in `schema`")
+			return nil, revision, errors.New("definitions must be specified in `schema`")
 		}
 
 		if len(parsed.ValidationTuples) > 0 {
-			return nil, revision, fmt.Errorf("relationships must be specified in `relationships`")
+			return nil, revision, errors.New("relationships must be specified in `relationships`")
+		}
+
+		if len(parsed.Schema.Schema) > 0 && len(parsed.SchemaFile) > 0 {
+			return nil, datastore.NoRevision, errors.New("only one of schema or schemaFile can be specified")
+		}
+
+		var inputSchema compiler.InputSchema
+		if len(parsed.SchemaFile) > 0 {
+			// Need to join the original filepath with the requested filepath
+			// to construct the path to the referenced schema file.
+			// NOTE: This does not allow for yaml files to transitively reference
+			// each other's schemaFile fields.
+			schemaPath := filepath.Join(filepath.Dir(filePath), parsed.SchemaFile)
+
+			if !filepath.IsLocal(schemaPath) {
+				// We want to prevent access of files that are outside of the folder
+				// where the command was originally invoked. This should do that.
+				return nil, datastore.NoRevision, fmt.Errorf("schema file %q is not local", schemaPath)
+			}
+
+			file, err := os.Open(schemaPath)
+			if err != nil {
+				return nil, datastore.NoRevision, fmt.Errorf("error when opening schema file %s: %w", schemaPath, err)
+			}
+			data, err := io.ReadAll(file)
+			if err != nil {
+				return nil, datastore.NoRevision, fmt.Errorf("error when reading schema file %s: %w", schemaPath, err)
+			}
+
+			inputSchema = compiler.InputSchema{
+				Source:       input.Source(schemaPath),
+				SchemaString: string(data),
+			}
+		} else {
+			inputSchema = compiler.InputSchema{
+				Source:       input.Source("schema"),
+				SchemaString: parsed.Schema.Schema,
+			}
 		}
 
 		// Compile the schema
-		compiled, err := CompileSchema(parsed.Schema, caveatTypeSet)
+		compiled, err := CompileSchema(inputSchema, caveatTypeSet)
 		if err != nil {
 			return nil, revision, err
 		}
@@ -104,7 +144,7 @@ func PopulateFromFilesContents(ctx context.Context, ds datastore.Datastore, cave
 		if compiled != nil {
 			defs := compiled.ObjectDefinitions
 			if len(defs) > 0 {
-				schemaStr += parsed.Schema.Schema + "\n\n"
+				schemaBuilder.WriteString(parsed.Schema.Schema + "\n\n")
 			}
 
 			log.Ctx(ctx).Info().Str("filePath", filePath).
@@ -181,17 +221,14 @@ func PopulateFromFilesContents(ctx context.Context, ds datastore.Datastore, cave
 		return nil, nil, err
 	}
 
-	return &PopulatedValidationFile{schemaStr, objectDefs, caveatDefs, rels, files}, revision, err
+	return &PopulatedValidationFile{schemaBuilder.String(), objectDefs, caveatDefs, rels, files}, revision, err
 }
 
-// CompileSchema takes a SchemaWithPosition and returns the compiled schema, or else an error.
+// CompileSchema takes an InputSchema and returns the compiled schema, or else an error.
 // TODO: this is probably the wrong place for this, in part because it's coupling to the compiler
 // implementation.
-func CompileSchema(schemaWithPosition blocks.SchemaWithPosition, cts *caveattypes.TypeSet) (*compiler.CompiledSchema, error) {
-	compiled, err := compiler.Compile(compiler.InputSchema{
-		Source:       input.Source("schema"),
-		SchemaString: schemaWithPosition.Schema,
-	}, compiler.AllowUnprefixedObjectType(), compiler.CaveatTypeSet(cts))
+func CompileSchema(schema compiler.InputSchema, cts *caveattypes.TypeSet) (*compiler.CompiledSchema, error) {
+	compiled, err := compiler.Compile(schema, compiler.AllowUnprefixedObjectType(), compiler.CaveatTypeSet(cts))
 	if err != nil {
 		var errWithContext compiler.WithContextError
 		if errors.As(err, &errWithContext) {
@@ -200,11 +237,11 @@ func CompileSchema(schemaWithPosition blocks.SchemaWithPosition, cts *caveattype
 				return nil, lerr
 			}
 
-			uintLine, err := safecast.ToUint64(line)
+			uintLine, err := safecast.Convert[uint64](line)
 			if err != nil {
 				return nil, err
 			}
-			uintCol, err := safecast.ToUint64(col)
+			uintCol, err := safecast.Convert[uint64](col)
 			if err != nil {
 				return nil, err
 			}

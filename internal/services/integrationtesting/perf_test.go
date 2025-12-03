@@ -1,5 +1,4 @@
 //go:build ci && docker && !skipintegrationtests
-// +build ci,docker,!skipintegrationtests
 
 package integrationtesting_test
 
@@ -10,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	"github.com/stretchr/testify/require"
+
+	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 
 	"github.com/authzed/spicedb/internal/datastore/spanner"
 	tf "github.com/authzed/spicedb/internal/testfixtures"
@@ -40,7 +40,8 @@ func TestBurst(t *testing.T) {
 				dsconfig.WithGCWindow(time.Duration(90_000_000_000_000)),
 				dsconfig.WithRevisionQuantization(10),
 				dsconfig.WithMaxRetries(50),
-				dsconfig.WithRequestHedgingEnabled(false)))
+				dsconfig.WithRequestHedgingEnabled(false),
+				dsconfig.WithWriteAcquisitionTimeout(5*time.Second)))
 			ds, revision := tf.StandardDatastoreWithData(ds, require.New(t))
 
 			conns, cleanup := testserver.TestClusterWithDispatch(t, 1, ds)
@@ -58,7 +59,7 @@ func TestBurst(t *testing.T) {
 					_, err := client.CheckPermission(context.Background(), &v1.CheckPermissionRequest{
 						Consistency: &v1.Consistency{
 							Requirement: &v1.Consistency_AtLeastAsFresh{
-								AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+								AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 							},
 						},
 						Resource:   rel.Resource,

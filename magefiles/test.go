@@ -1,230 +1,204 @@
 //go:build mage
+// +build mage
 
 package main
 
 import (
-	"context"
 	"fmt"
+	"io"
 	"os"
-	"strings"
+	"os/exec"
+	"path/filepath"
 
+	"github.com/cespare/xxhash/v2"
+	"github.com/jzelinskie/stringz"
 	"github.com/magefile/mage/mg"
 	"github.com/magefile/mage/sh"
+	"github.com/magefile/mage/target"
+	"github.com/samber/lo"
+	kind "sigs.k8s.io/kind/pkg/cluster"
+	"sigs.k8s.io/kind/pkg/cmd"
+	"sigs.k8s.io/kind/pkg/fs"
 )
+
+var Aliases = map[string]interface{}{
+	"test":     Test.Unit,
+	"e2e":      Test.E2e,
+	"generate": Gen.All,
+}
 
 type Test mg.Namespace
 
-var emptyEnv map[string]string
-
-// All Runs all test suites
-func (t Test) All(ctx context.Context) {
-	ds := Testds{}
-	c := Testcons{}
-	mg.CtxDeps(ctx, t.Unit, t.Integration, t.Steelthread, t.Image, t.Analyzers,
-		ds.Crdb, ds.Postgres, ds.Spanner, ds.Mysql,
-		c.Crdb, c.Spanner, c.Postgres, c.Mysql)
-}
-
-// UnitCover Runs the unit tests and generates a coverage report
-func (t Test) UnitCover(ctx context.Context) error {
-	if err := t.unit(ctx, true); err != nil {
-		return err
-	}
-	fmt.Println("Running coverage...")
-	return sh.RunV("go", "tool", "cover", "-html=coverage.txt")
-}
-
-// Unit Runs the unit tests
-func (t Test) Unit(ctx context.Context) error {
-	return t.unit(ctx, false)
-}
-
-func (Test) unit(ctx context.Context, coverage bool) error {
+// Runs the unit tests
+func (Test) Unit() error {
 	fmt.Println("running unit tests")
-	args := []string{"-tags", "ci,skipintegrationtests", "-race", "-timeout", "20m", "-count=1"}
-	if coverage {
-		fmt.Println("running unit tests with coverage")
-		args = append(args, coverageFlags...)
-	} else {
-		fmt.Println("running unit tests")
-	}
-	return goTest(ctx, "./...", args...)
+	return sh.RunV(goCmdForTests(), "test", "./...")
 }
 
-// Image Run tests that run the built image
-func (Test) Image(ctx context.Context) error {
-	mg.Deps(Build{}.Testimage)
-	return goDirTest(ctx, "./cmd/spicedb", "./...", "-tags", "docker,image")
-}
+const (
+	DefaultProposedGraphFile  = "proposed-update-graph.yaml"
+	DefaultValidatedGraphFile = "config/update-graph.yaml"
+)
 
-// Integration Run integration tests
-func (Test) Integration(ctx context.Context) error {
-	mg.Deps(checkDocker)
-	return goTest(ctx, "./internal/services/integrationtesting/...", "-tags", "ci,docker", "-timeout", "15m")
-}
+// Runs the end-to-end tests in a kind cluster
+func (Test) E2e() error {
+	mg.Deps(checkDocker, Gen{}.generateGraphIfSourcesChanged)
+	fmt.Println("running e2e tests")
 
-// Integration Run integration tests with cover
-func (Test) IntegrationCover(ctx context.Context) error {
-	mg.Deps(checkDocker)
-	args := []string{"-tags", "ci,docker", "-timeout", "15m", "-count=1"}
-	args = append(args, coverageFlags...)
-	return goTest(ctx, "./internal/services/integrationtesting/...", args...)
-}
+	proposedGraphFile := stringz.DefaultEmpty(os.Getenv("PROPOSED_GRAPH_FILE"), DefaultProposedGraphFile)
+	validatedGraphFile := stringz.DefaultEmpty(os.Getenv("VALIDATED_GRAPH_FILE"), DefaultValidatedGraphFile)
 
-// Steelthread Run steelthread tests
-func (Test) Steelthread(ctx context.Context) error {
-	fmt.Println("running steel thread tests")
-	return goTest(ctx, "./internal/services/steelthreadtesting/...", "-tags", "steelthread,docker,image,ci", "-timeout", "15m", "-v")
-}
-
-// RegenSteelthread Regenerate the steelthread tests
-func (Test) RegenSteelthread() error {
-	fmt.Println("regenerating steel thread tests")
-	return RunSh(goCmdForTests(), WithV(), WithDir("."), WithEnv(map[string]string{
-		"REGENERATE_STEEL_RESULTS": "true",
-	}), WithArgs("test", "./internal/services/steelthreadtesting/...", "-tags", "steelthread,docker,image,ci", "-timeout", "15m", "-v"))("go")
-}
-
-// Analyzers Run the analyzer unit tests
-func (Test) Analyzers(ctx context.Context) error {
-	return goDirTest(ctx, "./tools/analyzers", "./...")
-}
-
-// Wasm Run wasm browser tests
-func (Test) Wasm() error {
-	// build the test binary
-	if err := sh.RunWithV(map[string]string{"GOOS": "js", "GOARCH": "wasm"}, goCmdForTests(),
-		"test", "-c", "./pkg/development/wasm/..."); err != nil {
+	// calculate file paths relative to the e2e directory
+	e2eProposedGraph, err := filepath.Rel("e2e", proposedGraphFile)
+	if err != nil {
 		return err
 	}
-	defer os.Remove("wasm.test")
+	e2eValidatedGraph, err := filepath.Rel("e2e", validatedGraphFile)
+	if err != nil {
+		return err
+	}
 
-	// run the tests with wasmbrowsertests
-	return RunSh(goCmdForTests(), Tool())("run", "github.com/agnivade/wasmbrowsertest", "../wasm.test")
-}
+	if err := runDirWithV("magefiles", map[string]string{
+		"PROVISION":            "true",
+		"SPICEDB_CMD":          os.Getenv("SPICEDB_CMD"),
+		"SPICEDB_ENV_PREFIX":   os.Getenv("SPICEDB_ENV_PREFIX"),
+		"ARCHIVES":             os.Getenv("ARCHIVES"),
+		"IMAGES":               os.Getenv("IMAGES"),
+		"PROPOSED_GRAPH_FILE":  e2eProposedGraph,
+		"VALIDATED_GRAPH_FILE": e2eValidatedGraph,
+	}, "go", "tool", "github.com/onsi/ginkgo/v2/ginkgo", "--tags=e2e", "-p", "-r", "-vv", "--fail-fast", "--randomize-all", "--flake-attempts=3", "../e2e"); err != nil {
+		return err
+	}
 
-type Testds mg.Namespace
+	equal, err := fileEqual(proposedGraphFile, validatedGraphFile)
+	if err != nil {
+		return err
+	}
 
-// Crdb Run datastore tests for crdb
-func (tds Testds) Crdb(ctx context.Context) error {
-	return tds.crdb(ctx, "")
-}
+	if !equal {
+		fmt.Println("marking update graph as validated after successful test run")
+		return fs.CopyFile(proposedGraphFile, validatedGraphFile)
+	}
+	fmt.Println("no changes to update graph")
 
-func (tds Testds) CrdbVer(ctx context.Context, version string) error {
-	return tds.crdb(ctx, version)
-}
-
-func (Testds) crdb(ctx context.Context, version string) error {
-	return datastoreTest(ctx, "crdb", map[string]string{
-		"CRDB_TEST_VERSION": version,
-	})
-}
-
-// Spanner Run datastore tests for spanner
-func (Testds) Spanner(ctx context.Context) error {
-	return datastoreTest(ctx, "spanner", emptyEnv)
-}
-
-// Postgres Run datastore tests for postgres
-func (tds Testds) Postgres(ctx context.Context) error {
-	return tds.postgres(ctx, "")
-}
-
-func (tds Testds) PostgresVer(ctx context.Context, version string) error {
-	return tds.postgres(ctx, version)
-}
-
-func (Testds) postgres(ctx context.Context, version string) error {
-	return datastoreTest(ctx, "postgres", map[string]string{
-		"POSTGRES_TEST_VERSION": version,
-	}, "postgres")
-}
-
-// Pgbouncer Run datastore tests for postgres with Pgbouncer
-func (tds Testds) Pgbouncer(ctx context.Context) error {
-	return tds.pgbouncer(ctx, "")
-}
-
-func (tds Testds) PgbouncerVer(ctx context.Context, version string) error {
-	return tds.pgbouncer(ctx, version)
-}
-
-func (Testds) pgbouncer(ctx context.Context, version string) error {
-	return datastoreTest(ctx, "postgres", map[string]string{
-		"POSTGRES_TEST_VERSION": version,
-	}, "pgbouncer")
-}
-
-// Mysql Run datastore tests for mysql
-func (Testds) Mysql(ctx context.Context) error {
-	return datastoreTest(ctx, "mysql", emptyEnv)
-}
-
-func datastoreTest(ctx context.Context, datastore string, env map[string]string, tags ...string) error {
-	mergedTags := append([]string{"ci", "docker"}, tags...)
-	tagString := strings.Join(mergedTags, ",")
-	mg.Deps(checkDocker)
-	return goDirTestWithEnv(ctx, ".", fmt.Sprintf("./internal/datastore/%s/...", datastore), env, "-tags", tagString, "-timeout", "20m")
-}
-
-type Testcons mg.Namespace
-
-// Crdb Run consistency tests for crdb
-func (tc Testcons) Crdb(ctx context.Context) error {
-	return tc.crdb(ctx, "")
-}
-
-func (tc Testcons) CrdbVer(ctx context.Context, version string) error {
-	return tc.crdb(ctx, version)
-}
-
-func (Testcons) crdb(ctx context.Context, version string) error {
-	return consistencyTest(ctx, "cockroachdb", map[string]string{
-		"CRDB_TEST_VERSION": version,
-	})
-}
-
-// Spanner Run consistency tests for spanner
-func (Testcons) Spanner(ctx context.Context) error {
-	return consistencyTest(ctx, "spanner", emptyEnv)
-}
-
-func (tc Testcons) Postgres(ctx context.Context) error {
-	return tc.postgres(ctx, "")
-}
-
-func (tc Testcons) PostgresVer(ctx context.Context, version string) error {
-	return tc.postgres(ctx, version)
-}
-
-func (Testcons) postgres(ctx context.Context, version string) error {
-	return consistencyTest(ctx, "postgres", map[string]string{
-		"POSTGRES_TEST_VERSION": version,
-	})
-}
-
-// Pgbouncer Run consistency tests for postgres with pgbouncer
-// FIXME actually implement this
-func (Testcons) Pgbouncer() error {
-	println("postgres+pgbouncer consistency tests are not implemented")
 	return nil
 }
 
-func (Testcons) PgbouncerVer(version string) error {
-	println("postgres+pgbouncer consistency tests are not implemented")
+// Removes the kind cluster used for end-to-end tests
+func (Test) Clean_e2e() error {
+	mg.Deps(checkDocker)
+	fmt.Println("removing saved cluster state")
+	if err := os.RemoveAll("./e2e/cluster-state"); err != nil {
+		return err
+	}
+	fmt.Println("removing kind cluster")
+	return kind.NewProvider(
+		kind.ProviderWithLogger(cmd.NewLogger()),
+	).Delete("spicedb-operator-e2e", "")
+}
+
+type Gen mg.Namespace
+
+// Run all generators in parallel
+func (g Gen) All() error {
+	mg.Deps(g.Api, g.Graph)
 	return nil
 }
 
-// Mysql Run consistency tests for mysql
-func (Testcons) Mysql(ctx context.Context) error {
-	return consistencyTest(ctx, "mysql", emptyEnv)
+// Run kube api codegen
+func (Gen) Api() error {
+	fmt.Println("generating apis")
+	if err := runDirV("magefiles", "go", "tool", "sigs.k8s.io/controller-tools/cmd/controller-gen", "crd", "object", "rbac:roleName=spicedb-operator-role", "paths=../pkg/apis/...", "output:crd:artifacts:config=../config/crds", "output:rbac:artifacts:config=../config/rbac"); err != nil {
+		return err
+	}
+	if err := runDirV("magefiles", "go", "tool", "sigs.k8s.io/controller-tools/cmd/controller-gen", "rbac:roleName=spicedb-operator", "paths=../pkg/...", "output:rbac:dir=../config/rbac"); err != nil {
+		return err
+	}
+	// generate an extra copy of the crd to embed for bootstrapping
+	return runDirV("magefiles", "go", "tool", "sigs.k8s.io/controller-tools/cmd/controller-gen", "crd", "paths=../pkg/apis/...", "output:crd:artifacts:config=../pkg/crds")
 }
 
-func consistencyTest(ctx context.Context, datastore string, env map[string]string) error {
-	mg.Deps(checkDocker)
-	return goDirTestWithEnv(ctx, ".", "./internal/services/integrationtesting/...",
-		env,
-		"-tags", "ci,docker,datastoreconsistency",
-		"-timeout", "20m",
-		"-run", fmt.Sprintf("TestConsistencyPerDatastore/%s", datastore))
+// Generate the update graph
+func (Gen) Graph() error {
+	fmt.Println("generating update graph")
+	return sh.RunV("go", "generate", "./tools/generate-update-graph/main.go")
+}
+
+// If the update graph definition
+func (g Gen) generateGraphIfSourcesChanged() error {
+	regen, err := target.Dir("proposed-update-graph.yaml", "tools/generate-update-graph")
+	if err != nil {
+		return err
+	}
+	if regen {
+		return g.Graph()
+	}
+	return nil
+}
+
+func checkDocker() error {
+	if !hasBinary("docker") {
+		return fmt.Errorf("docker must be installed to run e2e tests")
+	}
+	err := sh.Run("docker", "ps")
+	if err == nil || sh.ExitStatus(err) == 0 {
+		return nil
+	}
+	return err
+}
+
+func hasBinary(binaryName string) bool {
+	_, err := exec.LookPath(binaryName)
+	return err == nil
+}
+
+func goCmdForTests() string {
+	if hasBinary("richgo") {
+		return "richgo"
+	}
+	return "go"
+}
+
+func fileEqual(a, b string) (bool, error) {
+	aFile, err := os.Open(a)
+	if err != nil {
+		return false, err
+	}
+	aHash := xxhash.New()
+	_, err = io.Copy(aHash, aFile)
+	if err != nil {
+		return false, err
+	}
+	bFile, err := os.Open(b)
+	if err != nil {
+		return false, err
+	}
+	bHash := xxhash.New()
+	_, err = io.Copy(bHash, bFile)
+	if err != nil {
+		return false, err
+	}
+
+	return aHash.Sum64() == bHash.Sum64(), nil
+}
+
+// run a command in a directory
+func runDirV(dir string, cmd string, args ...string) error {
+	c := exec.Command(cmd, args...)
+	c.Dir = dir
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	return c.Run()
+}
+
+// run a command in a directory
+func runDirWithV(dir string, env map[string]string, cmd string, args ...string) error {
+	c := exec.Command(cmd, args...)
+	c.Dir = dir
+	c.Env = append(os.Environ(), lo.MapToSlice(env, func(key string, value string) string {
+		return key + "=" + value
+	})...)
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	return c.Run()
 }

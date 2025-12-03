@@ -7,7 +7,7 @@ import (
 	"fmt"
 
 	sq "github.com/Masterminds/squirrel"
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	"github.com/jackc/pgx/v5"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
@@ -470,7 +470,7 @@ func (rwt *crdbReadWriteTXN) DeleteRelationships(ctx context.Context, filter *v1
 	}
 
 	rwt.relCountChange -= modified.RowsAffected()
-	rowsAffected, err := safecast.ToUint64(modified.RowsAffected())
+	rowsAffected, err := safecast.Convert[uint64](modified.RowsAffected())
 	if err != nil {
 		return 0, false, spiceerrors.MustBugf("could not cast RowsAffected to uint64: %v", err)
 	}
@@ -508,12 +508,16 @@ func (rwt *crdbReadWriteTXN) WriteNamespaces(ctx context.Context, newConfigs ...
 	return nil
 }
 
-func (rwt *crdbReadWriteTXN) DeleteNamespaces(ctx context.Context, nsNames ...string) error {
+func (rwt *crdbReadWriteTXN) DeleteNamespaces(ctx context.Context, nsNames []string, delOption datastore.DeleteNamespacesRelationshipsOption) error {
+	if len(nsNames) == 0 {
+		return nil
+	}
+
 	rwt.hasNonExpiredDeletionChange = true
 
 	querier := pgxcommon.QuerierFuncsFor(rwt.tx)
 	// For each namespace, check they exist and collect predicates for the
-	// "WHERE" clause to delete the namespaces and associated tuples.
+	// "WHERE" clause to delete the namespaces and (if requested) associated tuples.
 	nsClauses := make([]sq.Sqlizer, 0, len(nsNames))
 	tplClauses := make([]sq.Sqlizer, 0, len(nsNames))
 	for _, nsName := range nsNames {
@@ -541,18 +545,20 @@ func (rwt *crdbReadWriteTXN) DeleteNamespaces(ctx context.Context, nsNames ...st
 		return fmt.Errorf(errUnableToDeleteConfig, err)
 	}
 
-	deleteTupleSQL, deleteTupleArgs, err := rwt.queryDeleteTuples(nil).Where(sq.Or(tplClauses)).ToSql()
-	if err != nil {
-		return fmt.Errorf(errUnableToDeleteConfig, err)
-	}
+	if delOption == datastore.DeleteNamespacesAndRelationships {
+		deleteTupleSQL, deleteTupleArgs, err := rwt.queryDeleteTuples(nil).Where(sq.Or(tplClauses)).ToSql()
+		if err != nil {
+			return fmt.Errorf(errUnableToDeleteConfig, err)
+		}
 
-	modified, err := rwt.tx.Exec(ctx, deleteTupleSQL, deleteTupleArgs...)
-	if err != nil {
-		return fmt.Errorf(errUnableToDeleteConfig, err)
-	}
+		modified, err := rwt.tx.Exec(ctx, deleteTupleSQL, deleteTupleArgs...)
+		if err != nil {
+			return fmt.Errorf(errUnableToDeleteConfig, err)
+		}
 
-	numRowsDeleted := modified.RowsAffected()
-	rwt.relCountChange -= numRowsDeleted
+		numRowsDeleted := modified.RowsAffected()
+		rwt.relCountChange -= numRowsDeleted
+	}
 
 	return nil
 }

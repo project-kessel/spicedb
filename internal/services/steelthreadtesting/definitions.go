@@ -1,5 +1,4 @@
 //go:build steelthread
-// +build steelthread
 
 package steelthreadtesting
 
@@ -18,7 +17,12 @@ type steelThreadOperationCase struct {
 	resultsFileName string
 }
 
-type stOperation func(parameters map[string]any, client v1.PermissionsServiceClient) (any, error)
+type stClients struct {
+	PermissionsClient v1.PermissionsServiceClient
+	SchemaClient      v1.SchemaServiceClient
+}
+
+type stOperation func(parameters map[string]any, clients stClients) (any, error)
 
 var steelThreadTestCases = []steelThreadTestCase{
 	{
@@ -445,6 +449,229 @@ var steelThreadTestCases = []steelThreadTestCase{
 						`document:thirddoc#view@user:tom[unused:{"somecondition": 42}]`,
 						`document:thirddoc#view@user:fred[unused:{"somecondition": 42}]`,
 					},
+				},
+			},
+		},
+	},
+	{
+		name:     "write schema removal",
+		datafile: "basic-schema-and-data.yaml",
+		operations: []steelThreadOperationCase{
+			{
+				name:          "removes the group relation",
+				operationName: "writeSchema",
+				arguments: map[string]any{
+					"schema": `  definition user {}
+  definition user2 {}
+
+  definition group {
+    relation direct_member: user | group#member
+    relation admin: user
+    permission member = direct_member + admin
+  }
+
+  definition document {
+    relation editor: user2:*
+    relation viewer: user | user:*
+    permission view = viewer
+  }`,
+				},
+			},
+			{
+				name:          "removes the group type",
+				operationName: "writeSchema",
+				arguments: map[string]any{
+					"schema": `  definition user {}
+  definition user2 {}
+
+  definition document {
+    relation editor: user2:*
+    relation viewer: user | user:*
+    permission view = viewer
+  }`,
+				},
+			},
+			{
+				name:          "removes the wildcard on viewer",
+				operationName: "writeSchema",
+				arguments: map[string]any{
+					"schema": `definition user {}
+  definition user2 {}
+
+  definition document {
+    relation editor: user2:*
+    relation viewer: user
+    permission view = viewer
+  }`,
+				},
+			},
+			{
+				name:          "attempt to remove the user relation",
+				operationName: "writeSchema",
+				arguments: map[string]any{
+					"schema": `definition user {}
+  definition user2 {}
+
+  definition document {
+    relation editor: user2:*
+    relation viewer: user2
+    permission view = viewer
+  }`,
+				},
+			},
+			{
+				name:          "attempt to remove the user type",
+				operationName: "writeSchema",
+				arguments: map[string]any{
+					"schema": `definition user2 {}
+
+  definition document {
+    relation editor: user2:*
+    relation viewer: user
+    permission view = viewer
+  }
+					`,
+				},
+			},
+			{
+				name:          "attempt to remove the wildcard on the editor",
+				operationName: "writeSchema",
+				arguments: map[string]any{
+					"schema": `definition user {}
+  definition user2 {}
+
+  definition document {
+    relation editor: user2
+    relation viewer: user
+    permission view = viewer
+  }`,
+				},
+			},
+		},
+	},
+	{
+		// This case was found in the wild
+		name:     "remove relation on real schema",
+		datafile: "real-schema-and-data-with-many-relations.yaml",
+		operations: []steelThreadOperationCase{
+			{
+				operationName: "writeSchema",
+				arguments: map[string]any{
+					"schema": `
+use expiration
+
+definition user {}
+
+definition platform {}
+
+definition resource {
+	relation platform: platform
+
+	relation viewer: user | user:*
+}
+					`,
+				},
+			},
+		},
+	},
+	{
+		name:     "read relationships by resource",
+		datafile: "read-relationships-sorting.yaml",
+		operations: []steelThreadOperationCase{
+			{
+				name:          "cursored read by resource, page size 1",
+				operationName: "cursoredReadRelationships",
+				arguments: map[string]any{
+					"resource_type": "document",
+					"resource_id":   "target-doc",
+					"page_size":     1,
+				},
+			},
+			{
+				name:          "cursored read by resource, page size 2",
+				operationName: "cursoredReadRelationships",
+				arguments: map[string]any{
+					"resource_type": "document",
+					"resource_id":   "target-doc",
+					"page_size":     2,
+				},
+			},
+			{
+				name:          "cursored read by resource, page size 5",
+				operationName: "cursoredReadRelationships",
+				arguments: map[string]any{
+					"resource_type": "document",
+					"resource_id":   "target-doc",
+					"page_size":     5,
+				},
+			},
+			{
+				name:          "cursored read by resource, page size 10",
+				operationName: "cursoredReadRelationships",
+				arguments: map[string]any{
+					"resource_type": "document",
+					"resource_id":   "target-doc",
+					"page_size":     10,
+				},
+			},
+			{
+				name:          "cursored read by resource, page size 100",
+				operationName: "cursoredReadRelationships",
+				arguments: map[string]any{
+					"resource_type": "document",
+					"resource_id":   "target-doc",
+					"page_size":     100,
+				},
+			},
+		},
+	},
+	{
+		name:     "read relationships by subject",
+		datafile: "read-relationships-sorting.yaml",
+		operations: []steelThreadOperationCase{
+			{
+				name:          "cursored read by subject, page size 1",
+				operationName: "cursoredReadRelationships",
+				arguments: map[string]any{
+					"subject_type": "user",
+					"subject_id":   "target-user",
+					"page_size":    1,
+				},
+			},
+			{
+				name:          "cursored read by subject, page size 2",
+				operationName: "cursoredReadRelationships",
+				arguments: map[string]any{
+					"subject_type": "user",
+					"subject_id":   "target-user",
+					"page_size":    2,
+				},
+			},
+			{
+				name:          "cursored read by subject, page size 5",
+				operationName: "cursoredReadRelationships",
+				arguments: map[string]any{
+					"subject_type": "user",
+					"subject_id":   "target-user",
+					"page_size":    5,
+				},
+			},
+			{
+				name:          "cursored read by subject, page size 10",
+				operationName: "cursoredReadRelationships",
+				arguments: map[string]any{
+					"subject_type": "user",
+					"subject_id":   "target-user",
+					"page_size":    10,
+				},
+			},
+			{
+				name:          "cursored read by subject, page size 100",
+				operationName: "cursoredReadRelationships",
+				arguments: map[string]any{
+					"subject_type": "user",
+					"subject_id":   "target-user",
+					"page_size":    100,
 				},
 			},
 		},

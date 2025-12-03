@@ -3,6 +3,7 @@ package memdb
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -297,7 +298,11 @@ func (rwt *memdbReadWriteTx) WriteNamespaces(_ context.Context, newConfigs ...*c
 	return nil
 }
 
-func (rwt *memdbReadWriteTx) DeleteNamespaces(_ context.Context, nsNames ...string) error {
+func (rwt *memdbReadWriteTx) DeleteNamespaces(_ context.Context, nsNames []string, delOption datastore.DeleteNamespacesRelationshipsOption) error {
+	if len(nsNames) == 0 {
+		return nil
+	}
+
 	rwt.mustLock()
 	defer rwt.Unlock()
 
@@ -313,18 +318,20 @@ func (rwt *memdbReadWriteTx) DeleteNamespaces(_ context.Context, nsNames ...stri
 		}
 
 		if foundRaw == nil {
-			return fmt.Errorf("namespace not found")
+			return errors.New("namespace not found")
 		}
 
 		if err := tx.Delete(tableNamespace, foundRaw); err != nil {
 			return err
 		}
 
-		// Delete the relationships from the namespace
-		if _, _, err := rwt.deleteWithLock(tx, &v1.RelationshipFilter{
-			ResourceType: nsName,
-		}, 0); err != nil {
-			return fmt.Errorf("unable to delete relationships from deleted namespace: %w", err)
+		if delOption == datastore.DeleteNamespacesAndRelationships {
+			// Delete the relationships from the namespace
+			if _, _, err := rwt.deleteWithLock(tx, &v1.RelationshipFilter{
+				ResourceType: nsName,
+			}, 0); err != nil {
+				return fmt.Errorf("unable to delete relationships from deleted namespace: %w", err)
+			}
 		}
 	}
 
