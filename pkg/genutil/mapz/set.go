@@ -2,17 +2,18 @@ package mapz
 
 import (
 	"maps"
-	"slices"
 
 	"github.com/rs/zerolog"
 )
 
 // Set implements a very basic generic set.
+// NOT safe for concurrent use. Use xsync.NewMap for that.
 type Set[T comparable] struct {
 	values map[T]struct{}
 }
 
 // NewSet returns a new set.
+// NOT safe for concurrent use. Use xsync.NewMap for that.
 func NewSet[T comparable](items ...T) *Set[T] {
 	s := &Set[T]{
 		values: map[T]struct{}{},
@@ -146,7 +147,11 @@ func (s *Set[T]) AsSlice() []T {
 		return nil
 	}
 
-	return slices.Collect(maps.Keys(s.values))
+	values := make([]T, 0, len(s.values))
+	for value := range s.values {
+		values = append(values, value)
+	}
+	return values
 }
 
 // Len returns the length of the set.

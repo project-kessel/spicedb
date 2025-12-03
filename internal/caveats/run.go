@@ -3,12 +3,12 @@ package caveats
 import (
 	"context"
 	"errors"
-	"fmt"
 	"maps"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 
+	"github.com/authzed/spicedb/internal/telemetry/otelconv"
 	"github.com/authzed/spicedb/pkg/caveats"
 	caveattypes "github.com/authzed/spicedb/pkg/caveats/types"
 	"github.com/authzed/spicedb/pkg/datastore"
@@ -90,11 +90,11 @@ func (cr *CaveatRunner) PopulateCaveatDefinitionsForExpr(ctx context.Context, ex
 	caveatNames := mapz.NewSet[string]()
 	collectCaveatNames(expr, caveatNames)
 
-	span.AddEvent("collected caveat names")
-	span.SetAttributes(attribute.StringSlice("caveat-names", caveatNames.AsSlice()))
+	span.AddEvent(otelconv.EventCaveatsNamesCollected)
+	span.SetAttributes(attribute.StringSlice(otelconv.AttrCaveatsNames, caveatNames.AsSlice()))
 
 	if caveatNames.IsEmpty() {
-		return fmt.Errorf("received empty caveat expression")
+		return errors.New("received empty caveat expression")
 	}
 
 	// Remove any caveats already loaded.
@@ -111,7 +111,7 @@ func (cr *CaveatRunner) PopulateCaveatDefinitionsForExpr(ctx context.Context, ex
 	if err != nil {
 		return err
 	}
-	span.AddEvent("looked up caveats")
+	span.AddEvent(otelconv.EventCaveatsLookedUp)
 
 	for _, cd := range caveatDefs {
 		cr.caveatDefs[cd.Definition.GetName()] = cd.Definition
@@ -170,7 +170,7 @@ func (cr *CaveatRunner) runExpressionWithCaveats(
 	defer span.End()
 
 	if expr.GetCaveat() != nil {
-		span.SetAttributes(attribute.String("caveat-name", expr.GetCaveat().CaveatName))
+		span.SetAttributes(attribute.StringSlice(otelconv.AttrCaveatsNames, []string{expr.GetCaveat().CaveatName}))
 
 		caveat, compiled, err := cr.get(expr.GetCaveat().CaveatName)
 		if err != nil {
@@ -211,7 +211,7 @@ func (cr *CaveatRunner) runExpressionWithCaveats(
 	}
 
 	cop := expr.GetOperation()
-	span.SetAttributes(attribute.String("caveat-operation", cop.Op.String()))
+	span.SetAttributes(attribute.StringSlice(otelconv.AttrCaveatsOperations, []string{cop.Op.String()}))
 
 	var currentResult ExpressionResult = syntheticResult{
 		value:           cop.Op == core.CaveatOperation_AND,
@@ -415,7 +415,7 @@ func (sr syntheticResult) MissingVarNames() ([]string, error) {
 		return missingVarNames.AsSlice(), nil
 	}
 
-	return nil, fmt.Errorf("not a partial value")
+	return nil, errors.New("not a partial value")
 }
 
 func isFalseResult(result ExpressionResult) bool {

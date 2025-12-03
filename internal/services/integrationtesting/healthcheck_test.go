@@ -1,5 +1,4 @@
 //go:build ci && docker && !skipintegrationtests
-// +build ci,docker,!skipintegrationtests
 
 package integrationtesting_test
 
@@ -8,10 +7,11 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+
+	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 
 	"github.com/authzed/spicedb/internal/datastore/memdb"
 	tf "github.com/authzed/spicedb/internal/testfixtures"
@@ -42,7 +42,8 @@ func TestHealthCheck(t *testing.T) {
 				dsconfig.WithMaxRetries(50),
 				dsconfig.WithReadConnPool(*connPoolConfig),
 				dsconfig.WithWriteConnPool(*connPoolConfig),
-				dsconfig.WithRequestHedgingEnabled(false)))
+				dsconfig.WithRequestHedgingEnabled(false),
+				dsconfig.WithWriteAcquisitionTimeout(5*time.Second)))
 			ds, _ = tf.StandardDatastoreWithData(ds, require)
 
 			dispatchConns, cleanup := testserver.TestClusterWithDispatch(t, 2, ds)

@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"cloud.google.com/go/spanner"
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/authzed/spicedb/pkg/datastore"
@@ -27,16 +27,29 @@ var querySomeRandomRelationships = fmt.Sprintf(`SELECT %s FROM %s LIMIT 10`,
 
 const defaultEstimatedBytesPerRelationships = 20 // determined by looking at some sample clusters
 
+func (sd *spannerDatastore) UniqueID(ctx context.Context) (string, error) {
+	if sd.uniqueID.Load() == nil {
+		var uniqueID string
+		if err := sd.client.Single().Read(
+			ctx,
+			tableMetadata,
+			spanner.AllKeys(),
+			[]string{colUniqueID},
+		).Do(func(r *spanner.Row) error {
+			return r.Columns(&uniqueID)
+		}); err != nil {
+			return "", fmt.Errorf("unable to read unique ID: %w", err)
+		}
+		sd.uniqueID.Store(&uniqueID)
+		return uniqueID, nil
+	}
+
+	return *sd.uniqueID.Load(), nil
+}
+
 func (sd *spannerDatastore) Statistics(ctx context.Context) (datastore.Stats, error) {
-	var uniqueID string
-	if err := sd.client.Single().Read(
-		context.Background(),
-		tableMetadata,
-		spanner.AllKeys(),
-		[]string{colUniqueID},
-	).Do(func(r *spanner.Row) error {
-		return r.Columns(&uniqueID)
-	}); err != nil {
+	uniqueID, err := sd.UniqueID(ctx)
+	if err != nil {
 		return datastore.Stats{}, fmt.Errorf("unable to read unique ID: %w", err)
 	}
 
@@ -103,7 +116,7 @@ func (sd *spannerDatastore) Statistics(ctx context.Context) (datastore.Stats, er
 			}, nil
 		}
 
-		estimatedBytesPerRelationship, err = safecast.ToUint64(totalByteCount / totalRelationships)
+		estimatedBytesPerRelationship, err = safecast.Convert[uint64](totalByteCount / totalRelationships)
 		if err != nil {
 			return datastore.Stats{}, spiceerrors.MustBugf("could not cast estimated bytes to uint64: %v", err)
 		}
@@ -144,7 +157,7 @@ func (sd *spannerDatastore) Statistics(ctx context.Context) (datastore.Stats, er
 		}
 	}
 
-	uintByteEstimate, err := safecast.ToUint64(byteEstimate.Int64)
+	uintByteEstimate, err := safecast.Convert[uint64](byteEstimate.Int64)
 	if err != nil {
 		return datastore.Stats{}, spiceerrors.MustBugf("unable to cast byteEstimate to uint64: %v", err)
 	}

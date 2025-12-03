@@ -3,6 +3,7 @@ package v1
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/authzed/spicedb/internal/namespace"
 	"github.com/authzed/spicedb/internal/relationships"
 	"github.com/authzed/spicedb/internal/services/shared"
+	"github.com/authzed/spicedb/internal/telemetry/otelconv"
 	caveattypes "github.com/authzed/spicedb/pkg/caveats/types"
 	"github.com/authzed/spicedb/pkg/cursor"
 	"github.com/authzed/spicedb/pkg/datastore"
@@ -35,6 +37,7 @@ import (
 	"github.com/authzed/spicedb/pkg/genutil/mapz"
 	"github.com/authzed/spicedb/pkg/middleware/consistency"
 	dispatchv1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
+	"github.com/authzed/spicedb/pkg/schema"
 	"github.com/authzed/spicedb/pkg/tuple"
 	"github.com/authzed/spicedb/pkg/zedtoken"
 )
@@ -109,6 +112,12 @@ type PermissionsServerConfig struct {
 
 	// PerformanceInsightMetricsEnabled defines whether or not performance insight metrics are enabled.
 	PerformanceInsightMetricsEnabled bool
+
+	// EnableExperimentalLookupResources3 is used to enable LookupResources v3 for testing.
+	EnableExperimentalLookupResources3 bool // TODO: remove when LookupResources v3 is fully enabled
+
+	// ExperimentalQueryPlan enables the experimental query plan for API calls.
+	ExperimentalQueryPlan bool
 }
 
 // NewPermissionsServer creates a PermissionsServiceServer instance.
@@ -117,22 +126,24 @@ func NewPermissionsServer(
 	config PermissionsServerConfig,
 ) v1.PermissionsServiceServer {
 	configWithDefaults := PermissionsServerConfig{
-		MaxPreconditionsCount:            defaultIfZero(config.MaxPreconditionsCount, 1000),
-		MaxUpdatesPerWrite:               defaultIfZero(config.MaxUpdatesPerWrite, 1000),
-		MaximumAPIDepth:                  defaultIfZero(config.MaximumAPIDepth, 50),
-		StreamingAPITimeout:              defaultIfZero(config.StreamingAPITimeout, 30*time.Second),
-		MaxCaveatContextSize:             defaultIfZero(config.MaxCaveatContextSize, 4096),
-		MaxRelationshipContextSize:       defaultIfZero(config.MaxRelationshipContextSize, 25_000),
-		MaxDatastoreReadPageSize:         defaultIfZero(config.MaxDatastoreReadPageSize, 1_000),
-		MaxReadRelationshipsLimit:        defaultIfZero(config.MaxReadRelationshipsLimit, 1_000),
-		MaxDeleteRelationshipsLimit:      defaultIfZero(config.MaxDeleteRelationshipsLimit, 1_000),
-		MaxLookupResourcesLimit:          defaultIfZero(config.MaxLookupResourcesLimit, 1_000),
-		MaxBulkExportRelationshipsLimit:  defaultIfZero(config.MaxBulkExportRelationshipsLimit, 100_000),
-		DispatchChunkSize:                defaultIfZero(config.DispatchChunkSize, 100),
-		MaxCheckBulkConcurrency:          defaultIfZero(config.MaxCheckBulkConcurrency, 50),
-		CaveatTypeSet:                    caveattypes.TypeSetOrDefault(config.CaveatTypeSet),
-		ExpiringRelationshipsEnabled:     config.ExpiringRelationshipsEnabled,
-		PerformanceInsightMetricsEnabled: config.PerformanceInsightMetricsEnabled,
+		MaxPreconditionsCount:              defaultIfZero(config.MaxPreconditionsCount, 1000),
+		MaxUpdatesPerWrite:                 defaultIfZero(config.MaxUpdatesPerWrite, 1000),
+		MaximumAPIDepth:                    defaultIfZero(config.MaximumAPIDepth, 50),
+		StreamingAPITimeout:                defaultIfZero(config.StreamingAPITimeout, 30*time.Second),
+		MaxCaveatContextSize:               defaultIfZero(config.MaxCaveatContextSize, 4096),
+		MaxRelationshipContextSize:         defaultIfZero(config.MaxRelationshipContextSize, 25_000),
+		MaxDatastoreReadPageSize:           defaultIfZero(config.MaxDatastoreReadPageSize, 1_000),
+		MaxReadRelationshipsLimit:          defaultIfZero(config.MaxReadRelationshipsLimit, 1_000),
+		MaxDeleteRelationshipsLimit:        defaultIfZero(config.MaxDeleteRelationshipsLimit, 1_000),
+		MaxLookupResourcesLimit:            defaultIfZero(config.MaxLookupResourcesLimit, 1_000),
+		MaxBulkExportRelationshipsLimit:    defaultIfZero(config.MaxBulkExportRelationshipsLimit, 100_000),
+		DispatchChunkSize:                  defaultIfZero(config.DispatchChunkSize, 100),
+		MaxCheckBulkConcurrency:            defaultIfZero(config.MaxCheckBulkConcurrency, 50),
+		CaveatTypeSet:                      caveattypes.TypeSetOrDefault(config.CaveatTypeSet),
+		ExpiringRelationshipsEnabled:       config.ExpiringRelationshipsEnabled,
+		PerformanceInsightMetricsEnabled:   config.PerformanceInsightMetricsEnabled,
+		EnableExperimentalLookupResources3: config.EnableExperimentalLookupResources3,
+		ExperimentalQueryPlan:              config.ExperimentalQueryPlan,
 	}
 
 	return &permissionServer{
@@ -190,8 +201,21 @@ func (ps *permissionServer) ReadRelationships(req *v1.ReadRelationshipsRequest, 
 	}
 
 	ds := datastoremw.MustFromContext(ctx).SnapshotReader(atRevision)
-
 	if err := validateRelationshipsFilter(ctx, req.RelationshipFilter, ds); err != nil {
+		return ps.rewriteError(ctx, err)
+	}
+
+	// Build the internal filter from the API provided filter.
+	dsFilter, err := datastore.RelationshipsFilterFromPublicFilter(req.RelationshipFilter)
+	if err != nil {
+		return ps.rewriteError(ctx, fmt.Errorf("error filtering: %w", err))
+	}
+	ts := schema.NewTypeSystem(schema.ResolverForDatastoreReader(ds))
+
+	// Determine the traits for the upcoming QueryRelationships call; this also checks
+	// if the filter is *impossible*, in which case an error is returned.
+	traits, err := ts.PossibleTraitsForFilter(ctx, dsFilter)
+	if err != nil {
 		return ps.rewriteError(ctx, err)
 	}
 
@@ -233,19 +257,16 @@ func (ps *permissionServer) ReadRelationships(req *v1.ReadRelationshipsRequest, 
 		}
 	}
 
-	dsFilter, err := datastore.RelationshipsFilterFromPublicFilter(req.RelationshipFilter)
-	if err != nil {
-		return ps.rewriteError(ctx, fmt.Errorf("error filtering: %w", err))
-	}
-
 	it, err := pagination.NewPaginatedIterator(
 		ctx,
 		ds,
 		dsFilter,
 		pageSize,
-		options.ByResource,
+		options.ChooseEfficient,
 		startCursor,
 		queryshape.Varying,
+		options.WithSkipCaveats(!traits.AllowsCaveats),
+		options.WithSkipExpiration(!traits.AllowsExpiration),
 	)
 	if err != nil {
 		return ps.rewriteError(ctx, err)
@@ -304,7 +325,6 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 	ds := datastoremw.MustFromContext(ctx)
 
 	span := trace.SpanFromContext(ctx)
-	span.AddEvent("validating mutations")
 	// Ensure that the updates and preconditions are not over the configured limits.
 	if len(req.Updates) > int(ps.config.MaxUpdatesPerWrite) {
 		return nil, ps.rewriteError(
@@ -319,6 +339,8 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 			NewExceedsMaximumPreconditionsErr(uint64(len(req.OptionalPreconditions)), uint64(ps.config.MaxPreconditionsCount)),
 		)
 	}
+
+	includesExpiresAt := false
 
 	// Check for duplicate updates and create the set of caveat names to load.
 	updateRelationshipSet := mapz.NewSet[string]()
@@ -341,34 +363,37 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 		if !ps.config.ExpiringRelationshipsEnabled && update.Relationship.OptionalExpiresAt != nil {
 			return nil, ps.rewriteError(
 				ctx,
-				fmt.Errorf("support for expiring relationships is not enabled"),
+				errors.New("support for expiring relationships is not enabled"),
 			)
 		}
+
+		if update.Relationship.OptionalExpiresAt != nil {
+			includesExpiresAt = true
+		}
 	}
+	span.AddEvent(otelconv.EventRelationshipsMutationsValidated)
 
 	// Execute the write operation(s).
-	span.AddEvent("read write transaction")
 	relUpdates, err := tuple.UpdatesFromV1RelationshipUpdates(req.Updates)
 	if err != nil {
 		return nil, ps.rewriteError(ctx, err)
 	}
 
 	revision, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		span.AddEvent("preconditions")
-
 		// Validate the preconditions.
 		for _, precond := range req.OptionalPreconditions {
 			if err := validatePrecondition(ctx, precond, rwt); err != nil {
 				return err
 			}
 		}
+		span.AddEvent(otelconv.EventRelationshipsPreconditionsValidated)
 
 		// Validate the updates.
-		span.AddEvent("validate updates")
 		err := relationships.ValidateRelationshipUpdates(ctx, rwt, ps.config.CaveatTypeSet, relUpdates)
 		if err != nil {
 			return ps.rewriteError(ctx, err)
 		}
+		span.AddEvent(otelconv.EventRelationshipsUpdatesValidated)
 
 		dispatchCount, err := genutil.EnsureUInt32(len(req.OptionalPreconditions) + 1)
 		if err != nil {
@@ -380,14 +405,16 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 			DispatchCount: dispatchCount,
 		})
 
-		span.AddEvent("preconditions")
+		span.AddEvent(otelconv.EventRelationshipsPreconditionsValidated)
 		if err := checkPreconditions(ctx, rwt, req.OptionalPreconditions); err != nil {
 			return err
 		}
 
-		span.AddEvent("write relationships")
-		return rwt.WriteRelationships(ctx, relUpdates)
-	}, options.WithMetadata(req.OptionalTransactionMetadata))
+		errWrite := rwt.WriteRelationships(ctx, relUpdates)
+		span.AddEvent(otelconv.EventRelationshipsWritten)
+		return errWrite
+	}, options.WithMetadata(req.OptionalTransactionMetadata), options.WithIncludesExpiredAt(includesExpiresAt))
+	span.AddEvent(otelconv.EventRelationshipsReadWriteExecuted)
 	if err != nil {
 		return nil, ps.rewriteError(ctx, err)
 	}
@@ -402,8 +429,13 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 		writeUpdateCounter.WithLabelValues(v1.RelationshipUpdate_Operation_name[int32(kind)]).Observe(float64(count))
 	}
 
+	zedToken, err := zedtoken.NewFromRevision(ctx, revision, ds)
+	if err != nil {
+		return nil, ps.rewriteError(ctx, err)
+	}
+
 	return &v1.WriteRelationshipsResponse{
-		WrittenAt: zedtoken.MustNewFromRevision(revision),
+		WrittenAt: zedToken,
 	}, nil
 }
 
@@ -526,8 +558,13 @@ func (ps *permissionServer) DeleteRelationships(ctx context.Context, req *v1.Del
 		return nil, ps.rewriteError(ctx, err)
 	}
 
+	zedToken, err := zedtoken.NewFromRevision(ctx, revision, ds)
+	if err != nil {
+		return nil, ps.rewriteError(ctx, err)
+	}
+
 	return &v1.DeleteRelationshipsResponse{
-		DeletedAt:                 zedtoken.MustNewFromRevision(revision),
+		DeletedAt:                 zedToken,
 		DeletionProgress:          deletionProgress,
 		RelationshipsDeletedCount: deletedRelationshipCount,
 	}, nil

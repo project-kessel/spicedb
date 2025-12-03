@@ -7,12 +7,13 @@ import (
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/authzed/spicedb/internal/datastore/common"
 	"github.com/authzed/spicedb/internal/datastore/postgres/schema"
+	"github.com/authzed/spicedb/internal/sharederrors"
 	"github.com/authzed/spicedb/pkg/datastore"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	"github.com/authzed/spicedb/pkg/spiceerrors"
@@ -76,7 +77,7 @@ func (pgd *pgDatastore) Watch(
 
 	if !pgd.watchEnabled {
 		close(updates)
-		errs <- datastore.NewWatchDisabledErr("postgres must be run with track_commit_timestamp=on for watch to be enabled. See https://spicedb.dev/d/enable-watch-api-postgres")
+		errs <- datastore.NewWatchDisabledErr("postgres must be run with track_commit_timestamp=on for watch to be enabled. See " + sharederrors.PostgresEnableWatchErrorLink)
 		return updates, errs
 	}
 
@@ -128,13 +129,14 @@ func (pgd *pgDatastore) Watch(
 		for {
 			newTxns, err := pgd.getNewRevisions(ctx, currentTxn)
 			if err != nil {
-				if errors.Is(ctx.Err(), context.Canceled) {
+				switch {
+				case errors.Is(ctx.Err(), context.Canceled):
 					errs <- datastore.NewWatchCanceledErr()
-				} else if common.IsCancellationError(err) {
+				case common.IsCancellationError(err):
 					errs <- datastore.NewWatchCanceledErr()
-				} else if common.IsResettableError(err) {
+				case common.IsResettableError(err):
 					errs <- datastore.NewWatchTemporaryErr(err)
-				} else {
+				default:
 					errs <- err
 				}
 				return
@@ -143,13 +145,14 @@ func (pgd *pgDatastore) Watch(
 			if len(newTxns) > 0 {
 				changesToWrite, err := pgd.loadChanges(ctx, newTxns, options)
 				if err != nil {
-					if errors.Is(ctx.Err(), context.Canceled) {
+					switch {
+					case errors.Is(ctx.Err(), context.Canceled):
 						errs <- datastore.NewWatchCanceledErr()
-					} else if common.IsCancellationError(err) {
+					case common.IsCancellationError(err):
 						errs <- datastore.NewWatchCanceledErr()
-					} else if common.IsResettableError(err) {
+					case common.IsResettableError(err):
 						errs <- datastore.NewWatchTemporaryErr(err)
-					} else {
+					default:
 						errs <- err
 					}
 					return
@@ -220,7 +223,7 @@ func (pgd *pgDatastore) getNewRevisions(ctx context.Context, afterTX postgresRev
 				return fmt.Errorf("unable to decode new revision: %w", err)
 			}
 
-			nanosTimestamp, err := safecast.ToUint64(timestamp.UnixNano())
+			nanosTimestamp, err := safecast.Convert[uint64](timestamp.UnixNano())
 			if err != nil {
 				return spiceerrors.MustBugf("could not cast timestamp to uint64")
 			}
@@ -262,7 +265,7 @@ func (pgd *pgDatastore) loadChanges(ctx context.Context, revisions []postgresRev
 		txidToRevision[rev.optionalTxID.Uint64] = rev
 
 		if len(rev.optionalMetadata) > 0 {
-			if err := tracked.SetRevisionMetadata(ctx, rev, rev.optionalMetadata); err != nil {
+			if err := tracked.AddRevisionMetadata(ctx, rev, rev.optionalMetadata); err != nil {
 				return nil, err
 			}
 		}

@@ -2,6 +2,17 @@
 version: "2"
 run:
   allow-parallel-runners: true
+  build-tags:
+    - "ci"
+    - "datastoreconsistency"
+    - "docker"
+    - "image"
+    - "mage"
+    - "!skipintegrationtests"
+    - "steelthread"
+    - "pgbouncer"
+    - "postgres"
+#    - wasm
 linters:
   enable:
     - "bidichk"
@@ -10,13 +21,14 @@ linters:
     - "errcheck"
     - "errname"
     - "errorlint"
-#    - "gocritic" TODO: fix issues
+    - "gocritic"
     - "goprintffuncname"
     - "gosec"
-#    - "govet" TODO: fix issues
+    - "govet"
     - "importas"
     - "ineffassign"
     - "makezero"
+    - "perfsprint"
     - "prealloc"
     - "predeclared"
     - "promlinter"
@@ -25,7 +37,7 @@ linters:
     - "spancheck"
     - "staticcheck"
     - "tagalign"
-#    - "testifylint" TODO: fix issues
+    # - "testifylint" TODO: fix issues
     - "tparallel"
     - "unconvert"
     - "usetesting"
@@ -48,8 +60,7 @@ linters:
           disabled: true
     rowserrcheck:
       packages:
-        - "github.com/jmoiron/sqlx"
-        - "github.com/jackc/pgx"
+        - "github.com/jackc/pgx/v5"
   exclusions:
     generated: "lax"
     presets:
@@ -80,6 +91,9 @@ linters:
       - linters:
           - "revive"
         text: 'receiver-naming: receiver name \S+ should be consistent with previous receiver name \S+ for invalid-type'
+      - linters:
+          - "perfsprint"
+        path: '(.+)_test\.go'
     paths:
       - "third_party$"
       - "builtin$"

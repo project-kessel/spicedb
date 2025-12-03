@@ -2,8 +2,8 @@ package migrate
 
 import (
 	"context"
+	"errors"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -46,7 +46,7 @@ type fakeTx struct{}
 
 func TestContextError(t *testing.T) {
 	req := require.New(t)
-	ctx, cancelFunc := context.WithDeadline(t.Context(), time.Now().Add(1*time.Millisecond))
+	ctx, cancelFunc := context.WithCancel(context.Background())
 	m := NewManager[Driver[fakeConnPool, fakeTx], fakeConnPool, fakeTx]()
 
 	err := m.Register("1", "", func(ctx context.Context, conn fakeConnPool) error {
@@ -56,7 +56,7 @@ func TestContextError(t *testing.T) {
 	req.NoError(err)
 
 	err = m.Register("2", "1", func(ctx context.Context, conn fakeConnPool) error {
-		panic("the second migration should never be executed")
+		return errors.New("the second migration should never be executed")
 	}, noTxMigration)
 	req.NoError(err)
 
@@ -174,7 +174,7 @@ func TestIsHeadCompatible(t *testing.T) {
 	for _, tc := range testCases {
 		m := Manager[Driver[fakeConnPool, fakeTx], fakeConnPool, fakeTx]{migrations: tc.migrations}
 		compatible, err := m.IsHeadCompatible(tc.currentMigration)
-		req.Equal(compatible, tc.expectedResult)
+		req.Equal(tc.expectedResult, compatible)
 		req.Equal(tc.expectError, err != nil, err)
 	}
 }
@@ -190,7 +190,7 @@ func TestManagerEnsureVersionIsWritten(t *testing.T) {
 
 	writtenVer, err := drv.Version(t.Context())
 	req.NoError(err)
-	req.Equal("", writtenVer)
+	req.Empty(writtenVer)
 }
 
 var noMigrations = map[string]migration[fakeConnPool, fakeTx]{}

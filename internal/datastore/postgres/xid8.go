@@ -3,6 +3,7 @@ package postgres
 import (
 	"database/sql/driver"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -25,7 +26,7 @@ type xid8 struct {
 	Valid  bool
 }
 
-func newXid8(u uint64) xid8 {
+func NewXid8(u uint64) xid8 {
 	return xid8{
 		Uint64: u,
 		Valid:  true,
@@ -70,8 +71,7 @@ func (Uint64Codec) PlanEncode(_ *pgtype.Map, _ uint32, format int16, value any) 
 			return encodePlanUint64CodecBinaryUint64Valuer{}
 		}
 	case pgtype.TextFormatCode:
-		switch value.(type) {
-		case uint64:
+		if _, ok := value.(uint64); ok {
 			return encodePlanUint64CodecTextUint64{}
 		}
 	}
@@ -216,7 +216,7 @@ func (scanPlanTextAnyToUint64Scanner) Scan(src []byte, dst any) error {
 func codecScan(codec pgtype.Codec, m *pgtype.Map, oid uint32, format int16, src []byte, dst any) error {
 	scanPlan := codec.PlanScan(m, oid, format, dst)
 	if scanPlan == nil {
-		return fmt.Errorf("PlanScan did not find a plan")
+		return errors.New("PlanScan did not find a plan")
 	}
 	return scanPlan.Scan(src, dst)
 }

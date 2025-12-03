@@ -7,7 +7,7 @@ import (
 	"fmt"
 
 	sq "github.com/Masterminds/squirrel"
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	"github.com/jackc/pgx/v5"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
@@ -293,6 +293,10 @@ func (rwt *pgReadWriteTXN) WriteRelationships(ctx context.Context, mutations []t
 		}
 		rows.Close()
 
+		if rows.Err() != nil {
+			return handleWriteError(rows.Err())
+		}
+
 		// For each remaining TOUCH mutation, add a "DELETE" operation for the row such that if the caveat and/or
 		// context has changed, the row will be deleted. For ones in which the caveat name and/or context did cause
 		// the deletion (because of a change), the row will be re-inserted with the new caveat name and/or context.
@@ -390,6 +394,9 @@ func (rwt *pgReadWriteTXN) WriteRelationships(ctx context.Context, mutations []t
 		touchWriteHasValues = true
 	}
 	rows.Close()
+	if rows.Err() != nil {
+		return handleWriteError(rows.Err())
+	}
 
 	// If no INSERTs are necessary to update caveats, then nothing more to do.
 	if !touchWriteHasValues {
@@ -415,6 +422,10 @@ func handleWriteError(err error) error {
 		return common.NewSerializationError(fmt.Errorf("unable to write relationships due to a serialization error: [%w]; this typically indicates that a number of write transactions are contending over the same relationships; either reduce the contention or scale this Postgres instance", err))
 	}
 
+	if err.Error() == "extended protocol limited to 65535 parameters" {
+		return common.NewWriteOverLimitError(errors.New("the specified write operation exceeds the maximum size supported by this datastore; please reduce the number of updates in the call"))
+	}
+
 	return fmt.Errorf(errUnableToWriteRelationships, err)
 }
 
@@ -430,7 +441,7 @@ func (rwt *pgReadWriteTXN) DeleteRelationships(ctx context.Context, filter *v1.R
 
 func (rwt *pgReadWriteTXN) deleteRelationshipsWithLimit(ctx context.Context, filter *v1.RelationshipFilter, limit uint64) (uint64, bool, error) {
 	// validate the limit
-	intLimit, err := safecast.ToInt64(limit)
+	intLimit, err := safecast.Convert[int64](limit)
 	if err != nil {
 		return 0, false, fmt.Errorf("limit argument could not safely be cast to int64: %w", err)
 	}
@@ -496,7 +507,7 @@ func (rwt *pgReadWriteTXN) deleteRelationshipsWithLimit(ctx context.Context, fil
 		return 0, false, fmt.Errorf(errUnableToDeleteRelationships, err)
 	}
 
-	numDeleted, err := safecast.ToUint64(result.RowsAffected())
+	numDeleted, err := safecast.Convert[uint64](result.RowsAffected())
 	if err != nil {
 		return 0, false, fmt.Errorf("unable to cast rows affected to uint64: %w", err)
 	}
@@ -545,7 +556,7 @@ func (rwt *pgReadWriteTXN) deleteRelationships(ctx context.Context, filter *v1.R
 		return 0, fmt.Errorf(errUnableToDeleteRelationships, err)
 	}
 
-	numDeleted, err := safecast.ToUint64(result.RowsAffected())
+	numDeleted, err := safecast.Convert[uint64](result.RowsAffected())
 	if err != nil {
 		return 0, fmt.Errorf("unable to cast rows affected to uint64: %w", err)
 	}
@@ -595,7 +606,11 @@ func (rwt *pgReadWriteTXN) WriteNamespaces(ctx context.Context, newConfigs ...*c
 	return nil
 }
 
-func (rwt *pgReadWriteTXN) DeleteNamespaces(ctx context.Context, nsNames ...string) error {
+func (rwt *pgReadWriteTXN) DeleteNamespaces(ctx context.Context, nsNames []string, delOption datastore.DeleteNamespacesRelationshipsOption) error {
+	if len(nsNames) == 0 {
+		return nil
+	}
+
 	aliveFilter := func(original sq.SelectBuilder) sq.SelectBuilder {
 		return original.Where(sq.Eq{schema.ColDeletedXid: liveDeletedTxnID})
 	}
@@ -631,17 +646,19 @@ func (rwt *pgReadWriteTXN) DeleteNamespaces(ctx context.Context, nsNames ...stri
 		return fmt.Errorf(errUnableToDeleteConfig, err)
 	}
 
-	deleteTupleSQL, deleteTupleArgs, err := deleteNamespaceTuples.
-		Set(schema.ColDeletedXid, rwt.newXID).
-		Where(sq.Or(tplClauses)).
-		ToSql()
-	if err != nil {
-		return fmt.Errorf(errUnableToDeleteConfig, err)
-	}
+	if delOption == datastore.DeleteNamespacesAndRelationships {
+		deleteTupleSQL, deleteTupleArgs, err := deleteNamespaceTuples.
+			Set(schema.ColDeletedXid, rwt.newXID).
+			Where(sq.Or(tplClauses)).
+			ToSql()
+		if err != nil {
+			return fmt.Errorf(errUnableToDeleteConfig, err)
+		}
 
-	_, err = rwt.tx.Exec(ctx, deleteTupleSQL, deleteTupleArgs...)
-	if err != nil {
-		return fmt.Errorf(errUnableToDeleteConfig, err)
+		_, err = rwt.tx.Exec(ctx, deleteTupleSQL, deleteTupleArgs...)
+		if err != nil {
+			return fmt.Errorf(errUnableToDeleteConfig, err)
+		}
 	}
 
 	return nil
@@ -789,8 +806,8 @@ func exactRelationshipDifferentCaveatAndExpirationClause(r tuple.Relationship) s
 			schema.ColUsersetRelation:  r.Subject.Relation,
 		},
 		sq.Or{
-			sq.Expr(fmt.Sprintf(`%s IS DISTINCT FROM ?`, schema.ColCaveatContextName), caveatName),
-			sq.Expr(fmt.Sprintf(`%s IS DISTINCT FROM ?`, schema.ColExpiration), expiration),
+			sq.Expr(schema.ColCaveatContextName+" IS DISTINCT FROM ?", caveatName),
+			sq.Expr(schema.ColExpiration+" IS DISTINCT FROM ?", expiration),
 			sq.NotEq{
 				schema.ColCaveatContext: caveatContext,
 			},

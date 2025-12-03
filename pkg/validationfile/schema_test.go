@@ -4,10 +4,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	yamlv3 "gopkg.in/yaml.v3"
 
 	caveattypes "github.com/authzed/spicedb/pkg/caveats/types"
-	"github.com/authzed/spicedb/pkg/validationfile/blocks"
+	"github.com/authzed/spicedb/pkg/schemadsl/compiler"
+	"github.com/authzed/spicedb/pkg/schemadsl/input"
 )
 
 func TestParseSchema(t *testing.T) {
@@ -46,20 +46,19 @@ func TestParseSchema(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			schemaWithPosition := blocks.SchemaWithPosition{}
-			err := yamlv3.Unmarshal([]byte(tt.contents), &schemaWithPosition)
-			require.NoError(t, err)
-
-			compiled, err := CompileSchema(schemaWithPosition, caveattypes.Default.TypeSet)
+			inputSchema := compiler.InputSchema{
+				Source:       input.Source("schema"),
+				SchemaString: tt.contents,
+			}
+			compiled, err := CompileSchema(inputSchema, caveattypes.Default.TypeSet)
 			if tt.expectedError != "" {
-				require.NotNil(t, err)
+				require.Error(t, err)
 				require.Contains(t, err.Error(), tt.expectedError)
 			} else {
-				require.Nil(t, err)
+				require.NoError(t, err)
 				if tt.expectedDefCount > 0 {
 					require.NotNil(t, compiled)
-					require.Equal(t, tt.expectedDefCount, len(compiled.OrderedDefinitions))
-					require.Equal(t, tt.contents, schemaWithPosition.Schema)
+					require.Len(t, compiled.OrderedDefinitions, tt.expectedDefCount)
 				}
 			}
 		})

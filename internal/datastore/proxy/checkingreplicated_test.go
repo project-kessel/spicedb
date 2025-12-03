@@ -27,7 +27,7 @@ func TestCheckingReplicatedReaderFallsbackToPrimaryOnCheckRevisionFailure(t *tes
 	reader := replicated.SnapshotReader(revisionparsing.MustParseRevisionForTest("1"))
 	ns, err := reader.ListAllNamespaces(t.Context())
 	require.NoError(t, err)
-	require.Equal(t, 0, len(ns))
+	require.Empty(t, ns)
 
 	require.False(t, reader.(*checkingStableReader).chosePrimaryForTest)
 
@@ -35,7 +35,7 @@ func TestCheckingReplicatedReaderFallsbackToPrimaryOnCheckRevisionFailure(t *tes
 	reader = replicated.SnapshotReader(revisionparsing.MustParseRevisionForTest("2"))
 	ns, err = reader.ListAllNamespaces(t.Context())
 	require.NoError(t, err)
-	require.Equal(t, 0, len(ns))
+	require.Empty(t, ns)
 
 	require.True(t, reader.(*checkingStableReader).chosePrimaryForTest)
 }
@@ -50,7 +50,7 @@ func TestCheckingReplicatedReaderFallsbackToPrimaryOnRevisionNotAvailableError(t
 	reader := replicated.SnapshotReader(revisionparsing.MustParseRevisionForTest("3"))
 	ns, err := reader.LookupNamespacesWithNames(t.Context(), []string{"ns1"})
 	require.NoError(t, err)
-	require.Equal(t, 1, len(ns))
+	require.Len(t, ns, 1)
 }
 
 func TestReplicatedReaderReturnsExpectedError(t *testing.T) {
@@ -139,6 +139,10 @@ func (f fakeDatastore) OfflineFeatures() (*datastore.Features, error) {
 
 func (f fakeDatastore) Statistics(_ context.Context) (datastore.Stats, error) {
 	return datastore.Stats{}, nil
+}
+
+func (f fakeDatastore) UniqueID(_ context.Context) (string, error) {
+	return "fake", nil
 }
 
 func (f fakeDatastore) Close() error {

@@ -57,7 +57,7 @@ func (onr ObjectAndRelation) ToCoreONR() *core.ObjectAndRelation {
 }
 
 func (onr ObjectAndRelation) String() string {
-	return fmt.Sprintf("%s:%s#%s", onr.ObjectType, onr.ObjectID, onr.Relation)
+	return onr.ObjectType + ":" + onr.ObjectID + "#" + onr.Relation
 }
 
 // RelationshipReference represents a reference to a relationship, i.e. those portions
@@ -66,6 +66,10 @@ func (onr ObjectAndRelation) String() string {
 type RelationshipReference struct {
 	Resource ObjectAndRelation
 	Subject  ObjectAndRelation
+}
+
+func (rr RelationshipReference) String() string {
+	return rr.Resource.String() + "@" + rr.Subject.String()
 }
 
 // Relationship represents a relationship between two objects.
@@ -189,7 +193,7 @@ func (rr RelationReference) String() string {
 
 // ONR creates an ObjectAndRelation.
 func ONR(namespace, objectID, relation string) ObjectAndRelation {
-	spiceerrors.DebugAssert(func() bool {
+	spiceerrors.DebugAssertf(func() bool {
 		return namespace != "" && objectID != "" && relation != ""
 	}, "invalid ONR: %s %s %s", namespace, objectID, relation)
 
@@ -208,7 +212,7 @@ func ONRRef(namespace, objectID, relation string) *ObjectAndRelation {
 
 // RR creates a RelationReference.
 func RR(namespace, relation string) RelationReference {
-	spiceerrors.DebugAssert(func() bool {
+	spiceerrors.DebugAssertf(func() bool {
 		return namespace != "" && relation != ""
 	}, "invalid RR: %s %s", namespace, relation)
 

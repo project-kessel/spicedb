@@ -2,6 +2,7 @@ package testserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -77,7 +78,7 @@ type SafeManualResolverBuilder struct {
 
 func (b *SafeManualResolverBuilder) Build(target resolver.Target, cc resolver.ClientConn, opts resolver.BuildOptions) (resolver.Resolver, error) {
 	if target.URL.Scheme != TestResolverScheme {
-		return nil, fmt.Errorf("test resolver builder only works with test:// addresses")
+		return nil, errors.New("test resolver builder only works with test:// addresses")
 	}
 	var addrs []resolver.Address
 	addrVal, ok := b.addrs.Load(target.URL.Hostname())
@@ -196,7 +197,6 @@ func TestClusterWithDispatchAndCacheConfig(t testing.TB, size uint, ds datastore
 			server.WithDispatchMaxDepth(50),
 			server.WithMaximumPreconditionCount(1000),
 			server.WithMaximumUpdatesPerWrite(1000),
-			server.WithEnableExperimentalRelationshipExpiration(true),
 			server.WithGRPCServer(util.GRPCServerConfig{
 				Network: util.BufferedNetwork,
 				Enabled: true,
@@ -220,10 +220,15 @@ func TestClusterWithDispatchAndCacheConfig(t testing.TB, size uint, ds datastore
 		srv, err := server.NewConfigWithOptionsAndDefaults(serverOptions...).Complete(ctx)
 		require.NoError(t, err)
 
+		errCh := make(chan error, 1)
 		go func() {
-			require.NoError(t, srv.Run(ctx))
+			errCh <- srv.Run(ctx)
 		}()
-		cancelFuncs = append(cancelFuncs, cancel)
+		cancelFuncs = append(cancelFuncs, func() {
+			cancel()
+			err := <-errCh
+			require.NoError(t, err)
+		})
 
 		dialers = append(dialers, srv.DispatchNetDialContext)
 

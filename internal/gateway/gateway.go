@@ -2,22 +2,26 @@ package gateway
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	grpcfilters "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc/filters"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	httpfilters "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp/filters"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
+	protobuf "google.golang.org/protobuf/proto"
 
 	"github.com/authzed/authzed-go/proto"
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
@@ -37,11 +41,16 @@ var histogram = promauto.NewHistogramVec(prometheus.HistogramOpts{
 // configuration.
 func NewHandler(ctx context.Context, upstreamAddr, upstreamTLSCertPath string) (*CloserHandler, error) {
 	if upstreamAddr == "" {
-		return nil, fmt.Errorf("upstreamAddr must not be empty")
+		return nil, errors.New("upstreamAddr must not be empty")
+	}
+
+	// Always disable health check tracing to reduce trace volume
+	clientHandlerOpts := []otelgrpc.Option{
+		otelgrpc.WithFilter(grpcfilters.Not(grpcfilters.HealthCheck())),
 	}
 
 	opts := []grpc.DialOption{
-		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler(clientHandlerOpts...)),
 	}
 	if upstreamTLSCertPath == "" {
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -58,7 +67,12 @@ func NewHandler(ctx context.Context, upstreamAddr, upstreamTLSCertPath string) (
 		return nil, err
 	}
 
-	gwMux := runtime.NewServeMux(runtime.WithMetadata(OtelAnnotator), runtime.WithHealthzEndpoint(healthpb.NewHealthClient(healthConn)))
+	gwMux := runtime.NewServeMux(
+		runtime.WithMetadata(OtelAnnotator),
+		runtime.WithIncomingHeaderMatcher(customIncomingHeaderMatcher),
+		runtime.WithForwardResponseOption(forwardRequestIDTrailer),
+		runtime.WithHealthzEndpoint(healthpb.NewHealthClient(healthConn)),
+	)
 	schemaConn, err := registerHandler(ctx, gwMux, upstreamAddr, opts, v1.RegisterSchemaServiceHandler)
 	if err != nil {
 		return nil, err
@@ -85,7 +99,12 @@ func NewHandler(ctx context.Context, upstreamAddr, upstreamTLSCertPath string) (
 	}))
 	mux.Handle("/", gwMux)
 
-	finalHandler := promhttp.InstrumentHandlerDuration(histogram, otelhttp.NewHandler(mux, "gateway"))
+	// Always disable health check tracing to reduce trace volume
+	otelHandlerOpts := []otelhttp.Option{
+		otelhttp.WithFilter(httpfilters.Not(httpfilters.Path("/healthz"))),
+	}
+
+	finalHandler := promhttp.InstrumentHandlerDuration(histogram, otelhttp.NewHandler(mux, "gateway", otelHandlerOpts...))
 	return newCloserHandler(finalHandler, schemaConn, permissionsConn, watchConn, healthConn, experimentalConn), nil
 }
 
@@ -155,6 +174,40 @@ func OtelAnnotator(ctx context.Context, r *http.Request) metadata.MD {
 	metadataCopy := requestMetadata.Copy()
 
 	ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(r.Header))
-	otelgrpc.Inject(ctx, &metadataCopy, defaultOtelOpts...)
+	otelgrpc.Inject(ctx, &metadataCopy, defaultOtelOpts...) // nolint:staticcheck
 	return metadataCopy
+}
+
+// forwardRequestIDTrailer copies the request ID from gRPC trailers to HTTP response headers.
+// This ensures x-request-id is visible to HTTP clients while maintaining gRPC retry policy compliance.
+func forwardRequestIDTrailer(ctx context.Context, w http.ResponseWriter, _ protobuf.Message) error {
+	md, ok := runtime.ServerMetadataFromContext(ctx)
+	if !ok {
+		return nil
+	}
+
+	// Check standard x-request-id key
+	if vals := md.TrailerMD.Get("x-request-id"); len(vals) > 0 {
+		w.Header().Set("X-Request-Id", vals[0])
+		return nil
+	}
+
+	// Check legacy key for backward compatibility
+	if vals := md.TrailerMD.Get("io.spicedb.respmeta.requestid"); len(vals) > 0 {
+		w.Header().Set("X-Request-Id", vals[0])
+	}
+
+	return nil
+}
+
+// customIncomingHeaderMatcher translates HTTP headers to gRPC metadata.
+// This ensures x-request-id from HTTP clients is passed through without the
+// grpcgateway- prefix, making it available to the request ID middleware.
+func customIncomingHeaderMatcher(key string) (string, bool) {
+	switch strings.ToLower(key) {
+	case "x-request-id":
+		return "x-request-id", true
+	default:
+		return runtime.DefaultHeaderMatcher(key)
+	}
 }

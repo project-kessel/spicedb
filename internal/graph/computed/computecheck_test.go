@@ -808,7 +808,8 @@ func TestComputeCheckWithCaveats(t *testing.T) {
 			ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
 			require.NoError(t, err)
 
-			dispatch := graph.NewLocalOnlyDispatcher(caveattypes.Default.TypeSet, 10, 100)
+			dispatch, err := graph.NewLocalOnlyDispatcher(graph.MustNewDefaultDispatcherParametersForTesting())
+			require.NoError(t, err)
 			ctx := log.Logger.WithContext(datastoremw.ContextWithHandle(t.Context()))
 			require.NoError(t, datastoremw.SetInContext(ctx, ds))
 
@@ -835,7 +836,7 @@ func TestComputeCheckWithCaveats(t *testing.T) {
 					)
 
 					if r.error != "" {
-						require.NotNil(t, err, "missing required error: %s", r.error)
+						require.Error(t, err, "missing required error: %s", r.error)
 						require.Equal(t, err.Error(), r.error)
 					} else {
 						require.NoError(t, err)
@@ -859,7 +860,8 @@ func TestComputeCheckError(t *testing.T) {
 	ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
 	require.NoError(t, err)
 
-	dispatch := graph.NewLocalOnlyDispatcher(caveattypes.Default.TypeSet, 10, 100)
+	dispatch, err := graph.NewLocalOnlyDispatcher(graph.MustNewDefaultDispatcherParametersForTesting())
+	require.NoError(t, err)
 	ctx := log.Logger.WithContext(datastoremw.ContextWithHandle(t.Context()))
 	require.NoError(t, datastoremw.SetInContext(ctx, ds))
 
@@ -883,7 +885,8 @@ func TestComputeBulkCheck(t *testing.T) {
 	ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
 	require.NoError(t, err)
 
-	dispatch := graph.NewLocalOnlyDispatcher(caveattypes.Default.TypeSet, 10, 100)
+	dispatch, err := graph.NewLocalOnlyDispatcher(graph.MustNewDefaultDispatcherParametersForTesting())
+	require.NoError(t, err)
 	ctx := log.Logger.WithContext(datastoremw.ContextWithHandle(t.Context()))
 	require.NoError(t, datastoremw.SetInContext(ctx, ds))
 
@@ -925,10 +928,10 @@ func TestComputeBulkCheck(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	require.Equal(t, resp["direct"].Membership, v1.ResourceCheckResult_MEMBER)
-	require.Equal(t, resp["first"].Membership, v1.ResourceCheckResult_MEMBER)
-	require.Equal(t, resp["second"].Membership, v1.ResourceCheckResult_CAVEATED_MEMBER)
-	require.Equal(t, resp["third"].Membership, v1.ResourceCheckResult_NOT_MEMBER)
+	require.Equal(t, v1.ResourceCheckResult_MEMBER, resp["direct"].Membership)
+	require.Equal(t, v1.ResourceCheckResult_MEMBER, resp["first"].Membership)
+	require.Equal(t, v1.ResourceCheckResult_CAVEATED_MEMBER, resp["second"].Membership)
+	require.Equal(t, v1.ResourceCheckResult_NOT_MEMBER, resp["third"].Membership)
 }
 
 func writeCaveatedTuples(ctx context.Context, _ *testing.T, ds datastore.Datastore, schema string, updates []caveatedUpdate) (datastore.Revision, error) {

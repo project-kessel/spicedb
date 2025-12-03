@@ -1,8 +1,9 @@
+//go:generate go run go.uber.org/mock/mockgen -source dispatch.go -destination ./mocks/mock_dispatcher.go -package mocks Dispatcher
 package dispatch
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"github.com/rs/zerolog"
 
@@ -25,6 +26,7 @@ type Dispatcher interface {
 	Expand
 	LookupSubjects
 	LookupResources2
+	LookupResources3
 
 	// Close closes the dispatcher.
 	Close() error
@@ -36,6 +38,7 @@ type Dispatcher interface {
 // Check interface describes just the methods required to dispatch check requests.
 type Check interface {
 	// DispatchCheck submits a single check request and returns its result.
+	// The result should be safe to access from multiple goroutines.
 	DispatchCheck(ctx context.Context, req *v1.DispatchCheckRequest) (*v1.DispatchCheckResponse, error)
 }
 
@@ -52,6 +55,15 @@ type LookupResources2 interface {
 	DispatchLookupResources2(
 		req *v1.DispatchLookupResources2Request,
 		stream LookupResources2Stream,
+	) error
+}
+
+type LookupResources3Stream = Stream[*v1.DispatchLookupResources3Response]
+
+type LookupResources3 interface {
+	DispatchLookupResources3(
+		req *v1.DispatchLookupResources3Request,
+		stream LookupResources3Stream,
 	) error
 }
 
@@ -79,7 +91,7 @@ func CheckDepth(ctx context.Context, req DispatchableRequest) error {
 	metadata := req.GetMetadata()
 	if metadata == nil {
 		log.Ctx(ctx).Warn().Object("request", req).Msg("request missing metadata")
-		return fmt.Errorf("request missing metadata")
+		return errors.New("request missing metadata")
 	}
 
 	if metadata.DepthRemaining == 0 {

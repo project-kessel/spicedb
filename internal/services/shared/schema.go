@@ -2,6 +2,7 @@ package shared
 
 import (
 	"context"
+	"maps"
 
 	log "github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/internal/namespace"
@@ -204,9 +205,10 @@ func ApplySchemaChangesOverExisting(
 	}
 
 	if !validated.additiveOnly {
-		// Delete the removed namespaces.
+		// Delete the removed namespaces. Note that we don't need to delete relationships here,
+		// as that is handled by the ensureNoRelationshipsExistWithResourceType call above.
 		if removedObjectDefNames.Len() > 0 {
-			if err := rwt.DeleteNamespaces(ctx, removedObjectDefNames.AsSlice()...); err != nil {
+			if err := rwt.DeleteNamespaces(ctx, removedObjectDefNames.AsSlice(), datastore.DeleteNamespacesOnly); err != nil {
 				return nil, err
 			}
 		}
@@ -256,10 +258,18 @@ func sanityCheckCaveatChanges(
 	for _, delta := range diff.Deltas() {
 		switch delta.Type {
 		case caveatdiff.RemovedParameter:
-			return diff, NewSchemaWriteDataValidationError("cannot remove parameter `%s` on caveat `%s`", delta.ParameterName, caveatDef.Name)
+			return diff, NewSchemaWriteDataValidationError("cannot remove parameter `%s` on caveat `%s`", []any{delta.ParameterName, caveatDef.Name}, map[string]string{
+				"caveat_name":    caveatDef.Name,
+				"parameter_name": delta.ParameterName,
+				"operation":      "remove_parameter",
+			})
 
 		case caveatdiff.ParameterTypeChanged:
-			return diff, NewSchemaWriteDataValidationError("cannot change the type of parameter `%s` on caveat `%s`", delta.ParameterName, caveatDef.Name)
+			return diff, NewSchemaWriteDataValidationError("cannot change the type of parameter `%s` on caveat `%s`", []any{delta.ParameterName, caveatDef.Name}, map[string]string{
+				"caveat_name":    caveatDef.Name,
+				"parameter_name": delta.ParameterName,
+				"operation":      "change_parameter_type",
+			})
 		}
 	}
 
@@ -274,13 +284,18 @@ func ensureNoRelationshipsExistWithResourceType(ctx context.Context, rwt datasto
 		datastore.RelationshipsFilter{OptionalResourceType: namespaceName},
 		options.WithLimit(options.LimitOne),
 		options.WithQueryShape(queryshape.FindResourceOfType),
+		options.WithSkipCaveats(true),
 	)
 	return errorIfTupleIteratorReturnsTuples(
 		ctx,
 		qy,
 		qyErr,
-		"cannot delete object definition `%s`, as a relationship exists under it",
-		namespaceName,
+		"cannot delete object definition `%s`, as at least one relationship exists under it",
+		[]any{namespaceName},
+		map[string]string{
+			"resource_type": namespaceName,
+			"operation":     "delete_object_definition",
+		},
 	)
 }
 
@@ -321,21 +336,10 @@ func sanityCheckNamespaceChanges(
 
 			subjectSelectors := make([]datastore.SubjectsSelector, 0, len(previousRelation.TypeInformation.AllowedDirectRelations))
 			for _, allowedType := range previousRelation.TypeInformation.AllowedDirectRelations {
-				if allowedType.GetRelation() == datastore.Ellipsis {
-					subjectSelectors = append(subjectSelectors, datastore.SubjectsSelector{
-						OptionalSubjectType: allowedType.Namespace,
-						RelationFilter: datastore.SubjectRelationFilter{
-							IncludeEllipsisRelation: true,
-						},
-					})
-				} else {
-					subjectSelectors = append(subjectSelectors, datastore.SubjectsSelector{
-						OptionalSubjectType: allowedType.Namespace,
-						RelationFilter: datastore.SubjectRelationFilter{
-							NonEllipsisRelation: allowedType.GetRelation(),
-						},
-					})
-				}
+				subjectSelectors = append(subjectSelectors, datastore.SubjectsSelector{
+					OptionalSubjectType: allowedType.Namespace,
+					RelationFilter:      subjectRelationFilterForAllowedType(allowedType),
+				})
 			}
 
 			qy, qyErr := rwt.QueryRelationships(
@@ -346,50 +350,62 @@ func sanityCheckNamespaceChanges(
 					OptionalSubjectsSelectors: subjectSelectors,
 				},
 				options.WithLimit(options.LimitOne),
-				options.WithQueryShape(queryshape.FindResourceOfTypeAndRelation),
+				options.WithQueryShape(queryshape.FindResourceAndSubjectWithRelations),
+				options.WithSkipCaveats(true),
 			)
 
 			err = errorIfTupleIteratorReturnsTuples(
 				ctx,
 				qy,
 				qyErr,
-				"cannot delete relation `%s` in object definition `%s`, as a relationship exists under it", delta.RelationName, nsdef.Name)
+				"cannot delete relation `%s` in object definition `%s`, as at least one relationship exists under it",
+				[]any{delta.RelationName, nsdef.Name},
+				map[string]string{
+					"resource_type": nsdef.Name,
+					"relation":      delta.RelationName,
+					"operation":     "delete_relation",
+				},
+			)
 			if err != nil {
 				return diff, err
 			}
 
 			// Also check for right sides of tuples.
+			spiceerrors.DebugAssertf(func() bool {
+				return delta.RelationName != tuple.Ellipsis && delta.RelationName != ""
+			}, "relation name should not be empty or ellipsis when checking for reverse relationships")
+
 			qy, qyErr = rwt.ReverseQueryRelationships(
 				ctx,
 				datastore.SubjectsFilter{
-					SubjectType: nsdef.Name,
-					RelationFilter: datastore.SubjectRelationFilter{
-						NonEllipsisRelation: delta.RelationName,
-					},
+					SubjectType:    nsdef.Name,
+					RelationFilter: datastore.SubjectRelationFilter{}.WithRelation(delta.RelationName),
 				},
 				options.WithLimitForReverse(options.LimitOne),
 				options.WithQueryShapeForReverse(queryshape.FindSubjectOfTypeAndRelation),
+				options.WithSkipCaveatsForReverse(true),
 			)
 			err = errorIfTupleIteratorReturnsTuples(
 				ctx,
 				qy,
 				qyErr,
-				"cannot delete relation `%s` in object definition `%s`, as a relationship references it", delta.RelationName, nsdef.Name)
+				"cannot delete relation `%s` in object definition `%s`, as at least one relationship references it as part of a subject",
+				[]any{delta.RelationName, nsdef.Name},
+				map[string]string{
+					"resource_type": nsdef.Name,
+					"relation":      delta.RelationName,
+					"operation":     "delete_relation_reverse_check",
+				},
+			)
 			if err != nil {
 				return diff, err
 			}
 
 		case nsdiff.RelationAllowedTypeRemoved:
 			var optionalSubjectIds []string
-			var relationFilter datastore.SubjectRelationFilter
 			var optionalCaveatNameFilter datastore.CaveatNameFilter
-
 			if delta.AllowedType.GetPublicWildcard() != nil {
 				optionalSubjectIds = []string{tuple.PublicWildcard}
-			} else {
-				relationFilter = datastore.SubjectRelationFilter{
-					NonEllipsisRelation: delta.AllowedType.GetRelation(),
-				}
 			}
 
 			if delta.AllowedType.GetRequiredCaveat() != nil && delta.AllowedType.GetRequiredCaveat().CaveatName != "" {
@@ -412,7 +428,7 @@ func sanityCheckNamespaceChanges(
 						{
 							OptionalSubjectType: delta.AllowedType.Namespace,
 							OptionalSubjectIds:  optionalSubjectIds,
-							RelationFilter:      relationFilter,
+							RelationFilter:      subjectRelationFilterForAllowedType(delta.AllowedType),
 						},
 					},
 					OptionalCaveatNameFilter: optionalCaveatNameFilter,
@@ -426,7 +442,14 @@ func sanityCheckNamespaceChanges(
 				qyr,
 				qyrErr,
 				"cannot remove allowed type `%s` from relation `%s` in object definition `%s`, as a relationship exists with it",
-				schema.SourceForAllowedRelation(delta.AllowedType), delta.RelationName, nsdef.Name)
+				[]any{schema.SourceForAllowedRelation(delta.AllowedType), delta.RelationName, nsdef.Name},
+				map[string]string{
+					"resource_type": nsdef.Name,
+					"relation":      delta.RelationName,
+					"allowed_type":  schema.SourceForAllowedRelation(delta.AllowedType),
+					"operation":     "remove_allowed_type",
+				},
+			)
 			if err != nil {
 				return diff, err
 			}
@@ -435,18 +458,44 @@ func sanityCheckNamespaceChanges(
 	return diff, nil
 }
 
+func subjectRelationFilterForAllowedType(allowedType *core.AllowedRelation) datastore.SubjectRelationFilter {
+	rel := allowedType.GetRelation()
+	if allowedType.GetPublicWildcard() != nil {
+		// NOTE: wildcards are always stored as `...` in the relationship
+		rel = tuple.Ellipsis
+	}
+	return datastore.SubjectRelationFilter{}.WithRelation(rel)
+}
+
 // errorIfTupleIteratorReturnsTuples takes a tuple iterator and any error that was generated
 // when the original iterator was created, and returns an error if iterator contains any tuples.
-func errorIfTupleIteratorReturnsTuples(_ context.Context, qy datastore.RelationshipIterator, qyErr error, message string, args ...any) error {
+func errorIfTupleIteratorReturnsTuples(_ context.Context, qy datastore.RelationshipIterator, qyErr error, message string, args []any, metadata map[string]string) error {
 	if qyErr != nil {
 		return qyErr
 	}
 
-	for _, err := range qy {
+	for rel, err := range qy {
 		if err != nil {
 			return err
 		}
-		return NewSchemaWriteDataValidationError(message, args...)
+
+		strValue, err := tuple.String(rel)
+		if err != nil {
+			return err
+		}
+
+		// Create metadata with relationship information
+		fullMetadata := maps.Clone(metadata)
+		if fullMetadata == nil {
+			fullMetadata = make(map[string]string)
+		}
+		fullMetadata["relationship"] = strValue
+		// NOTE: gocritic doesn't like this form of an append,
+		// but creating a new slice of []any and then running it through
+		// the rest of the code produces different error messages,
+		// so we're leaving it as-is
+		newArgs := append(args, strValue) //nolint:gocritic
+		return NewSchemaWriteDataValidationError(message+": %s", newArgs, fullMetadata)
 	}
 
 	return nil

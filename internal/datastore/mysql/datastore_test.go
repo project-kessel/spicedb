@@ -1,5 +1,4 @@
 //go:build ci && docker
-// +build ci,docker
 
 package mysql
 
@@ -19,6 +18,7 @@ import (
 	"github.com/authzed/spicedb/internal/datastore/mysql/migrations"
 	"github.com/authzed/spicedb/internal/datastore/proxy/indexcheck"
 	"github.com/authzed/spicedb/internal/datastore/revisions"
+	"github.com/authzed/spicedb/internal/sharederrors"
 	"github.com/authzed/spicedb/internal/testfixtures"
 	testdatastore "github.com/authzed/spicedb/internal/testserver/datastore"
 	"github.com/authzed/spicedb/pkg/datastore"
@@ -74,6 +74,7 @@ var defaultOptions = []Option{
 	GCInterval(0 * time.Second),
 	DebugAnalyzeBeforeStatistics(),
 	OverrideLockWaitTimeout(1),
+	WithEnablePrometheusStats(true),
 }
 
 type datastoreTestFunc func(t *testing.T, ds datastore.Datastore)
@@ -103,7 +104,7 @@ func createMultiDatastoreTest(b testdatastore.RunningEngineForTest, tf multiData
 			ds, err := newMySQLDatastore(ctx, uri, primaryInstanceID, options...)
 			require.NoError(t, err)
 
-			ds2, err := newMySQLDatastore(ctx, uri, primaryInstanceID, options...)
+			ds2, err := newMySQLDatastore(ctx, uri, 1, options...)
 			require.NoError(t, err)
 
 			secondDS = ds2
@@ -117,7 +118,7 @@ func createMultiDatastoreTest(b testdatastore.RunningEngineForTest, tf multiData
 
 func TestMySQLDatastoreDSNWithoutParseTime(t *testing.T) {
 	_, err := NewMySQLDatastore(context.Background(), "root:password@(localhost:1234)/mysql")
-	require.ErrorContains(t, err, "https://spicedb.dev/d/parse-time-mysql")
+	require.ErrorContains(t, err, sharederrors.MySQLParseErrorLink)
 }
 
 func TestMySQL8Datastore(t *testing.T) {
@@ -137,12 +138,8 @@ func additionalMySQLTests(t *testing.T, b testdatastore.RunningEngineForTest) {
 	prometheus.DefaultGatherer = reg
 	prometheus.DefaultRegisterer = reg
 
-	t.Run("DatabaseSeeding", createDatastoreTest(b, DatabaseSeedingTest))
-	t.Run("PrometheusCollector", createDatastoreTest(
-		b,
-		PrometheusCollectorTest,
-		WithEnablePrometheusStats(true),
-	))
+	t.Run("DatabaseSeeding", createDatastoreTest(b, DatabaseSeedingTest, defaultOptions...))
+	t.Run("PrometheusCollector", createDatastoreTest(b, PrometheusCollectorTest, defaultOptions...))
 	t.Run("GarbageCollection", createDatastoreTest(b, GarbageCollectionTest, defaultOptions...))
 	t.Run("GarbageCollectionByTime", createDatastoreTest(b, GarbageCollectionByTimeTest, defaultOptions...))
 	t.Run("ChunkedGarbageCollection", createDatastoreTest(b, ChunkedGarbageCollectionTest, defaultOptions...))
@@ -779,6 +776,9 @@ func TestMySQLMigrations(t *testing.T) {
 
 	db := datastoreDB(t, false)
 	migrationDriver := migrations.NewMySQLDriverFromDB(db, "")
+	t.Cleanup(func() {
+		migrationDriver.Close(t.Context())
+	})
 
 	version, err := migrationDriver.Version(context.Background())
 	req.NoError(err)

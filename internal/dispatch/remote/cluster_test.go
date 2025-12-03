@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/caio/go-tdigest/v4"
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	"github.com/dustin/go-humanize"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
@@ -129,6 +129,28 @@ func (fds *fakeDispatchSvc) DispatchLookupResources2(_ *v1.DispatchLookupResourc
 	return nil
 }
 
+func (fds *fakeDispatchSvc) DispatchLookupResources3(_ *v1.DispatchLookupResources3Request, srv v1.DispatchService_DispatchLookupResources3Server) error {
+	if fds.errorOnLR2 != nil {
+		return fds.errorOnLR2
+	}
+
+	if fds.resultCount == 0 {
+		fds.resultCount = 2
+	}
+
+	for i := range fds.resultCount {
+		time.Sleep(fds.sleepTime)
+		if err := srv.Send(&v1.DispatchLookupResources3Response{
+			Items: []*v1.LR3Item{
+				{ResourceId: fmt.Sprintf("%d", i)},
+			},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func TestDispatchTimeout(t *testing.T) {
 	for _, tc := range []struct {
 		timeout   time.Duration
@@ -213,7 +235,6 @@ func TestDispatchTimeout(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 				require.NotEmpty(t, stream.Results())
-				require.GreaterOrEqual(t, stream.Results()[0].Metadata.DispatchCount, uint32(1))
 			}
 		})
 	}
@@ -602,7 +623,7 @@ func TestLRSecondaryDispatch(t *testing.T) {
 				require.Error(t, err)
 			} else {
 				require.NoError(t, err)
-				require.Equal(t, 2, len(stream.Results()))
+				require.Len(t, stream.Results(), 2)
 				require.Equal(t, tc.expectedDispatchCount, stream.Results()[0].Metadata.DispatchCount)
 			}
 		})
@@ -730,7 +751,7 @@ func TestLSSecondaryDispatch(t *testing.T) {
 				require.Error(t, err)
 			} else {
 				require.NoError(t, err)
-				require.Equal(t, 2, len(stream.Results()))
+				require.Len(t, stream.Results(), 2)
 				require.Equal(t, tc.expectedDispatchCount, stream.Results()[0].Metadata.DispatchCount)
 			}
 		})
@@ -932,6 +953,7 @@ func TestCheckUsesMaximumDelayByDefaultForPrimary(t *testing.T) {
 }
 
 func connectionForDispatching(t *testing.T, svc v1.DispatchServiceServer) *grpc.ClientConn {
+	t.Helper()
 	listener := bufconn.Listen(humanize.MiByte)
 	s := grpc.NewServer()
 
@@ -1138,7 +1160,7 @@ func TestDALCount(t *testing.T) {
 	}
 
 	for i := 0; i < minimumDigestCount-1; i++ {
-		uintValue, err := safecast.ToUint64(i + 1)
+		uintValue, err := safecast.Convert[uint64](i + 1)
 		require.NoError(t, err)
 
 		dal.addResultTime(3 * time.Millisecond)
@@ -1152,17 +1174,57 @@ func TestDALCount(t *testing.T) {
 	require.Equal(t, 3*time.Millisecond, dal.getWaitTime(10*time.Millisecond))
 }
 
-func BenchmarkDAL(b *testing.B) {
-	digest, err := tdigest.New(tdigest.Compression(1000))
-	require.NoError(b, err)
-	dal := &digestAndLock{
-		digest: digest,
-		lock:   sync.RWMutex{},
-	}
+func TestPrimaryDispatcherErrorReturned(t *testing.T) {
+	primaryError := fmt.Errorf("primary dispatcher error")
+	secondaryError := fmt.Errorf("secondary dispatcher error")
 
-	b.ResetTimer()
+	// Create fake dispatchers where both primary and secondary fail, but primary fails first
+	conn := connectionForDispatching(t, &fakeDispatchSvc{
+		dispatchCount: 1,
+		sleepTime:     1 * time.Millisecond, // Primary fails quickly
+		errorOnLR2:    primaryError,
+	})
+	secondaryConn := connectionForDispatching(t, &fakeDispatchSvc{
+		dispatchCount: 2,
+		sleepTime:     10 * time.Millisecond, // Secondary fails slower
+		errorOnLR2:    secondaryError,
+	})
 
-	for i := 0; i < b.N; i++ {
-		dal.addResultTime(time.Duration(i) * time.Millisecond)
-	}
+	parsed, err := ParseDispatchExpression("lookupresources", "['secondary']")
+	require.NoError(t, err)
+
+	dispatcher, err := NewClusterDispatcher(v1.NewDispatchServiceClient(conn), conn, ClusterDispatcherConfig{
+		KeyHandler:             &keys.DirectKeyHandler{},
+		DispatchOverallTimeout: 30 * time.Second,
+	}, map[string]SecondaryDispatch{
+		"secondary": {Name: "secondary", Client: v1.NewDispatchServiceClient(secondaryConn), MaximumPrimaryHedgingDelay: 0}, // No delay so primary runs immediately
+	}, map[string]*DispatchExpr{
+		"lookupresources": parsed,
+	}, 0*time.Second)
+	require.NoError(t, err)
+	require.True(t, dispatcher.ReadyState().IsReady)
+
+	stream := dispatch.NewCollectingDispatchStream[*v1.DispatchLookupResources2Response](t.Context())
+	err = dispatcher.DispatchLookupResources2(&v1.DispatchLookupResources2Request{
+		ResourceRelation: &corev1.RelationReference{
+			Namespace: "somenamespace",
+			Relation:  "somerelation",
+		},
+		SubjectRelation: &corev1.RelationReference{
+			Namespace: "somenamespace",
+			Relation:  "somerelation",
+		},
+		SubjectIds: []string{"foo"},
+		TerminalSubject: &corev1.ObjectAndRelation{
+			Namespace: "foo",
+			ObjectId:  "bar",
+			Relation:  "...",
+		},
+		Metadata: &v1.ResolverMeta{DepthRemaining: 50},
+	}, stream)
+
+	// Should get the primary dispatcher error when no dispatcher returns results
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "primary dispatcher error")
+	require.NotContains(t, err.Error(), "secondary dispatcher error")
 }

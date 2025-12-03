@@ -18,9 +18,11 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/sean-/sysexits"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc/filters"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	_ "google.golang.org/grpc/encoding/gzip" // enable gzip compression on all derivative servers
+	"google.golang.org/grpc/stats"
 
 	"github.com/authzed/consistent"
 	"github.com/authzed/grpcutil"
@@ -35,6 +37,7 @@ import (
 	"github.com/authzed/spicedb/internal/dispatch/keys"
 	"github.com/authzed/spicedb/internal/gateway"
 	log "github.com/authzed/spicedb/internal/logging"
+	"github.com/authzed/spicedb/internal/middleware/memoryprotection"
 	"github.com/authzed/spicedb/internal/services"
 	dispatchSvc "github.com/authzed/spicedb/internal/services/dispatch"
 	"github.com/authzed/spicedb/internal/services/health"
@@ -44,6 +47,7 @@ import (
 	datastorecfg "github.com/authzed/spicedb/pkg/cmd/datastore"
 	"github.com/authzed/spicedb/pkg/cmd/util"
 	"github.com/authzed/spicedb/pkg/datastore"
+	"github.com/authzed/spicedb/pkg/middleware/consistency"
 	"github.com/authzed/spicedb/pkg/middleware/requestid"
 	"github.com/authzed/spicedb/pkg/spiceerrors"
 )
@@ -51,6 +55,8 @@ import (
 // ConsistentHashringBuilder is a balancer Builder that uses xxhash as the
 // underlying hash for the ConsistentHashringBalancers it creates.
 var ConsistentHashringBuilder = consistent.NewBuilder(xxhash.Sum64)
+
+var DefaultMemoryUsageProvider memoryprotection.MemoryUsageProvider
 
 //go:generate go run github.com/ecordell/optgen -output zz_generated.options.go . Config
 type Config struct {
@@ -107,25 +113,29 @@ type Config struct {
 	DispatchSecondaryMaximumPrimaryHedgingDelays map[string]string `debugmap:"visible"`
 	DispatchPrimaryDelayForTesting               time.Duration     `debugmap:"hidden"`
 
-	DispatchCacheConfig        CacheConfig `debugmap:"visible"`
-	ClusterDispatchCacheConfig CacheConfig `debugmap:"visible"`
+	DispatchCacheConfig         CacheConfig `debugmap:"visible"`
+	ClusterDispatchCacheConfig  CacheConfig `debugmap:"visible"`
+	LR3ResourceChunkCacheConfig CacheConfig `debugmap:"visible"`
 
 	// API Behavior
-	DisableV1SchemaAPI                       bool          `debugmap:"visible"`
-	V1SchemaAdditiveOnly                     bool          `debugmap:"visible"`
-	MaximumUpdatesPerWrite                   uint16        `debugmap:"visible"`
-	MaximumPreconditionCount                 uint16        `debugmap:"visible"`
-	MaxDatastoreReadPageSize                 uint64        `debugmap:"visible"`
-	StreamingAPITimeout                      time.Duration `debugmap:"visible"`
-	WatchHeartbeat                           time.Duration `debugmap:"visible"`
-	MaxReadRelationshipsLimit                uint32        `debugmap:"visible"`
-	MaxDeleteRelationshipsLimit              uint32        `debugmap:"visible"`
-	MaxLookupResourcesLimit                  uint32        `debugmap:"visible"`
-	MaxBulkExportRelationshipsLimit          uint32        `debugmap:"visible"`
-	EnableExperimentalLookupResources        bool          `debugmap:"visible"`
-	EnableExperimentalRelationshipExpiration bool          `debugmap:"visible"`
-	EnableRevisionHeartbeat                  bool          `debugmap:"visible"`
-	EnablePerformanceInsightMetrics          bool          `debugmap:"visible"`
+	DisableV1SchemaAPI                 bool          `debugmap:"visible"`
+	V1SchemaAdditiveOnly               bool          `debugmap:"visible"`
+	MaximumUpdatesPerWrite             uint16        `debugmap:"visible"`
+	MaximumPreconditionCount           uint16        `debugmap:"visible"`
+	MaxDatastoreReadPageSize           uint64        `debugmap:"visible"`
+	StreamingAPITimeout                time.Duration `debugmap:"visible"`
+	WatchHeartbeat                     time.Duration `debugmap:"visible"`
+	MaxReadRelationshipsLimit          uint32        `debugmap:"visible"`
+	MaxDeleteRelationshipsLimit        uint32        `debugmap:"visible"`
+	MaxLookupResourcesLimit            uint32        `debugmap:"visible"`
+	MaxBulkExportRelationshipsLimit    uint32        `debugmap:"visible"`
+	EnableExperimentalLookupResources  bool          `debugmap:"visible"`
+	ExperimentalLookupResourcesVersion string        `debugmap:"visible"`
+	ExperimentalQueryPlan              string        `debugmap:"visible"`
+	EnableRelationshipExpiration       bool          `debugmap:"visible" default:"true"`
+	EnableRevisionHeartbeat            bool          `debugmap:"visible"`
+	EnablePerformanceInsightMetrics    bool          `debugmap:"visible"`
+	MismatchZedTokenBehavior           string        `debugmap:"visible"`
 
 	// Additional Services
 	MetricsAPI util.HTTPServerConfig `debugmap:"visible"`
@@ -133,6 +143,9 @@ type Config struct {
 	// Middleware for grpc API
 	UnaryMiddlewareModification     []MiddlewareModification[grpc.UnaryServerInterceptor]  `debugmap:"hidden"`
 	StreamingMiddlewareModification []MiddlewareModification[grpc.StreamServerInterceptor] `debugmap:"hidden"`
+
+	// Middleware for Memory Protection
+	MemoryProtectionEnabled bool `debugmap:"visible" default:"true"`
 
 	// Middleware for internal dispatch API
 	DispatchUnaryMiddleware     []grpc.UnaryServerInterceptor  `debugmap:"hidden"`
@@ -205,7 +218,7 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 	}()
 
 	if len(c.PresharedSecureKey) < 1 && c.GRPCAuthFunc == nil {
-		return nil, fmt.Errorf("a preshared key must be provided to authenticate API requests")
+		return nil, errors.New("a preshared key must be provided to authenticate API requests")
 	}
 
 	if c.GRPCAuthFunc == nil {
@@ -231,7 +244,6 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 			// Datastore's filter maximum ID count is set to the max size, since the number of elements to be dispatched
 			// are at most the number of elements returned from a datastore query
 			datastorecfg.WithFilterMaximumIDCount(c.DispatchChunkSize),
-			datastorecfg.WithEnableExperimentalRelationshipExpiration(c.EnableExperimentalRelationshipExpiration),
 			datastorecfg.WithEnableRevisionHeartbeat(c.EnableRevisionHeartbeat),
 		)
 		if err != nil {
@@ -261,6 +273,14 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 
 	specificConcurrencyLimits := c.DispatchConcurrencyLimits
 	concurrencyLimits := specificConcurrencyLimits.WithOverallDefaultLimit(c.GlobalDispatchConcurrencyLimit)
+
+	// Create LR3 resource chunk cache (used by both dispatcher types)
+	lr3ChunkCache, err := CompleteCache[cache.StringKey, any](&c.LR3ResourceChunkCacheConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create LR3 resource chunk cache: %w", err)
+	}
+	closeables.AddWithoutError(lr3ChunkCache.Close)
+	log.Ctx(ctx).Info().EmbedObject(lr3ChunkCache).Msg("configured LR3 resource chunk cache")
 
 	dispatcher := c.Dispatcher
 	if dispatcher == nil {
@@ -310,6 +330,7 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 			combineddispatch.Cache(cc),
 			combineddispatch.ConcurrencyLimits(concurrencyLimits),
 			combineddispatch.DispatchChunkSize(c.DispatchChunkSize),
+			combineddispatch.RelationshipChunkCache(lr3ChunkCache),
 			combineddispatch.StartingPrimaryHedgingDelay(c.DispatchPrimaryDelayForTesting),
 		)
 		if err != nil {
@@ -319,14 +340,6 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 		log.Ctx(ctx).Info().EmbedObject(concurrencyLimits).RawJSON("balancerconfig", []byte(hashringConfigJSON)).Msg("configured dispatcher")
 	}
 	closeables.AddWithError(dispatcher.Close)
-
-	if len(c.DispatchUnaryMiddleware) == 0 && len(c.DispatchStreamingMiddleware) == 0 {
-		if c.GRPCAuthFunc == nil {
-			c.DispatchUnaryMiddleware, c.DispatchStreamingMiddleware = DefaultDispatchMiddleware(log.Logger, auth.MustRequirePresharedKey(c.PresharedSecureKey), ds, c.DisableGRPCLatencyHistogram)
-		} else {
-			c.DispatchUnaryMiddleware, c.DispatchStreamingMiddleware = DefaultDispatchMiddleware(log.Logger, c.GRPCAuthFunc, ds, c.DisableGRPCLatencyHistogram)
-		}
-	}
 
 	var cachingClusterDispatch dispatch.Dispatcher
 	if c.DispatchServer.Enabled {
@@ -349,25 +362,13 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 			clusterdispatch.RemoteDispatchTimeout(c.DispatchUpstreamTimeout),
 			clusterdispatch.ConcurrencyLimits(concurrencyLimits),
 			clusterdispatch.DispatchChunkSize(c.DispatchChunkSize),
+			clusterdispatch.RelationshipChunkCache(lr3ChunkCache),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to configure cluster dispatch: %w", err)
 		}
 		closeables.AddWithError(cachingClusterDispatch.Close)
 	}
-
-	dispatchGrpcServer, err := c.DispatchServer.Complete(zerolog.InfoLevel,
-		func(server *grpc.Server) {
-			dispatchSvc.RegisterGrpcServices(server, cachingClusterDispatch)
-		},
-		grpc.ChainUnaryInterceptor(c.DispatchUnaryMiddleware...),
-		grpc.ChainStreamInterceptor(c.DispatchStreamingMiddleware...),
-		grpc.StatsHandler(otelgrpc.NewServerHandler()),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create dispatch gRPC server: %w", err)
-	}
-	closeables.AddWithoutError(dispatchGrpcServer.GracefulStop)
 
 	datastoreFeatures, err := ds.Features(ctx)
 	if err != nil {
@@ -392,19 +393,50 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 		serverName = "spicedb"
 	}
 
+	var mismatchZedTokenOption consistency.MismatchingTokenOption
+	switch c.MismatchZedTokenBehavior {
+	case "":
+		fallthrough
+
+	case "full-consistency":
+		mismatchZedTokenOption = consistency.TreatMismatchingTokensAsFullConsistency
+
+	case "min-latency":
+		mismatchZedTokenOption = consistency.TreatMismatchingTokensAsMinLatency
+
+	case "error":
+		mismatchZedTokenOption = consistency.TreatMismatchingTokensAsError
+
+	default:
+		return nil, fmt.Errorf("unknown mismatched zedtoken behavior: %s", c.MismatchZedTokenBehavior)
+	}
+
+	memoryUsageProvider := c.BuildMemoryUsageProvider()
+
 	opts := MiddlewareOption{
-		log.Logger,
-		c.GRPCAuthFunc,
-		!c.DisableVersionResponse,
-		dispatcher,
-		c.EnableRequestLogs,
-		c.EnableResponseLogs,
-		c.DisableGRPCLatencyHistogram,
-		serverName,
-		nil,
-		nil,
+		Logger:                    log.Logger,
+		AuthFunc:                  c.GRPCAuthFunc,
+		EnableVersionResponse:     !c.DisableVersionResponse,
+		DispatcherForMiddleware:   dispatcher,
+		EnableRequestLog:          c.EnableRequestLogs,
+		EnableResponseLog:         c.EnableResponseLogs,
+		DisableGRPCHistogram:      c.DisableGRPCLatencyHistogram,
+		MiddlewareServiceLabel:    serverName,
+		MismatchingZedTokenOption: mismatchZedTokenOption,
+		MemoryUsageProvider:       memoryUsageProvider,
 	}
 	opts = opts.WithDatastore(ds)
+
+	// Build OTel stats handler options (shared by both gRPC servers)
+	// Always disable health check tracing to reduce trace volume
+	statsHandlerOpts := []otelgrpc.Option{
+		otelgrpc.WithFilter(filters.Not(filters.HealthCheck())),
+	}
+
+	dispatchGrpcServer, err := c.buildDispatchServer(memoryUsageProvider, ds, cachingClusterDispatch, &closeables, statsHandlerOpts)
+	if err != nil {
+		return nil, err
+	}
 
 	defaultUnaryMiddlewareChain, err := DefaultUnaryMiddleware(opts)
 	if err != nil {
@@ -442,21 +474,23 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 	}
 
 	permSysConfig := v1svc.PermissionsServerConfig{
-		MaxPreconditionsCount:            maxPreconditionCount,
-		MaxUpdatesPerWrite:               c.MaximumUpdatesPerWrite,
-		MaximumAPIDepth:                  c.DispatchMaxDepth,
-		MaxCaveatContextSize:             c.MaxCaveatContextSize,
-		MaxRelationshipContextSize:       c.MaxRelationshipContextSize,
-		MaxDatastoreReadPageSize:         c.MaxDatastoreReadPageSize,
-		StreamingAPITimeout:              c.StreamingAPITimeout,
-		MaxReadRelationshipsLimit:        c.MaxReadRelationshipsLimit,
-		MaxDeleteRelationshipsLimit:      c.MaxDeleteRelationshipsLimit,
-		MaxLookupResourcesLimit:          c.MaxLookupResourcesLimit,
-		MaxBulkExportRelationshipsLimit:  c.MaxBulkExportRelationshipsLimit,
-		DispatchChunkSize:                c.DispatchChunkSize,
-		ExpiringRelationshipsEnabled:     c.EnableExperimentalRelationshipExpiration,
-		CaveatTypeSet:                    c.DatastoreConfig.CaveatTypeSet,
-		PerformanceInsightMetricsEnabled: c.EnablePerformanceInsightMetrics,
+		MaxPreconditionsCount:              maxPreconditionCount,
+		MaxUpdatesPerWrite:                 c.MaximumUpdatesPerWrite,
+		MaximumAPIDepth:                    c.DispatchMaxDepth,
+		MaxCaveatContextSize:               c.MaxCaveatContextSize,
+		MaxRelationshipContextSize:         c.MaxRelationshipContextSize,
+		MaxDatastoreReadPageSize:           c.MaxDatastoreReadPageSize,
+		StreamingAPITimeout:                c.StreamingAPITimeout,
+		MaxReadRelationshipsLimit:          c.MaxReadRelationshipsLimit,
+		MaxDeleteRelationshipsLimit:        c.MaxDeleteRelationshipsLimit,
+		MaxLookupResourcesLimit:            c.MaxLookupResourcesLimit,
+		MaxBulkExportRelationshipsLimit:    c.MaxBulkExportRelationshipsLimit,
+		DispatchChunkSize:                  c.DispatchChunkSize,
+		ExpiringRelationshipsEnabled:       c.EnableRelationshipExpiration,
+		CaveatTypeSet:                      c.DatastoreConfig.CaveatTypeSet,
+		PerformanceInsightMetricsEnabled:   c.EnablePerformanceInsightMetrics,
+		EnableExperimentalLookupResources3: c.ExperimentalLookupResourcesVersion == "lr3",
+		ExperimentalQueryPlan:              c.ExperimentalQueryPlan == "check",
 	}
 
 	healthManager := health.NewHealthManager(dispatcher, ds)
@@ -497,11 +531,12 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 	var telemetryRegistry *prometheus.Registry
 
 	reporter := telemetry.DisabledReporter
-	if c.SilentlyDisableTelemetry {
+	switch {
+	case c.SilentlyDisableTelemetry:
 		reporter = telemetry.SilentlyDisabledReporter
-	} else if c.TelemetryEndpoint != "" && c.DatastoreConfig.DisableStats {
+	case c.TelemetryEndpoint != "" && c.DatastoreConfig.DisableStats:
 		reporter = telemetry.DisabledReporter
-	} else if c.TelemetryEndpoint != "" {
+	case c.TelemetryEndpoint != "":
 		log.Ctx(ctx).Debug().Msg("initializing telemetry collector")
 		registry, err := telemetry.RegisterTelemetryCollector(c.DatastoreConfig.Engine, ds)
 		if err != nil {
@@ -538,8 +573,45 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 		presharedKeys:       c.PresharedSecureKey,
 		telemetryReporter:   reporter,
 		healthManager:       healthManager,
+		statsHandler:        otelgrpc.NewServerHandler(statsHandlerOpts...),
 		closeFunc:           closeables.Close,
 	}, nil
+}
+
+func (c *Config) BuildMemoryUsageProvider() memoryprotection.MemoryUsageProvider {
+	if c.MemoryProtectionEnabled {
+		if DefaultMemoryUsageProvider != nil {
+			return DefaultMemoryUsageProvider
+		}
+
+		log.Warn().Msg("memory protection is enabled, but no default is configured; falling back to using noop provider")
+		return memoryprotection.NewNoopMemoryUsageProvider()
+	}
+	return &memoryprotection.HarcodedMemoryLimitProvider{AcceptAllRequests: true}
+}
+
+func (c *Config) buildDispatchServer(memoryUsageProvider memoryprotection.MemoryUsageProvider, ds datastore.Datastore, cachingClusterDispatch dispatch.Dispatcher, closeables *closeableStack, otelOpts []otelgrpc.Option) (util.RunnableGRPCServer, error) {
+	if len(c.DispatchUnaryMiddleware) == 0 && len(c.DispatchStreamingMiddleware) == 0 {
+		if c.GRPCAuthFunc == nil {
+			c.DispatchUnaryMiddleware, c.DispatchStreamingMiddleware = DefaultDispatchMiddleware(log.Logger, auth.MustRequirePresharedKey(c.PresharedSecureKey), ds, c.DisableGRPCLatencyHistogram, memoryUsageProvider)
+		} else {
+			c.DispatchUnaryMiddleware, c.DispatchStreamingMiddleware = DefaultDispatchMiddleware(log.Logger, c.GRPCAuthFunc, ds, c.DisableGRPCLatencyHistogram, memoryUsageProvider)
+		}
+	}
+
+	dispatchGrpcServer, err := c.DispatchServer.Complete(zerolog.InfoLevel,
+		func(server *grpc.Server) {
+			dispatchSvc.RegisterGrpcServices(server, cachingClusterDispatch)
+		},
+		grpc.ChainUnaryInterceptor(c.DispatchUnaryMiddleware...),
+		grpc.ChainStreamInterceptor(c.DispatchStreamingMiddleware...),
+		grpc.StatsHandler(otelgrpc.NewServerHandler(otelOpts...)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create dispatch gRPC server: %w", err)
+	}
+	closeables.AddWithoutError(dispatchGrpcServer.GracefulStop)
+	return dispatchGrpcServer, nil
 }
 
 func (c *Config) supportOldAndNewReadReplicaConnectionPoolFlags() {
@@ -684,6 +756,7 @@ type completedServerConfig struct {
 	unaryMiddleware     []grpc.UnaryServerInterceptor
 	streamingMiddleware []grpc.StreamServerInterceptor
 	presharedKeys       []string
+	statsHandler        stats.Handler
 	closeFunc           func() error
 }
 
@@ -725,7 +798,7 @@ func (c *completedServerConfig) Run(ctx context.Context) error {
 	grpcServer := c.gRPCServer.WithOpts(
 		grpc.ChainUnaryInterceptor(c.unaryMiddleware...),
 		grpc.ChainStreamInterceptor(c.streamingMiddleware...),
-		grpc.StatsHandler(otelgrpc.NewServerHandler()))
+		grpc.StatsHandler(c.statsHandler))
 
 	g.Go(c.healthManager.Checker(ctx))
 	g.Go(grpcServer.Listen(ctx))

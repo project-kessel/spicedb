@@ -12,6 +12,7 @@ import (
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 
 	"github.com/authzed/spicedb/internal/datastore/common"
+	"github.com/authzed/spicedb/internal/telemetry/otelconv"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/datastore/options"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
@@ -73,6 +74,10 @@ func (p *observableProxy) MetricsID() (string, error) {
 	return p.delegate.MetricsID()
 }
 
+func (p *observableProxy) UniqueID(ctx context.Context) (string, error) {
+	return p.delegate.UniqueID(ctx)
+}
+
 func (p *observableProxy) SnapshotReader(rev datastore.Revision) datastore.Reader {
 	delegateReader := p.delegate.SnapshotReader(rev)
 	return &observableReader{delegateReader}
@@ -97,7 +102,7 @@ func (p *observableProxy) OptimizedRevision(ctx context.Context) (datastore.Revi
 
 func (p *observableProxy) CheckRevision(ctx context.Context, revision datastore.Revision) error {
 	ctx, closer := observe(ctx, "CheckRevision", "", trace.WithAttributes(
-		attribute.String("revision", revision.String()),
+		attribute.String(otelconv.AttrDatastoreRevision, revision.String()),
 	))
 	defer closer()
 
@@ -154,7 +159,7 @@ type observableReader struct{ delegate datastore.Reader }
 
 func (r *observableReader) CountRelationships(ctx context.Context, name string) (int, error) {
 	ctx, closer := observe(ctx, "CountRelationships", "", trace.WithAttributes(
-		attribute.String("name", name),
+		attribute.StringSlice(otelconv.AttrDatastoreNames, []string{name}),
 	))
 	defer closer()
 
@@ -170,7 +175,7 @@ func (r *observableReader) LookupCounters(ctx context.Context) ([]datastore.Rela
 
 func (r *observableReader) ReadCaveatByName(ctx context.Context, name string) (*core.CaveatDefinition, datastore.Revision, error) {
 	ctx, closer := observe(ctx, "ReadCaveatByName", "", trace.WithAttributes(
-		attribute.String("name", name),
+		attribute.StringSlice(otelconv.AttrDatastoreNames, []string{name}),
 	))
 	defer closer()
 
@@ -179,7 +184,7 @@ func (r *observableReader) ReadCaveatByName(ctx context.Context, name string) (*
 
 func (r *observableReader) LookupCaveatsWithNames(ctx context.Context, caveatNames []string) ([]datastore.RevisionedCaveat, error) {
 	ctx, closer := observe(ctx, "LookupCaveatsWithNames", "", trace.WithAttributes(
-		attribute.StringSlice("names", caveatNames),
+		attribute.StringSlice(otelconv.AttrDatastoreNames, caveatNames),
 	))
 	defer closer()
 
@@ -202,7 +207,7 @@ func (r *observableReader) ListAllNamespaces(ctx context.Context) ([]datastore.R
 
 func (r *observableReader) LookupNamespacesWithNames(ctx context.Context, nsNames []string) ([]datastore.RevisionedNamespace, error) {
 	ctx, closer := observe(ctx, "LookupNamespacesWithNames", "", trace.WithAttributes(
-		attribute.StringSlice("names", nsNames),
+		attribute.StringSlice(otelconv.AttrDatastoreNames, nsNames),
 	))
 	defer closer()
 
@@ -211,7 +216,7 @@ func (r *observableReader) LookupNamespacesWithNames(ctx context.Context, nsName
 
 func (r *observableReader) ReadNamespaceByName(ctx context.Context, nsName string) (*core.NamespaceDefinition, datastore.Revision, error) {
 	ctx, closer := observe(ctx, "ReadNamespaceByName", "", trace.WithAttributes(
-		attribute.String("name", nsName),
+		attribute.StringSlice(otelconv.AttrDatastoreNames, []string{nsName}),
 	))
 	defer closer()
 
@@ -221,9 +226,9 @@ func (r *observableReader) ReadNamespaceByName(ctx context.Context, nsName strin
 func (r *observableReader) QueryRelationships(ctx context.Context, filter datastore.RelationshipsFilter, opts ...options.QueryOptionsOption) (datastore.RelationshipIterator, error) {
 	queryOpts := options.NewQueryOptionsWithOptions(opts...)
 	ctx, closer := observe(ctx, "QueryRelationships", string(queryOpts.QueryShape), trace.WithAttributes(
-		attribute.String("resourceType", filter.OptionalResourceType),
-		attribute.String("resourceRelation", filter.OptionalResourceRelation),
-		attribute.String("queryShape", string(queryOpts.QueryShape)),
+		attribute.String(otelconv.AttrDatastoreResourceType, filter.OptionalResourceType),
+		attribute.String(otelconv.AttrDatastoreResourceRelation, filter.OptionalResourceRelation),
+		attribute.String(otelconv.AttrDatastoreQueryShape, string(queryOpts.QueryShape)),
 	))
 
 	iterator, err := r.delegate.QueryRelationships(ctx, filter, opts...)
@@ -249,8 +254,8 @@ func (r *observableReader) QueryRelationships(ctx context.Context, filter datast
 func (r *observableReader) ReverseQueryRelationships(ctx context.Context, subjectsFilter datastore.SubjectsFilter, opts ...options.ReverseQueryOptionsOption) (datastore.RelationshipIterator, error) {
 	queryOpts := options.NewReverseQueryOptionsWithOptions(opts...)
 	ctx, closer := observe(ctx, "ReverseQueryRelationships", string(queryOpts.QueryShapeForReverse), trace.WithAttributes(
-		attribute.String("subjectType", subjectsFilter.SubjectType),
-		attribute.String("queryShape", string(queryOpts.QueryShapeForReverse))))
+		attribute.String(otelconv.AttrDatastoreSubjectType, subjectsFilter.SubjectType),
+		attribute.String(otelconv.AttrDatastoreQueryShape, string(queryOpts.QueryShapeForReverse))))
 
 	iterator, err := r.delegate.ReverseQueryRelationships(ctx, subjectsFilter, opts...)
 	if err != nil {
@@ -279,7 +284,7 @@ type observableRWT struct {
 
 func (rwt *observableRWT) RegisterCounter(ctx context.Context, name string, filter *core.RelationshipFilter) error {
 	ctx, closer := observe(ctx, "RegisterCounter", "", trace.WithAttributes(
-		attribute.String("name", name),
+		attribute.StringSlice(otelconv.AttrDatastoreNames, []string{name}),
 	))
 	defer closer()
 
@@ -288,7 +293,7 @@ func (rwt *observableRWT) RegisterCounter(ctx context.Context, name string, filt
 
 func (rwt *observableRWT) UnregisterCounter(ctx context.Context, name string) error {
 	ctx, closer := observe(ctx, "UnregisterCounter", "", trace.WithAttributes(
-		attribute.String("name", name),
+		attribute.StringSlice(otelconv.AttrDatastoreNames, []string{name}),
 	))
 	defer closer()
 
@@ -297,9 +302,9 @@ func (rwt *observableRWT) UnregisterCounter(ctx context.Context, name string) er
 
 func (rwt *observableRWT) StoreCounterValue(ctx context.Context, name string, value int, computedAtRevision datastore.Revision) error {
 	ctx, closer := observe(ctx, "StoreCounterValue", "", trace.WithAttributes(
-		attribute.String("name", name),
-		attribute.Int("value", value),
-		attribute.String("revision", computedAtRevision.String()),
+		attribute.StringSlice(otelconv.AttrDatastoreNames, []string{name}),
+		attribute.Int(otelconv.AttrDatastoreValue, value),
+		attribute.String(otelconv.AttrDatastoreRevision, computedAtRevision.String()),
 	))
 	defer closer()
 
@@ -313,7 +318,7 @@ func (rwt *observableRWT) WriteCaveats(ctx context.Context, caveats []*core.Cave
 	}
 
 	ctx, closer := observe(ctx, "WriteCaveats", "", trace.WithAttributes(
-		attribute.StringSlice("names", caveatNames),
+		attribute.StringSlice(otelconv.AttrDatastoreNames, caveatNames),
 	))
 	defer closer()
 
@@ -322,7 +327,7 @@ func (rwt *observableRWT) WriteCaveats(ctx context.Context, caveats []*core.Cave
 
 func (rwt *observableRWT) DeleteCaveats(ctx context.Context, names []string) error {
 	ctx, closer := observe(ctx, "DeleteCaveats", "", trace.WithAttributes(
-		attribute.StringSlice("names", names),
+		attribute.StringSlice(otelconv.AttrDatastoreNames, names),
 	))
 	defer closer()
 
@@ -331,7 +336,7 @@ func (rwt *observableRWT) DeleteCaveats(ctx context.Context, names []string) err
 
 func (rwt *observableRWT) WriteRelationships(ctx context.Context, mutations []tuple.RelationshipUpdate) error {
 	ctx, closer := observe(ctx, "WriteRelationships", "", trace.WithAttributes(
-		attribute.Int("mutations", len(mutations)),
+		attribute.Int(otelconv.AttrDatastoreMutations, len(mutations)),
 	))
 	defer closer()
 
@@ -345,20 +350,20 @@ func (rwt *observableRWT) WriteNamespaces(ctx context.Context, newConfigs ...*co
 	}
 
 	ctx, closer := observe(ctx, "WriteNamespaces", "", trace.WithAttributes(
-		attribute.StringSlice("names", nsNames),
+		attribute.StringSlice(otelconv.AttrDatastoreNames, nsNames),
 	))
 	defer closer()
 
 	return rwt.delegate.WriteNamespaces(ctx, newConfigs...)
 }
 
-func (rwt *observableRWT) DeleteNamespaces(ctx context.Context, nsNames ...string) error {
+func (rwt *observableRWT) DeleteNamespaces(ctx context.Context, nsNames []string, delOption datastore.DeleteNamespacesRelationshipsOption) error {
 	ctx, closer := observe(ctx, "DeleteNamespaces", "", trace.WithAttributes(
-		attribute.StringSlice("names", nsNames),
+		attribute.StringSlice(otelconv.AttrDatastoreNames, nsNames),
 	))
 	defer closer()
 
-	return rwt.delegate.DeleteNamespaces(ctx, nsNames...)
+	return rwt.delegate.DeleteNamespaces(ctx, nsNames, delOption)
 }
 
 func (rwt *observableRWT) DeleteRelationships(ctx context.Context, filter *v1.RelationshipFilter, options ...options.DeleteOptionsOption) (uint64, bool, error) {

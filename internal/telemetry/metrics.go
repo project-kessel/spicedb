@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/jzelinskie/cobrautil/v2"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	dto "github.com/prometheus/client_model/go"
 	"golang.org/x/sync/errgroup"
 
@@ -19,6 +21,13 @@ import (
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/promutil"
 )
+
+var LogicalChecks = promauto.NewCounter(prometheus.CounterOpts{
+	Namespace: "spicedb",
+	Subsystem: "services",
+	Name:      "logical_checks_total",
+	Help:      `Count of the number of "checks" made across all APIs (e.g. each item within a CheckBulk, each item returned from a Lookup).`,
+})
 
 func SpiceDBClusterInfoCollector(ctx context.Context, subsystem, dsEngine string, ds datastore.Datastore) (promutil.CollectorFunc, error) {
 	nodeID, err := os.Hostname()
@@ -34,7 +43,7 @@ func SpiceDBClusterInfoCollector(ctx context.Context, subsystem, dsEngine string
 	clusterID := dbStats.UniqueID
 	buildInfo, ok := debug.ReadBuildInfo()
 	if !ok {
-		return nil, fmt.Errorf("failed to read BuildInfo")
+		return nil, errors.New("failed to read BuildInfo")
 	}
 
 	return func(ch chan<- prometheus.Metric) {
@@ -161,11 +170,9 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		log.Warn().Err(err).Msg("unable to collect datastore statistics")
 	}
 
-	logicalChecksCount := loadLogicalChecksCount()
-
 	ch <- prometheus.MustNewConstMetric(c.objectDefsDesc, prometheus.GaugeValue, float64(len(dsStats.ObjectTypeStatistics)))
 	ch <- prometheus.MustNewConstMetric(c.relationshipsDesc, prometheus.GaugeValue, float64(dsStats.EstimatedRelationshipCount))
-	ch <- prometheus.MustNewConstMetric(c.logicalChecksDec, prometheus.CounterValue, float64(logicalChecksCount))
+	ch <- prometheus.MustNewConstMetric(c.logicalChecksDec, prometheus.CounterValue, promutil.MustCounterValue(LogicalChecks))
 
 	dispatchedCountMetrics := make(chan prometheus.Metric)
 	g := errgroup.Group{}

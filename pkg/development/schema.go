@@ -3,7 +3,7 @@ package development
 import (
 	"errors"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 
 	log "github.com/authzed/spicedb/internal/logging"
 	devinterface "github.com/authzed/spicedb/pkg/proto/developer/v1"
@@ -28,11 +28,11 @@ func CompileSchema(schema string) (*compiler.CompiledSchema, *devinterface.Devel
 		}
 
 		// NOTE: zeroes are fine here on failure.
-		uintLine, err := safecast.ToUint32(line)
+		uintLine, err := safecast.Convert[uint32](line)
 		if err != nil {
 			log.Err(err).Msg("could not cast lineNumber to uint32")
 		}
-		uintColumn, err := safecast.ToUint32(col)
+		uintColumn, err := safecast.Convert[uint32](col)
 		if err != nil {
 			log.Err(err).Msg("could not cast columnPosition to uint32")
 		}

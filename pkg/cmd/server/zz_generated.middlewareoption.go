@@ -3,6 +3,8 @@ package server
 
 import (
 	dispatch "github.com/authzed/spicedb/internal/dispatch"
+	memoryprotection "github.com/authzed/spicedb/internal/middleware/memoryprotection"
+	consistency "github.com/authzed/spicedb/pkg/middleware/consistency"
 	defaults "github.com/creasty/defaults"
 	helpers "github.com/ecordell/optgen/helpers"
 	auth "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/auth"
@@ -41,6 +43,8 @@ func (m *MiddlewareOption) ToOption() MiddlewareOptionOption {
 		to.EnableResponseLog = m.EnableResponseLog
 		to.DisableGRPCHistogram = m.DisableGRPCHistogram
 		to.MiddlewareServiceLabel = m.MiddlewareServiceLabel
+		to.MismatchingZedTokenOption = m.MismatchingZedTokenOption
+		to.MemoryUsageProvider = m.MemoryUsageProvider
 		to.unaryDatastoreMiddleware = m.unaryDatastoreMiddleware
 		to.streamDatastoreMiddleware = m.streamDatastoreMiddleware
 	}
@@ -54,6 +58,7 @@ func (m MiddlewareOption) DebugMap() map[string]any {
 	debugMap["EnableResponseLog"] = helpers.DebugValue(m.EnableResponseLog, false)
 	debugMap["DisableGRPCHistogram"] = helpers.DebugValue(m.DisableGRPCHistogram, false)
 	debugMap["MiddlewareServiceLabel"] = helpers.DebugValue(m.MiddlewareServiceLabel, false)
+	debugMap["MismatchingZedTokenOption"] = helpers.DebugValue(m.MismatchingZedTokenOption, false)
 	return debugMap
 }
 
@@ -126,5 +131,19 @@ func WithDisableGRPCHistogram(disableGRPCHistogram bool) MiddlewareOptionOption 
 func WithMiddlewareServiceLabel(middlewareServiceLabel string) MiddlewareOptionOption {
 	return func(m *MiddlewareOption) {
 		m.MiddlewareServiceLabel = middlewareServiceLabel
+	}
+}
+
+// WithMismatchingZedTokenOption returns an option that can set MismatchingZedTokenOption on a MiddlewareOption
+func WithMismatchingZedTokenOption(mismatchingZedTokenOption consistency.MismatchingTokenOption) MiddlewareOptionOption {
+	return func(m *MiddlewareOption) {
+		m.MismatchingZedTokenOption = mismatchingZedTokenOption
+	}
+}
+
+// WithMemoryUsageProvider returns an option that can set MemoryUsageProvider on a MiddlewareOption
+func WithMemoryUsageProvider(memoryUsageProvider memoryprotection.MemoryUsageProvider) MiddlewareOptionOption {
+	return func(m *MiddlewareOption) {
+		m.MemoryUsageProvider = memoryUsageProvider
 	}
 }

@@ -1,5 +1,4 @@
 //go:build ci && docker
-// +build ci,docker
 
 package crdb
 
@@ -83,6 +82,7 @@ func TestCRDBDatastoreWithoutIntegrity(t *testing.T) {
 				WatchBufferLength(watchBufferLength),
 				OverlapStrategy(overlapStrategyPrefix),
 				DebugAnalyzeBeforeStatistics(),
+				WithAcquireTimeout(5*time.Second),
 			)
 			require.NoError(t, err)
 			return indexcheck.WrapWithIndexCheckingDatastoreProxyIfApplicable(ds)
@@ -96,6 +96,7 @@ func TestCRDBDatastoreWithoutIntegrity(t *testing.T) {
 		StreamingWatchTest,
 		RevisionQuantization(0),
 		GCWindow(veryLargeGCWindow),
+		WithAcquireTimeout(5*time.Second),
 	))
 
 	t.Run("TestTransactionMetadataMarking", createDatastoreTest(
@@ -103,6 +104,7 @@ func TestCRDBDatastoreWithoutIntegrity(t *testing.T) {
 		TransactionMetadataMarkingTest,
 		RevisionQuantization(0),
 		GCWindow(veryLargeGCWindow),
+		WithAcquireTimeout(5*time.Second),
 	))
 }
 
@@ -135,6 +137,7 @@ func TestCRDBDatastoreWithFollowerReads(t *testing.T) {
 	}
 	for _, quantization := range quantizationDurations {
 		t.Run(fmt.Sprintf("Quantization%s", quantization), func(t *testing.T) {
+			t.Parallel()
 			require := require.New(t)
 			ctx := context.Background()
 
@@ -146,11 +149,14 @@ func TestCRDBDatastoreWithFollowerReads(t *testing.T) {
 					RevisionQuantization(quantization),
 					FollowerReadDelay(followerReadDelay),
 					DebugAnalyzeBeforeStatistics(),
+					WithAcquireTimeout(5*time.Second),
 				)
 				require.NoError(err)
 				return ds
 			})
-			defer ds.Close()
+			t.Cleanup(func() {
+				require.NoError(ds.Close())
+			})
 
 			r, err := ds.ReadyState(ctx)
 			require.NoError(err)
@@ -183,7 +189,7 @@ var defaultKeyForTesting = proxy.KeyConfig{
 	ExpiredAt: nil,
 }
 
-func TestCRDBDatastoreWithIntegrity(t *testing.T) {
+func TestCRDBDatastoreWithIntegrity(t *testing.T) { //nolint:tparallel
 	t.Parallel()
 	b := testdatastore.RunCRDBForTesting(t, "", crdbTestVersion())
 
@@ -199,6 +205,7 @@ func TestCRDBDatastoreWithIntegrity(t *testing.T) {
 				OverlapStrategy(overlapStrategyPrefix),
 				DebugAnalyzeBeforeStatistics(),
 				WithIntegrity(true),
+				WithAcquireTimeout(5*time.Second),
 			)
 			require.NoError(t, err)
 
@@ -222,6 +229,7 @@ func TestCRDBDatastoreWithIntegrity(t *testing.T) {
 				OverlapStrategy(overlapStrategyPrefix),
 				DebugAnalyzeBeforeStatistics(),
 				WithIntegrity(true),
+				WithAcquireTimeout(5*time.Second),
 			)
 			require.NoError(t, err)
 			return ds
@@ -248,7 +256,7 @@ func TestWatchFeatureDetection(t *testing.T) {
 		{
 			name: "rangefeeds disabled",
 			postInit: func(ctx context.Context, adminConn *pgx.Conn) {
-				_, err = adminConn.Exec(ctx, `SET CLUSTER SETTING kv.rangefeed.enabled = false;`)
+				_, err := adminConn.Exec(ctx, `SET CLUSTER SETTING kv.rangefeed.enabled = false;`)
 				require.NoError(t, err)
 			},
 			expectEnabled: false,
@@ -257,7 +265,7 @@ func TestWatchFeatureDetection(t *testing.T) {
 		{
 			name: "rangefeeds enabled, user doesn't have permission",
 			postInit: func(ctx context.Context, adminConn *pgx.Conn) {
-				_, err = adminConn.Exec(ctx, `SET CLUSTER SETTING kv.rangefeed.enabled = true;`)
+				_, err := adminConn.Exec(ctx, `SET CLUSTER SETTING kv.rangefeed.enabled = true;`)
 				require.NoError(t, err)
 			},
 			expectEnabled: false,
@@ -266,7 +274,7 @@ func TestWatchFeatureDetection(t *testing.T) {
 		{
 			name: "rangefeeds enabled, user has permission",
 			postInit: func(ctx context.Context, adminConn *pgx.Conn) {
-				_, err = adminConn.Exec(ctx, `SET CLUSTER SETTING kv.rangefeed.enabled = true;`)
+				_, err := adminConn.Exec(ctx, `SET CLUSTER SETTING kv.rangefeed.enabled = true;`)
 				require.NoError(t, err)
 
 				_, err = adminConn.Exec(ctx, fmt.Sprintf(`GRANT CHANGEFEED ON TABLE testspicedb.%s TO unprivileged;`, schema.TableTuple))
@@ -293,7 +301,7 @@ func TestWatchFeatureDetection(t *testing.T) {
 
 			tt.postInit(ctx, adminConn)
 
-			ds, err := NewCRDBDatastore(ctx, connStrings[unprivileged])
+			ds, err := NewCRDBDatastore(ctx, connStrings[unprivileged], WithAcquireTimeout(5*time.Second))
 			require.NoError(t, err)
 
 			features, err := ds.Features(ctx)
@@ -473,7 +481,7 @@ func newCRDBWithUser(t *testing.T, pool *dockertest.Pool) (adminConn *pgx.Conn, 
 		unprivileged: fmt.Sprintf("postgresql://unprivileged:testpass2@localhost:%[1]s/testspicedb?sslmode=require&sslrootcert=%[2]s/ca.crt", port, certDir),
 	}
 
-	return
+	return adminConn, connStrings
 }
 
 func RelationshipIntegrityInfoTest(t *testing.T, tester test.DatastoreTester) {
@@ -644,10 +652,11 @@ func TransactionMetadataMarkingTest(t *testing.T, rawDS datastore.Datastore) {
 	require := require.New(t)
 
 	ds, _ := testfixtures.DatastoreFromSchemaAndTestRelationships(rawDS, `
+		use expiration
 		definition user {}
 
 		definition resource {
-			relation viewer: user
+			relation viewer: user | user with expiration
 		}
 	`, []tuple.Relationship{
 		tuple.MustParse("resource:foo#viewer@user:tom"),
@@ -670,7 +679,7 @@ func TransactionMetadataMarkingTest(t *testing.T, rawDS datastore.Datastore) {
 	}, fmt.Sprintf("SELECT COUNT(*) FROM %s", schema.TableTransactionMetadata))
 	require.NoError(err)
 
-	// Write some rels, which should still avoid writing to the transactions table.
+	// Write some rels without expiration, which should still avoid writing to the transactions table.
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
 		err := rwt.WriteRelationships(ctx, []tuple.RelationshipUpdate{
 			tuple.Touch(tuple.MustParse("resource:foo#viewer@user:tom")),
@@ -739,6 +748,28 @@ func TransactionMetadataMarkingTest(t *testing.T, rawDS datastore.Datastore) {
 		return nil
 	}, fmt.Sprintf("SELECT COUNT(*) FROM %s", schema.TableTransactionMetadata))
 	require.NoError(err)
+
+	// Write one rel with expiration and one without, which should result in one transaction metadata entry.
+	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
+		err := rwt.WriteRelationships(ctx, []tuple.RelationshipUpdate{
+			tuple.Touch(tuple.MustParse("resource:foo#viewer@user:tom[expiration:2300-01-01T00:00:00Z]")),
+			tuple.Touch(tuple.MustParse("resource:foo#viewer@user:fred")),
+		})
+		require.NoError(err)
+		return nil
+	}, options.WithIncludesExpiredAt(true))
+	require.NoError(err)
+
+	err = cds.readPool.QueryFunc(ctx, func(ctx context.Context, rows pgx.Rows) error {
+		for rows.Next() {
+			var count int
+			err := rows.Scan(&count)
+			require.NoError(err)
+			require.Equal(3, count)
+		}
+		return nil
+	}, fmt.Sprintf("SELECT COUNT(*) FROM %s", schema.TableTransactionMetadata))
+	require.NoError(err)
 }
 
 func StreamingWatchTest(t *testing.T, rawDS datastore.Datastore) {
@@ -746,11 +777,11 @@ func StreamingWatchTest(t *testing.T, rawDS datastore.Datastore) {
 
 	ds, rev := testfixtures.DatastoreFromSchemaAndTestRelationships(rawDS, `
 		caveat somecaveat(somecondition int) {
-			somecondition == 42	
+			somecondition == 42
 		}
 
 		caveat somecaveat2(somecondition int) {
-			somecondition == 42	
+			somecondition == 42
 		}
 
 		definition user {}
@@ -778,7 +809,7 @@ func StreamingWatchTest(t *testing.T, rawDS datastore.Datastore) {
 		})
 		require.NoError(err)
 
-		err = rwt.DeleteNamespaces(ctx, "resource2")
+		err = rwt.DeleteNamespaces(ctx, []string{"resource2"}, datastore.DeleteNamespacesAndRelationships)
 		require.NoError(err)
 
 		err = rwt.DeleteCaveats(ctx, []string{"somecaveat2"})
@@ -833,4 +864,11 @@ func StreamingWatchTest(t *testing.T, rawDS datastore.Datastore) {
 			require.Fail("Timed out")
 		}
 	}
+}
+
+func TestWrapErr(t *testing.T) {
+	// this is a sanity check that these errors are correctly passed up
+	// unmodified so that higher layers can interpret them - in this case
+	// so we can return ResourceExhausted if we see this error.
+	require.Equal(t, wrapError(pool.ErrAcquire), pool.ErrAcquire)
 }

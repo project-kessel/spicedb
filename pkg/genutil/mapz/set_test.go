@@ -31,7 +31,7 @@ func TestSetOperations(t *testing.T) {
 
 	slice := set.AsSlice()
 	sort.Strings(slice)
-	require.Equal(t, slice, []string{"hello", "heyo", "hi"})
+	require.Equal(t, []string{"hello", "heyo", "hi"}, slice)
 
 	// Delete some items.
 	set.Delete("hi")
@@ -46,14 +46,14 @@ func TestSetOperations(t *testing.T) {
 
 	slice = set.AsSlice()
 	sort.Strings(slice)
-	require.Equal(t, slice, []string{"hello", "heyo"})
+	require.Equal(t, []string{"hello", "heyo"}, slice)
 
 	// Extend the set with a slice of values
 	set.Extend([]string{"1", "2", "3"})
 
 	slice = set.AsSlice()
 	sort.Strings(slice)
-	require.Equal(t, slice, []string{"1", "2", "3", "hello", "heyo"})
+	require.Equal(t, []string{"1", "2", "3", "hello", "heyo"}, slice)
 
 	// Create another set and remove its items.
 	otherSet := NewSet[string]()
@@ -63,7 +63,7 @@ func TestSetOperations(t *testing.T) {
 
 	slice = set.AsSlice()
 	sort.Strings(slice)
-	require.Equal(t, slice, []string{"hello", "heyo"})
+	require.Equal(t, []string{"hello", "heyo"}, slice)
 
 	// Create a third set and perform intersection difference.
 	thirdSet := NewSet[string]()
@@ -73,7 +73,7 @@ func TestSetOperations(t *testing.T) {
 
 	slice = set.AsSlice()
 	sort.Strings(slice)
-	require.Equal(t, slice, []string{"hello"})
+	require.Equal(t, []string{"hello"}, slice)
 }
 
 func TestSetIntersect(t *testing.T) {
@@ -337,153 +337,5 @@ func TestSetIntersectionDifference(t *testing.T) {
 			sort.Ints(slice)
 			require.Equal(t, tc.expected, slice)
 		})
-	}
-}
-
-func BenchmarkAdd(b *testing.B) {
-	set := NewSet[int]()
-	for i := 0; i < b.N; i++ {
-		set.Add(i)
-	}
-}
-
-func BenchmarkInsert(b *testing.B) {
-	set := NewSet[int]()
-	for i := 0; i < b.N; i++ {
-		set.Insert(i)
-	}
-}
-
-func BenchmarkCopy(b *testing.B) {
-	set := NewSet[int]()
-	for i := 0; i < b.N; i++ {
-		set.Add(i)
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		set.Copy()
-	}
-}
-
-func BenchmarkHas(b *testing.B) {
-	set := NewSet[int]()
-	for i := 0; i < b.N; i++ {
-		set.Add(i)
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		set.Has(i)
-	}
-}
-
-func BenchmarkDelete(b *testing.B) {
-	set := NewSet[int]()
-	for i := 0; i < b.N; i++ {
-		set.Add(i)
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		set.Delete(i)
-	}
-}
-
-func BenchmarkIntersect(b *testing.B) {
-	set := NewSet[int]()
-	for i := 0; i < b.N; i++ {
-		set.Add(i)
-	}
-	other := NewSet[int]()
-	for i := 0; i < b.N; i++ {
-		other.Add(i)
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		set.Intersect(other)
-	}
-}
-
-func BenchmarkSubtract(b *testing.B) {
-	set := NewSet[int]()
-	for i := 0; i < b.N; i++ {
-		set.Add(i)
-	}
-	other := NewSet[int]()
-	for i := 0; i < b.N; i++ {
-		other.Add(i)
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		set.Subtract(other)
-	}
-}
-
-func BenchmarkAsSlice(b *testing.B) {
-	set := NewSet[int]()
-	for i := 0; i < b.N; i++ {
-		set.Add(i)
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		set.AsSlice()
-	}
-}
-
-func BenchmarkEqual(b *testing.B) {
-	set := NewSet[int]()
-	for i := 0; i < b.N; i++ {
-		set.Add(i)
-	}
-	other := NewSet[int]()
-	for i := 0; i < b.N; i++ {
-		other.Add(i)
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		set.Equal(other)
-	}
-}
-
-func BenchmarkExtendFromSlice(b *testing.B) {
-	set := NewSet[int]()
-	for i := 0; i < b.N; i++ {
-		set.Add(i)
-	}
-	other := NewSet[int]()
-	for i := 0; i < b.N; i++ {
-		other.Add(i)
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		set.Extend(other.AsSlice())
-	}
-}
-
-func BenchmarkMerge(b *testing.B) {
-	set := NewSet[int]()
-	for i := 0; i < b.N; i++ {
-		set.Add(i)
-	}
-	other := NewSet[int]()
-	for i := 0; i < b.N; i++ {
-		other.Add(i)
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		set.Merge(other)
-	}
-}
-
-func BenchmarkUnion(b *testing.B) {
-	set := NewSet[int]()
-	for i := 0; i < b.N; i++ {
-		set.Add(i)
-	}
-	other := NewSet[int]()
-	for i := 0; i < b.N; i++ {
-		other.Add(i)
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		set.Union(other)
 	}
 }

@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/authzed/spicedb/internal/datastore/revisions"
+	"github.com/authzed/spicedb/internal/telemetry/otelconv"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/spiceerrors"
 )
@@ -153,7 +156,10 @@ func (mds *Datastore) checkValidTransaction(ctx context.Context, revisionTx uint
 		return false, false, fmt.Errorf(errCheckRevision, err)
 	}
 
-	span.AddEvent("DB returned validTransaction checks")
+	span.AddEvent(otelconv.EventDatastoreMySQLTransactionValidated, trace.WithAttributes(
+		attribute.Bool(otelconv.AttrDatastoreMySQLTransactionFresh, freshEnough.Bool),
+		attribute.Bool(otelconv.AttrDatastoreMySQLTransactionUnknown, unknown.Bool),
+	))
 
 	return freshEnough.Bool, unknown.Bool, nil
 }
@@ -187,7 +193,7 @@ func (mds *Datastore) createNewTransaction(ctx context.Context, tx *sql.Tx, meta
 		return 0, fmt.Errorf("createNewTransaction: failed to get last inserted id: %w", err)
 	}
 
-	uintLastInsertID, err := safecast.ToUint64(lastInsertID)
+	uintLastInsertID, err := safecast.Convert[uint64](lastInsertID)
 	if err != nil {
 		return 0, spiceerrors.MustBugf("lastInsertID was negative: %v", err)
 	}

@@ -107,6 +107,10 @@ func (mdb *memdbDatastore) MetricsID() (string, error) {
 	return "memdb", nil
 }
 
+func (mdb *memdbDatastore) UniqueID(_ context.Context) (string, error) {
+	return mdb.uniqueID, nil
+}
+
 func (mdb *memdbDatastore) SnapshotReader(dr datastore.Revision) datastore.Reader {
 	mdb.RLock()
 	defer mdb.RUnlock()
@@ -116,7 +120,7 @@ func (mdb *memdbDatastore) SnapshotReader(dr datastore.Revision) datastore.Reade
 	}
 
 	if len(mdb.revisions) == 0 {
-		return &memdbReader{nil, nil, fmt.Errorf("memdb datastore is not ready"), time.Now()}
+		return &memdbReader{nil, nil, errors.New("memdb datastore is not ready"), time.Now()}
 	}
 
 	if err := mdb.checkRevisionLocalCallerMustLock(dr); err != nil {
@@ -134,7 +138,7 @@ func (mdb *memdbDatastore) SnapshotReader(dr datastore.Revision) datastore.Reade
 
 	rev := mdb.revisions[revIndex]
 	if rev.db == nil {
-		return &memdbReader{nil, nil, fmt.Errorf("memdb datastore is already closed"), time.Now()}
+		return &memdbReader{nil, nil, errors.New("memdb datastore is already closed"), time.Now()}
 	}
 
 	roTxn := rev.db.Txn(false)
@@ -216,7 +220,7 @@ func (mdb *memdbDatastore) ReadWriteTx(
 		tracked := common.NewChanges(revisions.TimestampIDKeyFunc, datastore.WatchRelationships|datastore.WatchSchema, 0)
 		if tx != nil {
 			if config.Metadata != nil && len(config.Metadata.GetFields()) > 0 {
-				if err := tracked.SetRevisionMetadata(ctx, newRevision, config.Metadata.AsMap()); err != nil {
+				if err := tracked.AddRevisionMetadata(ctx, newRevision, config.Metadata.AsMap()); err != nil {
 					return datastore.NoRevision, err
 				}
 			}
@@ -224,7 +228,8 @@ func (mdb *memdbDatastore) ReadWriteTx(
 			for _, change := range tx.Changes() {
 				switch change.Table {
 				case tableRelationship:
-					if change.After != nil {
+					switch {
+					case change.After != nil:
 						rt, err := change.After.(*relationship).Relationship()
 						if err != nil {
 							return datastore.NoRevision, err
@@ -233,7 +238,7 @@ func (mdb *memdbDatastore) ReadWriteTx(
 						if err := tracked.AddRelationshipChange(ctx, newRevision, rt, tuple.UpdateOperationTouch); err != nil {
 							return datastore.NoRevision, err
 						}
-					} else if change.After == nil && change.Before != nil {
+					case change.After == nil && change.Before != nil:
 						rt, err := change.Before.(*relationship).Relationship()
 						if err != nil {
 							return datastore.NoRevision, err
@@ -242,11 +247,12 @@ func (mdb *memdbDatastore) ReadWriteTx(
 						if err := tracked.AddRelationshipChange(ctx, newRevision, rt, tuple.UpdateOperationDelete); err != nil {
 							return datastore.NoRevision, err
 						}
-					} else {
+					default:
 						return datastore.NoRevision, spiceerrors.MustBugf("unexpected relationship change")
 					}
 				case tableNamespace:
-					if change.After != nil {
+					switch {
+					case change.After != nil:
 						loaded := &corev1.NamespaceDefinition{}
 						if err := loaded.UnmarshalVT(change.After.(*namespace).configBytes); err != nil {
 							return datastore.NoRevision, err
@@ -256,16 +262,17 @@ func (mdb *memdbDatastore) ReadWriteTx(
 						if err != nil {
 							return datastore.NoRevision, err
 						}
-					} else if change.After == nil && change.Before != nil {
+					case change.After == nil && change.Before != nil:
 						err := tracked.AddDeletedNamespace(ctx, newRevision, change.Before.(*namespace).name)
 						if err != nil {
 							return datastore.NoRevision, err
 						}
-					} else {
+					default:
 						return datastore.NoRevision, spiceerrors.MustBugf("unexpected namespace change")
 					}
 				case tableCaveats:
-					if change.After != nil {
+					switch {
+					case change.After != nil:
 						loaded := &corev1.CaveatDefinition{}
 						if err := loaded.UnmarshalVT(change.After.(*caveat).definition); err != nil {
 							return datastore.NoRevision, err
@@ -275,12 +282,12 @@ func (mdb *memdbDatastore) ReadWriteTx(
 						if err != nil {
 							return datastore.NoRevision, err
 						}
-					} else if change.After == nil && change.Before != nil {
+					case change.After == nil && change.Before != nil:
 						err := tracked.AddDeletedCaveat(ctx, newRevision, change.Before.(*caveat).name)
 						if err != nil {
 							return datastore.NoRevision, err
 						}
-					} else {
+					default:
 						return datastore.NoRevision, spiceerrors.MustBugf("unexpected namespace change")
 					}
 				}
