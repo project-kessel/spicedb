@@ -106,7 +106,7 @@ jobs:
           username: "${{ env.DOCKERHUB_PUBLIC_USER }}"
           password: "${{ env.DOCKERHUB_PUBLIC_ACCESS_TOKEN }}"
       - name: "Integration tests with coverage"
-        run: "go run mage.go test:integrationCover"
+        run: "go run mage.go -t 30m00s test:integrationCover"
       - name: "Coverage"
         uses: "codecov/codecov-action@5a1091511ad55cbe89839c7260b706298ca349f7" # v5.5.1
         with:
