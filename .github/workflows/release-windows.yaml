@@ -9,6 +9,7 @@ permissions:
 jobs:
   release-windows:
     runs-on: "windows-latest"
+    if: false
     permissions:
       contents: "write"
       packages: "write" # publish to GHCR

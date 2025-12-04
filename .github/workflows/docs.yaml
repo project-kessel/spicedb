@@ -19,6 +19,7 @@ jobs:
   sync-docs:
     name: "Generate & Sync Documentation"
     runs-on: "ubuntu-latest"
+    if: false
     steps:
       - name: "Checkout source"
         uses: "actions/checkout@v5"
