@@ -28,12 +28,15 @@ const (
 	// BySubject might be quite a bit slower than ByResource, as relationships are
 	// indexed by resource.
 	BySubject
+
+	// ChooseEfficient lets the datastore choose the most efficient order based on the query shape and available indexes.
+	ChooseEfficient
 )
 
 type Cursor *tuple.Relationship
 
 func ToCursor(r tuple.Relationship) Cursor {
-	spiceerrors.DebugAssert(r.ValidateNotEmpty, "cannot create cursor from empty relationship")
+	spiceerrors.DebugAssertf(r.ValidateNotEmpty, "cannot create cursor from empty relationship")
 	return Cursor(&r)
 }
 
@@ -107,8 +110,9 @@ type ResourceRelation struct {
 // RWTOptions are options that can affect the way a read-write transaction is
 // executed.
 type RWTOptions struct {
-	DisableRetries bool             `debugmap:"visible"`
-	Metadata       *structpb.Struct `debugmap:"visible"`
+	DisableRetries    bool             `debugmap:"visible"`
+	Metadata          *structpb.Struct `debugmap:"visible"`
+	IncludesExpiredAt bool             `debugmap:"visible"`
 }
 
 // DeleteOptions are the options that can affect the results of a delete relationships

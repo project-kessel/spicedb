@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	"github.com/dustin/go-humanize"
 	"github.com/pbnjay/memory"
 	"github.com/spf13/pflag"
@@ -75,9 +75,9 @@ func CompleteCache[K cache.KeyString, V any](cc *CacheConfig) (cache.Cache[K, V]
 		return nil, fmt.Errorf("error parsing cache max memory: `%s`: %w", cc.MaxCost, err)
 	}
 
-	intMaxCost, err := safecast.ToInt64(maxCost)
+	intMaxCost, err := safecast.Convert[int64](maxCost)
 	if err != nil {
-		return nil, fmt.Errorf("could not cast max cost to int64")
+		return nil, errors.New("could not cast max cost to int64")
 	}
 
 	if cc.CacheKindForTesting != "" {
@@ -135,7 +135,7 @@ func MustRegisterCacheFlags(flags *pflag.FlagSet, flagPrefix string, config, def
 	config.Name = defaults.Name
 	flagPrefix = cmp.Or(flagPrefix, "cache")
 	flags.StringVar(&config.MaxCost, flagPrefix+"-max-cost", defaults.MaxCost, "upper bound cache size in bytes or percent of available memory")
-	flags.Int64Var(&config.NumCounters, flagPrefix+"-num-counters", defaults.NumCounters, "number of TinyLFU samples to track")
+	flags.Int64Var(&config.NumCounters, flagPrefix+"-num-counters", defaults.NumCounters, "number of TinyLFU samples to track. A higher number means more accurate eviction decisions but more memory usage")
 	flags.BoolVar(&config.Metrics, flagPrefix+"-metrics", defaults.Metrics, "enable cache metrics")
 	flags.BoolVar(&config.Enabled, flagPrefix+"-enabled", defaults.Enabled, "enable caching")
 

@@ -6,11 +6,11 @@ import (
 	"io"
 	"net"
 	"strconv"
-	"time"
 
-	"github.com/authzed/grpcutil"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+
+	"github.com/authzed/grpcutil"
 
 	"github.com/authzed/spicedb/e2e"
 	"github.com/authzed/spicedb/e2e/cockroach"
@@ -194,15 +194,10 @@ func (c *Cluster) Connect(ctx context.Context, out io.Writer) error {
 
 // MigrateHead migrates a Datastore to the latest revision defined in spicedb
 func MigrateHead(ctx context.Context, out io.Writer, datastore, uri string) error {
-	for i := 0; i < 5; i++ {
-		if err := e2e.Run(ctx, out, out,
-			"./spicedb",
-			"migrate", "head", "--datastore-engine="+datastore,
-			"--datastore-conn-uri="+uri,
-		); err == nil {
-			return nil
-		}
-		time.Sleep(1 * time.Second)
-	}
-	return fmt.Errorf("failed to migrate spicedb")
+	return e2e.Run(ctx, out, out,
+		"./spicedb",
+		"datastore", "migrate", "head",
+		"--datastore-engine="+datastore,
+		"--datastore-conn-uri="+uri,
+	)
 }

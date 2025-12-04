@@ -116,12 +116,7 @@ func (cc *ConcurrentChecker) Check(ctx context.Context, req ValidatedCheckReques
 		return resolved.Resp, resolved.Err
 	}
 
-	nodeID, err := nodeid.FromContext(ctx)
-	if err != nil {
-		// NOTE: we ignore this error here as if the node ID is missing, the debug
-		// trace is still valid.
-		log.Err(err).Msg("failed to get node ID")
-	}
+	nodeID := nodeid.Get()
 
 	// Add debug information if requested.
 	debugInfo := resolved.Resp.Metadata.DebugInfo
@@ -175,7 +170,7 @@ func (cc *ConcurrentChecker) Check(ctx context.Context, req ValidatedCheckReques
 }
 
 func (cc *ConcurrentChecker) checkInternal(ctx context.Context, req ValidatedCheckRequest, relation *core.Relation) CheckResult {
-	spiceerrors.DebugAssert(func() bool {
+	spiceerrors.DebugAssertf(func() bool {
 		return relation.GetUsersetRewrite() != nil || relation.GetTypeInformation() != nil
 	}, "found relation without type information")
 
@@ -328,11 +323,12 @@ func (cc *ConcurrentChecker) checkDirect(ctx context.Context, crc currentRequest
 	totalWildcardSubjects := 0
 
 	defer func() {
-		if totalNonTerminals > 0 {
+		switch {
+		case totalNonTerminals > 0:
 			span.SetName("non terminal")
-		} else if totalDirectSubjects > 0 {
+		case totalDirectSubjects > 0:
 			span.SetName("terminal")
-		} else {
+		default:
 			span.SetName("wildcard subject")
 		}
 	}()
@@ -539,7 +535,7 @@ func mapFoundResources(result CheckResult, resourceType tuple.RelationReference,
 	for foundResourceID, result := range result.Resp.ResultsByResourceId {
 		resourceIDAndCaveats := checksToDispatch.mappingsForSubject(resourceType.ObjectType, foundResourceID, resourceType.Relation)
 
-		spiceerrors.DebugAssert(func() bool {
+		spiceerrors.DebugAssertf(func() bool {
 			return len(resourceIDAndCaveats) > 0
 		}, "found resource ID without associated caveats")
 
@@ -1325,15 +1321,10 @@ func combineResponseMetadata(ctx context.Context, existing *v1.ResponseMeta, res
 		return combined
 	}
 
-	nodeID, err := nodeid.FromContext(ctx)
-	if err != nil {
-		log.Err(err).Msg("failed to get nodeID from context")
-	}
-
 	debugInfo := &v1.DebugInformation{
 		Check: &v1.CheckDebugTrace{
 			TraceId:  NewTraceID(),
-			SourceId: nodeID,
+			SourceId: nodeid.Get(),
 		},
 	}
 

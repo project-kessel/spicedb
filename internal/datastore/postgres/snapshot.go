@@ -1,12 +1,13 @@
 package postgres
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
 	"strings"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -40,7 +41,7 @@ func (SnapshotCodec) DecodeValue(tm *pgtype.Map, oid uint32, format int16, src [
 	var target pgSnapshot
 	scanPlan := tm.PlanScan(oid, format, &target)
 	if scanPlan == nil {
-		return nil, fmt.Errorf("PlanScan did not find a plan")
+		return nil, errors.New("PlanScan did not find a plan")
 	}
 
 	err := scanPlan.Scan(src, &target)
@@ -63,7 +64,7 @@ var (
 
 func (s *pgSnapshot) ScanText(v pgtype.Text) error {
 	if !v.Valid {
-		return fmt.Errorf("cannot scan NULL into pgSnapshot")
+		return errors.New("cannot scan NULL into pgSnapshot")
 	}
 
 	components := strings.SplitN(v.String, ":", 3)
@@ -278,7 +279,11 @@ func (s pgSnapshot) markInProgress(txid uint64) pgSnapshot {
 	startingXipLen := len(newSnapshot.xipList)
 	for numToDrop = 0; numToDrop < startingXipLen; numToDrop++ {
 		// numToDrop should be nonnegative
-		uintNumToDrop, _ := safecast.ToUint64(numToDrop)
+		uintNumToDrop, err := safecast.Convert[uint64](numToDrop)
+		if err != nil {
+			uintNumToDrop = 0
+		}
+
 		if newSnapshot.xipList[startingXipLen-1-numToDrop] != newSnapshot.xmax-uintNumToDrop-1 {
 			break
 		}

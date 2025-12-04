@@ -1,6 +1,3 @@
-//go:build docker
-// +build docker
-
 package config
 
 import (
@@ -24,7 +21,6 @@ func DatastoreConfigInitFunc(t testing.TB, options ...dsconfig.ConfigOption) tes
 			append(options,
 				dsconfig.WithEngine(engine),
 				dsconfig.WithEnableDatastoreMetrics(false),
-				dsconfig.WithEnableExperimentalRelationshipExpiration(true),
 				dsconfig.WithURI(uri),
 			)...)
 		require.NoError(t, err)

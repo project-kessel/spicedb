@@ -7,7 +7,7 @@ import (
 
 	"cloud.google.com/go/spanner"
 	sq "github.com/Masterminds/squirrel"
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 
@@ -142,10 +142,10 @@ func spannerMutation(
 	default:
 		log.Ctx(ctx).Error().Msg("unknown operation type")
 		err = fmt.Errorf("unknown mutation operation: %v", operation)
-		return
+		return txnMut, countChange, err
 	}
 
-	return
+	return txnMut, countChange, err
 }
 
 func (rwt spannerReadWriteTXN) DeleteRelationships(ctx context.Context, filter *v1.RelationshipFilter, opts ...options.DeleteOptionsOption) (uint64, bool, error) {
@@ -183,7 +183,7 @@ func deleteWithFilter(ctx context.Context, rwt *spanner.ReadWriteTransaction, fi
 		numDeleted = nu
 	}
 
-	uintNumDeleted, err := safecast.ToUint64(numDeleted)
+	uintNumDeleted, err := safecast.Convert[uint64](numDeleted)
 	if err != nil {
 		return 0, false, spiceerrors.MustBugf("numDeleted was negative: %v", err)
 	}
@@ -373,7 +373,11 @@ func (rwt spannerReadWriteTXN) WriteNamespaces(_ context.Context, newConfigs ...
 	return rwt.spannerRWT.BufferWrite(mutations)
 }
 
-func (rwt spannerReadWriteTXN) DeleteNamespaces(ctx context.Context, nsNames ...string) error {
+func (rwt spannerReadWriteTXN) DeleteNamespaces(ctx context.Context, nsNames []string, delOption datastore.DeleteNamespacesRelationshipsOption) error {
+	if len(nsNames) == 0 {
+		return nil
+	}
+
 	namespaces, err := rwt.LookupNamespacesWithNames(ctx, nsNames)
 	if err != nil {
 		return fmt.Errorf(errUnableToDeleteConfig, err)
@@ -389,11 +393,11 @@ func (rwt spannerReadWriteTXN) DeleteNamespaces(ctx context.Context, nsNames ...
 	}
 
 	for _, nsName := range nsNames {
-		// Ensure the namespace exists.
-
-		relFilter := &v1.RelationshipFilter{ResourceType: nsName}
-		if _, _, err := deleteWithFilter(ctx, rwt.spannerRWT, relFilter); err != nil {
-			return fmt.Errorf(errUnableToDeleteConfig, err)
+		if delOption == datastore.DeleteNamespacesAndRelationships {
+			relFilter := &v1.RelationshipFilter{ResourceType: nsName}
+			if _, _, err := deleteWithFilter(ctx, rwt.spannerRWT, relFilter); err != nil {
+				return fmt.Errorf(errUnableToDeleteConfig, err)
+			}
 		}
 
 		err := rwt.spannerRWT.BufferWrite([]*spanner.Mutation{

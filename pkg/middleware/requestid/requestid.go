@@ -2,6 +2,7 @@ package requestid
 
 import (
 	"context"
+	"strings"
 
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors"
 	"github.com/rs/xid"
@@ -54,20 +55,25 @@ func (r *handleRequestID) ClientReporter(ctx context.Context, meta interceptors.
 	return interceptors.NoopReporter{}, ctx
 }
 
+// ServerReporter is invoked before the request begins processing.
 func (r *handleRequestID) ServerReporter(ctx context.Context, _ interceptors.CallMeta) (interceptors.Reporter, context.Context) {
 	haveRequestID, requestID, ctx := r.fromContextOrGenerate(ctx)
 
 	if haveRequestID {
-		err := responsemeta.SetResponseHeaderMetadata(ctx, map[responsemeta.ResponseMetadataHeaderKey]string{
-			responsemeta.RequestID: requestID,
-		})
-		// if context is cancelled, the stream will be closed, and gRPC will return ErrIllegalHeaderWrite
-		// this prevents logging unnecessary error messages
+		// if context is cancelled, no point in attempting to write any headers, since the client terminated the stream
 		if ctx.Err() != nil {
 			return interceptors.NoopReporter{}, ctx
 		}
+
+		err := responsemeta.SetResponseTrailerMetadata(ctx, map[responsemeta.ResponseMetadataTrailerKey]string{
+			responsemeta.ResponseMetadataTrailerKey(responsemeta.RequestID): requestID,
+		})
 		if err != nil {
-			log.Ctx(ctx).Warn().Err(err).Msg("requestid: could not report metadata")
+			// if context is cancelled, the stream will be closed, and gRPC will return ErrIllegalHeaderWrite (which is private)
+			// this prevents logging unnecessary error messages
+			if !strings.Contains(err.Error(), "SendHeader called multiple times") {
+				log.Ctx(ctx).Warn().Err(err).Msg("requestid: could not report metadata")
+			}
 		}
 	}
 

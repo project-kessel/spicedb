@@ -1,5 +1,4 @@
 //go:build steelthread
-// +build steelthread
 
 package steelthreadtesting
 
@@ -13,19 +12,20 @@ import (
 	"strings"
 	"time"
 
-	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	"google.golang.org/protobuf/types/known/structpb"
 	"gopkg.in/yaml.v3"
+
+	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 
 	"github.com/authzed/spicedb/pkg/genutil/mapz"
 	"github.com/authzed/spicedb/pkg/tuple"
 )
 
-func lookupSubjects(parameters map[string]any, client v1.PermissionsServiceClient) (any, error) {
+func lookupSubjects(parameters map[string]any, clients stClients) (any, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	r, err := client.LookupSubjects(ctx, &v1.LookupSubjectsRequest{
+	r, err := clients.PermissionsClient.LookupSubjects(ctx, &v1.LookupSubjectsRequest{
 		Resource: &v1.ObjectReference{
 			ObjectType: parameters["resource_type"].(string),
 			ObjectId:   parameters["resource_object_id"].(string),
@@ -72,7 +72,7 @@ func lookupSubjects(parameters map[string]any, client v1.PermissionsServiceClien
 	return yamlNodes, nil
 }
 
-func lookupResources(parameters map[string]any, client v1.PermissionsServiceClient) (any, error) {
+func lookupResources(parameters map[string]any, clients stClients) (any, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -85,7 +85,7 @@ func lookupResources(parameters map[string]any, client v1.PermissionsServiceClie
 		context = c
 	}
 
-	r, err := client.LookupResources(ctx, &v1.LookupResourcesRequest{
+	r, err := clients.PermissionsClient.LookupResources(ctx, &v1.LookupResourcesRequest{
 		ResourceObjectType: parameters["resource_type"].(string),
 		Permission:         parameters["permission"].(string),
 		Subject: &v1.SubjectReference{
@@ -135,7 +135,7 @@ func lookupResources(parameters map[string]any, client v1.PermissionsServiceClie
 	return yamlNodes, nil
 }
 
-func cursoredLookupResources(parameters map[string]any, client v1.PermissionsServiceClient) (any, error) {
+func cursoredLookupResources(parameters map[string]any, clients stClients) (any, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -152,7 +152,7 @@ func cursoredLookupResources(parameters map[string]any, client v1.PermissionsSer
 	nodeSets := make([][]yaml.Node, 0)
 	resultCounts := make([]int, 0)
 	for {
-		r, err := client.LookupResources(ctx, &v1.LookupResourcesRequest{
+		r, err := clients.PermissionsClient.LookupResources(ctx, &v1.LookupResourcesRequest{
 			ResourceObjectType: parameters["resource_type"].(string),
 			Permission:         parameters["permission"].(string),
 			Subject: &v1.SubjectReference{
@@ -167,7 +167,7 @@ func cursoredLookupResources(parameters map[string]any, client v1.PermissionsSer
 					FullyConsistent: true,
 				},
 			},
-			OptionalLimit:  uint32(parameters["page_size"].(int)),
+			OptionalLimit:  uint32(parameters["page_size"].(int)), //nolint:gosec
 			OptionalCursor: currentCursor,
 		})
 		if err != nil {
@@ -225,7 +225,7 @@ func cursoredLookupResources(parameters map[string]any, client v1.PermissionsSer
 	return nodeSets, nil
 }
 
-func bulkImportExportRelationships(parameters map[string]any, client v1.PermissionsServiceClient) (any, error) {
+func bulkImportExportRelationships(parameters map[string]any, clients stClients) (any, error) {
 	// Read the list of relationships to pass to the import operation.
 	importRelsFile := parameters["rels_file"].(string)
 
@@ -252,7 +252,7 @@ func bulkImportExportRelationships(parameters map[string]any, client v1.Permissi
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	r, err := client.ImportBulkRelationships(ctx)
+	r, err := clients.PermissionsClient.ImportBulkRelationships(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -269,14 +269,14 @@ func bulkImportExportRelationships(parameters map[string]any, client v1.Permissi
 		return nil, err
 	}
 
-	if len(importRels) != int(resp.NumLoaded) {
+	if uint64(len(importRels)) != resp.NumLoaded {
 		return nil, fmt.Errorf("expected %d relationships to be loaded, got %d", len(importRels), resp.NumLoaded)
 	}
 
 	// Run bulk export and return the results.
 	var optionalLimit uint32
 	if optionalLimitValue, ok := parameters["optional_limit"]; ok {
-		optionalLimit = uint32(optionalLimitValue.(int))
+		optionalLimit = uint32(optionalLimitValue.(int)) //nolint:gosec
 	}
 
 	var filter *v1.RelationshipFilter
@@ -292,7 +292,7 @@ func bulkImportExportRelationships(parameters map[string]any, client v1.Permissi
 		}
 	}
 
-	exr, err := client.ExportBulkRelationships(ctx, &v1.ExportBulkRelationshipsRequest{
+	exr, err := clients.PermissionsClient.ExportBulkRelationships(ctx, &v1.ExportBulkRelationshipsRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_FullyConsistent{
 				FullyConsistent: true,
@@ -328,7 +328,7 @@ func bulkImportExportRelationships(parameters map[string]any, client v1.Permissi
 	return exportedRels, nil
 }
 
-func bulkCheckPermissions(parameters map[string]any, client v1.PermissionsServiceClient) (any, error) {
+func bulkCheckPermissions(parameters map[string]any, clients stClients) (any, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -353,7 +353,7 @@ func bulkCheckPermissions(parameters map[string]any, client v1.PermissionsServic
 		})
 	}
 
-	resp, err := client.CheckBulkPermissions(ctx, &v1.CheckBulkPermissionsRequest{
+	resp, err := clients.PermissionsClient.CheckBulkPermissions(ctx, &v1.CheckBulkPermissionsRequest{
 		Items: checkRequests,
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_FullyConsistent{
@@ -387,12 +387,140 @@ func bulkCheckPermissions(parameters map[string]any, client v1.PermissionsServic
 	return respItems, nil
 }
 
+func writeSchema(parameters map[string]any, clients stClients) (any, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	schemaText := parameters["schema"].(string)
+
+	_, err := clients.SchemaClient.WriteSchema(ctx, &v1.WriteSchemaRequest{
+		Schema: schemaText,
+	})
+	if err != nil {
+		return map[string]any{
+			"error": fmt.Sprintf("failed to write schema: %v", err),
+		}, nil
+	}
+
+	return map[string]any{}, nil
+}
+
+func cursoredReadRelationships(parameters map[string]any, clients stClients) (any, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	filter := &v1.RelationshipFilter{}
+
+	if resourceType, ok := parameters["resource_type"].(string); ok {
+		filter.ResourceType = resourceType
+	}
+
+	if resourceID, ok := parameters["resource_id"].(string); ok {
+		filter.OptionalResourceId = resourceID
+	}
+
+	if subjectType, ok := parameters["subject_type"].(string); ok {
+		filter.OptionalSubjectFilter = &v1.SubjectFilter{
+			SubjectType: subjectType,
+		}
+	}
+
+	if subjectID, ok := parameters["subject_id"].(string); ok {
+		if filter.OptionalSubjectFilter == nil {
+			filter.OptionalSubjectFilter = &v1.SubjectFilter{}
+		}
+		filter.OptionalSubjectFilter.OptionalSubjectId = subjectID
+	}
+
+	var currentCursor *v1.Cursor
+	nodeSets := make([][]yaml.Node, 0)
+	resultCounts := make([]int, 0)
+
+	for {
+		req := &v1.ReadRelationshipsRequest{
+			RelationshipFilter: filter,
+			Consistency: &v1.Consistency{
+				Requirement: &v1.Consistency_FullyConsistent{
+					FullyConsistent: true,
+				},
+			},
+			OptionalLimit:  uint32(parameters["page_size"].(int)), //nolint:gosec
+			OptionalCursor: currentCursor,
+		}
+
+		r, err := clients.PermissionsClient.ReadRelationships(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+
+		foundRelationships := mapz.NewSet[string]()
+		resultCount := 0
+		var lastCursor *v1.Cursor
+
+		for {
+			resp, err := r.Recv()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					break
+				}
+
+				return nil, err
+			}
+
+			foundRelationships.Add(tuple.MustV1RelString(resp.Relationship))
+			lastCursor = resp.AfterResultCursor
+			resultCount++
+		}
+
+		if foundRelationships.IsEmpty() {
+			break
+		}
+
+		resultCounts = append(resultCounts, resultCount)
+
+		foundRelationshipsSlice := foundRelationships.AsSlice()
+		sort.Strings(foundRelationshipsSlice)
+
+		yamlNodes := make([]yaml.Node, 0, len(foundRelationshipsSlice))
+		for _, rel := range foundRelationshipsSlice {
+			yamlNodes = append(yamlNodes, yaml.Node{
+				Kind:  yaml.ScalarNode,
+				Value: rel,
+				Style: yaml.SingleQuotedStyle,
+			})
+		}
+
+		nodeSets = append(nodeSets, yamlNodes)
+
+		// If we got fewer results than the page size, we're done
+		if resultCount < parameters["page_size"].(int) {
+			break
+		}
+
+		currentCursor = lastCursor
+	}
+
+	for index, count := range resultCounts {
+		if index == len(resultCounts)-1 {
+			continue
+		}
+
+		if count != parameters["page_size"].(int) {
+			return nil, fmt.Errorf("expected full page size of %d for page #%d (of %d), got %d\npage sizes: %v", parameters["page_size"].(int), index, len(resultCounts), count, resultCounts)
+		}
+	}
+
+	return nodeSets, nil
+}
+
 var operations = map[string]stOperation{
 	"lookupSubjects":                lookupSubjects,
 	"lookupResources":               lookupResources,
 	"cursoredLookupResources":       cursoredLookupResources,
+	"cursoredReadRelationships":     cursoredReadRelationships,
 	"bulkImportExportRelationships": bulkImportExportRelationships,
 	"bulkCheckPermissions":          bulkCheckPermissions,
+	"writeSchema":                   writeSchema,
 }
 
 func formatResolvedResource(resource *v1.LookupResourcesResponse) string {

@@ -1,5 +1,4 @@
 //go:build !skipintegrationtests
-// +build !skipintegrationtests
 
 package integrationtesting_test
 
@@ -18,7 +17,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"go.uber.org/goleak"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
 
@@ -29,7 +27,6 @@ import (
 	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/middleware/servicespecific"
 	tf "github.com/authzed/spicedb/internal/testfixtures"
-	caveattypes "github.com/authzed/spicedb/pkg/caveats/types"
 	"github.com/authzed/spicedb/pkg/cmd/server"
 	"github.com/authzed/spicedb/pkg/cmd/util"
 	"github.com/authzed/spicedb/pkg/middleware/consistency"
@@ -38,8 +35,6 @@ import (
 )
 
 func TestCertRotation(t *testing.T) {
-	t.Parallel()
-
 	const (
 		// length of time the initial cert is valid
 		initialValidDuration = 3 * time.Second
@@ -119,10 +114,14 @@ func TestCertRotation(t *testing.T) {
 	emptyDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 10, time.Duration(90_000_000_000_000))
 	require.NoError(t, err)
 	ds, revision := tf.StandardDatastoreWithData(emptyDS, require.New(t))
+
+	dispatcher, err := graph.NewLocalOnlyDispatcher(graph.MustNewDefaultDispatcherParametersForTesting())
+	require.NoError(t, err)
+
 	ctx, cancel := context.WithCancel(t.Context())
 	srv, err := server.NewConfigWithOptionsAndDefaults(
 		server.WithDatastore(ds),
-		server.WithDispatcher(graph.NewLocalOnlyDispatcher(caveattypes.Default.TypeSet, 1, 100)),
+		server.WithDispatcher(dispatcher),
 		server.WithDispatchMaxDepth(50),
 		server.WithMaximumPreconditionCount(1000),
 		server.WithMaximumUpdatesPerWrite(1000),
@@ -149,7 +148,7 @@ func TestCertRotation(t *testing.T) {
 					},
 					{
 						Name:       "consistency",
-						Middleware: consistency.UnaryServerInterceptor("testing"),
+						Middleware: consistency.UnaryServerInterceptor("testing", consistency.TreatMismatchingTokensAsError),
 					},
 					{
 						Name:       "servicespecific",
@@ -168,7 +167,7 @@ func TestCertRotation(t *testing.T) {
 					},
 					{
 						Name:       "consistency",
-						Middleware: consistency.StreamServerInterceptor("testing"),
+						Middleware: consistency.StreamServerInterceptor("testing", consistency.TreatMismatchingTokensAsError),
 					},
 					{
 						Name:       "servicespecific",
@@ -180,10 +179,10 @@ func TestCertRotation(t *testing.T) {
 	).Complete(ctx)
 	require.NoError(t, err)
 
-	wait := make(chan struct{}, 1)
+	wait := make(chan error, 1)
 	go func() {
-		require.NoError(t, srv.Run(ctx))
-		wait <- struct{}{}
+		err := srv.Run(ctx)
+		wait <- err
 	}()
 
 	// If previous code takes more than initialValidDuration*2 to execute, the cert
@@ -212,7 +211,7 @@ func TestCertRotation(t *testing.T) {
 	_, err = client.CheckPermission(ctx, &v1.CheckPermissionRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 			},
 		},
 		Resource:   rel.Resource,
@@ -265,7 +264,7 @@ func TestCertRotation(t *testing.T) {
 		_, err = client.CheckPermission(ctx, &v1.CheckPermissionRequest{
 			Consistency: &v1.Consistency{
 				Requirement: &v1.Consistency_AtLeastAsFresh{
-					AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+					AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 				},
 			},
 			Resource:   rel.Resource,
@@ -279,10 +278,10 @@ func TestCertRotation(t *testing.T) {
 	cancel()
 	cancelDial()
 	select {
-	case <-wait:
+	case err := <-wait:
+		require.NoError(t, err)
 		return
 	case <-time.After(30 * time.Second):
 		require.Fail(t, "ungraceful server termination")
 	}
-	goleak.VerifyNone(t, goleak.IgnoreCurrent())
 }

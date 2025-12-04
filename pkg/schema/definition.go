@@ -366,6 +366,13 @@ type Traits struct {
 	AllowsExpiration bool
 }
 
+func (t Traits) union(other Traits) Traits {
+	return Traits{
+		AllowsCaveats:    t.AllowsCaveats || other.AllowsCaveats,
+		AllowsExpiration: t.AllowsExpiration || other.AllowsExpiration,
+	}
+}
+
 // PossibleTraitsForSubject returns the traits that are possible for the given subject type on the specified relation.
 func (def *Definition) PossibleTraitsForSubject(relationName string, subjectTypeName string) (Traits, error) {
 	relation, ok := def.relationMap[relationName]
@@ -402,5 +409,57 @@ func (def *Definition) PossibleTraitsForSubject(relationName string, subjectType
 		)
 	}
 
+	return foundTraits, nil
+}
+
+// PossibleTraitsForAnySubject returns the traits that are possible on *any* subject for the specified relation.
+// This returns the union of traits across all allowed subject types.
+func (def *Definition) PossibleTraitsForAnySubject(relationName string) (Traits, error) {
+	relation, ok := def.relationMap[relationName]
+	if !ok {
+		return Traits{}, NewRelationNotFoundErr(def.nsDef.Name, relationName)
+	}
+
+	typeInfo := relation.GetTypeInformation()
+	if typeInfo == nil {
+		return Traits{}, NewTypeWithSourceError(
+			fmt.Errorf("relation `%s` does not have type information", relationName),
+			relation, relationName,
+		)
+	}
+
+	foundTraits := Traits{}
+	for _, allowedRelation := range typeInfo.GetAllowedDirectRelations() {
+		if allowedRelation.GetRequiredCaveat() != nil && allowedRelation.GetRequiredCaveat().CaveatName != "" {
+			foundTraits.AllowsCaveats = true
+		}
+		if allowedRelation.GetRequiredExpiration() != nil {
+			foundTraits.AllowsExpiration = true
+		}
+	}
+
+	return foundTraits, nil
+}
+
+// PossibleTraitsForAnyRelation returns the traits that are possible on *any* relation for the specified resource type.
+func (def *Definition) PossibleTraitsForAnyRelation() (Traits, error) {
+	foundTraits := Traits{}
+	for _, relation := range def.relationMap {
+		// Skip relations without type information (e.g., permissions)
+		if relation.GetTypeInformation() == nil {
+			continue
+		}
+
+		traits, err := def.PossibleTraitsForAnySubject(relation.GetName())
+		if err != nil {
+			return Traits{}, err
+		}
+		if traits.AllowsCaveats {
+			foundTraits.AllowsCaveats = true
+		}
+		if traits.AllowsExpiration {
+			foundTraits.AllowsExpiration = true
+		}
+	}
 	return foundTraits, nil
 }

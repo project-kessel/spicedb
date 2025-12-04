@@ -10,6 +10,7 @@ import (
 
 	"github.com/magefile/mage/mg"
 	"github.com/magefile/mage/sh"
+	"golang.org/x/sync/errgroup"
 )
 
 type Test mg.Namespace
@@ -61,6 +62,35 @@ func (Test) Image(ctx context.Context) error {
 func (Test) Integration(ctx context.Context) error {
 	mg.Deps(checkDocker)
 	return goTest(ctx, "./internal/services/integrationtesting/...", "-tags", "ci,docker", "-timeout", "15m")
+}
+
+// e2e Runs e2e tests (new enemy)
+func (Test) E2e(ctx context.Context, crdbVersion string) error {
+	if crdbVersion == "" {
+		// TODO 25.x don't support manually overriding the clock
+		// so you will see ERROR: request timestamp 1763064549.980401596,0 too far in future
+		return fmt.Errorf("no crdb version provided. try 25.2.0 or 25.3.0")
+	}
+	mg.Deps(Build{}.E2e)
+
+	arch := "amd64" // TODO support arm64. CRDB supports it but Chaosd doesn't
+
+	var errg errgroup.Group
+	errg.Go(func() error {
+		fmt.Println("Downloading cockroach binary...")
+		return sh.Run("bash", "-c", fmt.Sprintf("curl -fsSL https://binaries.cockroachdb.com/cockroach-v%s.linux-%s.tgz | tar -xz -C ./e2e/newenemy --strip-components=1 cockroach-v%s.linux-%s/cockroach", crdbVersion, arch, crdbVersion, arch))
+	})
+	errg.Go(func() error {
+		fmt.Println("Downloading chaosd binary...")
+		return sh.Run("bash", "-c", fmt.Sprintf("curl -fsSL https://mirrors.chaos-mesh.org/chaosd-v1.1.1-linux-%s.tar.gz | tar -xz -C ./e2e/newenemy --strip-components=1 chaosd-v1.1.1-linux-%s/chaosd", arch, arch))
+	})
+	err := errg.Wait()
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("Running e2e tests on architecture ", arch)
+	return goDirTest(ctx, "./e2e/newenemy", "./...")
 }
 
 // Integration Run integration tests with cover
@@ -164,7 +194,9 @@ func datastoreTest(ctx context.Context, datastore string, env map[string]string,
 	mergedTags := append([]string{"ci", "docker"}, tags...)
 	tagString := strings.Join(mergedTags, ",")
 	mg.Deps(checkDocker)
-	return goDirTestWithEnv(ctx, ".", fmt.Sprintf("./internal/datastore/%s/...", datastore), env, "-tags", tagString, "-timeout", "20m")
+	args := []string{"-tags", tagString}
+	args = append(args, coverageFlags...)
+	return goDirTestWithEnv(ctx, ".", fmt.Sprintf("./internal/datastore/%s/...", datastore), env, args...)
 }
 
 type Testcons mg.Namespace
@@ -222,6 +254,11 @@ func (Testcons) Mysql(ctx context.Context) error {
 
 func consistencyTest(ctx context.Context, datastore string, env map[string]string) error {
 	mg.Deps(checkDocker)
+	args := []string{
+		"-tags", "ci,docker,datastoreconsistency",
+		"-run", fmt.Sprintf("TestConsistencyPerDatastore/%s", datastore),
+	}
+	args = append(args, coverageFlags...)
 	return goDirTestWithEnv(ctx, ".", "./internal/services/integrationtesting/...",
 		env,
 		"-tags", "ci,docker,datastoreconsistency",

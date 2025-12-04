@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	"github.com/google/go-cmp/cmp"
 	yaml "gopkg.in/yaml.v2"
 
@@ -89,11 +89,11 @@ func validateSubjects(onrKey blocks.ObjectRelation, fs developmentmembership.Fou
 	for _, expectedSubject := range expectedSubjects {
 		subjectWithExceptions := expectedSubject.SubjectWithExceptions
 		// NOTE: zeroes are fine here on failure.
-		lineNumber, err := safecast.ToUint32(expectedSubject.SourcePosition.LineNumber)
+		lineNumber, err := safecast.Convert[uint32](expectedSubject.SourcePosition.LineNumber)
 		if err != nil {
 			log.Err(err).Msg("could not cast lineNumber to uint32")
 		}
-		columnPosition, err := safecast.ToUint32(expectedSubject.SourcePosition.ColumnPosition)
+		columnPosition, err := safecast.Convert[uint32](expectedSubject.SourcePosition.ColumnPosition)
 		if err != nil {
 			log.Err(err).Msg("could not cast columnPosition to uint32")
 		}
@@ -169,19 +169,17 @@ func validateSubjects(onrKey blocks.ObjectRelation, fs developmentmembership.Fou
 					Column:  columnPosition,
 				})
 			}
-		} else {
-			if len(expectedExcludedSubjects) > 0 {
-				failures = append(failures, &devinterface.DeveloperError{
-					Message: fmt.Sprintf("For object and permission/relation `%s`, found unexpected excluded subjects",
-						tuple.StringONR(onr),
-					),
-					Source:  devinterface.DeveloperError_VALIDATION_YAML,
-					Kind:    devinterface.DeveloperError_EXTRA_RELATIONSHIP_FOUND,
-					Context: string(expectedSubject.ValidationString),
-					Line:    lineNumber,
-					Column:  columnPosition,
-				})
-			}
+		} else if len(expectedExcludedSubjects) > 0 {
+			failures = append(failures, &devinterface.DeveloperError{
+				Message: fmt.Sprintf("For object and permission/relation `%s`, found unexpected excluded subjects",
+					tuple.StringONR(onr),
+				),
+				Source:  devinterface.DeveloperError_VALIDATION_YAML,
+				Kind:    devinterface.DeveloperError_EXTRA_RELATIONSHIP_FOUND,
+				Context: string(expectedSubject.ValidationString),
+				Line:    lineNumber,
+				Column:  columnPosition,
+			})
 		}
 
 		// Verify caveats.
@@ -203,11 +201,11 @@ func validateSubjects(onrKey blocks.ObjectRelation, fs developmentmembership.Fou
 	for _, foundSubject := range fs.ListFound() {
 		_, ok := encounteredSubjects[tuple.StringONR(foundSubject.Subject())]
 		if !ok {
-			onrLineNumber, err := safecast.ToUint32(onrKey.SourcePosition.LineNumber)
+			onrLineNumber, err := safecast.Convert[uint32](onrKey.SourcePosition.LineNumber)
 			if err != nil {
 				log.Err(err).Msg("could not cast lineNumber to uint32")
 			}
-			onrColumnPosition, err := safecast.ToUint32(onrKey.SourcePosition.ColumnPosition)
+			onrColumnPosition, err := safecast.Convert[uint32](onrKey.SourcePosition.ColumnPosition)
 			if err != nil {
 				log.Err(err).Msg("could not cast columnPosition to uint32")
 			}

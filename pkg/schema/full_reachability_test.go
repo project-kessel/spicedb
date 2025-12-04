@@ -1,7 +1,6 @@
 package schema
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -245,6 +244,68 @@ func TestRelationsReferencing(t *testing.T) {
 			},
 		},
 		{
+			name: "functioned arrow any",
+			schemaText: `
+			definition user {}
+		
+			definition organization {
+				relation direct_member: user
+				permission member = direct_member
+			}
+		
+			definition resource {
+				relation viewer: user
+				relation org: organization
+				permission view = org.any(member) + viewer
+			}`,
+			expected: map[string][]expectedRelation{
+				"organization#direct_member": {
+					{Namespace: "organization", Relation: "member", Type: RelationInExpression},
+				},
+				"organization#member": {
+					{Namespace: "organization", Relation: "org", Type: RelationIsComputedUsersetForArrow},
+				},
+				"resource#viewer": {
+					{Namespace: "resource", Relation: "view", Type: RelationInExpression},
+				},
+				"resource#org": {
+					{Namespace: "resource", Relation: "view", Type: RelationIsTuplesetForArrow},
+				},
+				"resource#view": {},
+			},
+		},
+		{
+			name: "functioned arrow all",
+			schemaText: `
+			definition user {}
+		
+			definition organization {
+				relation direct_member: user
+				permission member = direct_member
+			}
+		
+			definition resource {
+				relation viewer: user
+				relation org: organization
+				permission view = org.all(member) + viewer
+			}`,
+			expected: map[string][]expectedRelation{
+				"organization#direct_member": {
+					{Namespace: "organization", Relation: "member", Type: RelationInExpression},
+				},
+				"organization#member": {
+					{Namespace: "organization", Relation: "org", Type: RelationIsComputedUsersetForArrow},
+				},
+				"resource#viewer": {
+					{Namespace: "resource", Relation: "view", Type: RelationInExpression},
+				},
+				"resource#org": {
+					{Namespace: "resource", Relation: "view", Type: RelationIsTuplesetForArrow},
+				},
+				"resource#view": {},
+			},
+		},
+		{
 			name: "referencing permission",
 			schemaText: `
 			definition user {}
@@ -307,10 +368,10 @@ func TestRelationsReferencing(t *testing.T) {
 					references := graph.RelationsReferencing(resource.Name, relation.Name)
 					rel := resource.Name + "#" + relation.Name
 					expectedRelations, ok := tc.expected[rel]
-					require.True(t, ok, fmt.Sprintf("expected %v to be in %v", rel, tc.expected))
+					require.True(t, ok, "expected %v to be in %v", rel, tc.expected)
 					require.Len(t, references, len(expectedRelations), "found rel: %s => expected: %v | found %v", rel, expectedRelations, references)
 					for _, expected := range expectedRelations {
-						require.True(t, containsRelation(references, expected), fmt.Sprintf("for %s, expected %v to contain %v", rel, references, expected))
+						require.True(t, containsRelation(references, expected), "for %s, expected %v to contain %v", rel, references, expected)
 					}
 				}
 			}
@@ -330,7 +391,6 @@ func containsRelation(references []RelationReferenceInfo, relation expectedRelat
 }
 
 func BenchmarkRelationsReferencing(b *testing.B) {
-	b.ReportAllocs()
 	schema, err := compiler.Compile(compiler.InputSchema{
 		Source: "",
 		SchemaString: `
@@ -357,6 +417,8 @@ func BenchmarkRelationsReferencing(b *testing.B) {
 	res := ResolverForCompiledSchema(*schema)
 	graph, err := BuildGraph(b.Context(), res)
 	require.NoError(b, err)
+
+	b.ResetTimer()
 
 	var size int
 	for i := 0; i < b.N; i++ {

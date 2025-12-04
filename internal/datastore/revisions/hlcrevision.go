@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	"github.com/shopspring/decimal"
 
 	"github.com/authzed/spicedb/pkg/datastore"
@@ -65,7 +65,7 @@ func parseHLCRevisionString(revisionStr string) (datastore.Revision, error) {
 		return datastore.NoRevision, spiceerrors.MustBugf("received logical lock that exceeds MaxUint32 (%d > %d): revision %q", logicalclock, math.MaxUint32, revisionStr)
 	}
 
-	uintLogicalClock, err := safecast.ToUint32(logicalclock)
+	uintLogicalClock, err := safecast.Convert[uint32](logicalclock)
 	if err != nil {
 		return datastore.NoRevision, spiceerrors.MustBugf("could not cast logicalclock to uint32: %v", err)
 	}

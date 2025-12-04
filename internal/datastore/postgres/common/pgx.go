@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	"github.com/exaring/otelpgx"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/retry"
 	zerologadapter "github.com/jackc/pgx-zerolog"
@@ -18,6 +18,7 @@ import (
 
 	"github.com/authzed/spicedb/internal/datastore/common"
 	log "github.com/authzed/spicedb/internal/logging"
+	"github.com/authzed/spicedb/internal/sharederrors"
 	"github.com/authzed/spicedb/pkg/datastore"
 )
 
@@ -219,7 +220,7 @@ type PoolOptions struct {
 // ConfigurePgx applies PoolOptions to a pgx connection pool confiugration.
 func (opts PoolOptions) ConfigurePgx(pgxConfig *pgxpool.Config, includeQueryParametersInTraces bool) error {
 	if opts.MaxOpenConns != nil {
-		maxConns, err := safecast.ToInt32(*opts.MaxOpenConns)
+		maxConns, err := safecast.Convert[int32](*opts.MaxOpenConns)
 		if err != nil {
 			return err
 		}
@@ -229,7 +230,7 @@ func (opts PoolOptions) ConfigurePgx(pgxConfig *pgxpool.Config, includeQueryPara
 	// Default to keeping the pool maxed out at all times.
 	pgxConfig.MinConns = pgxConfig.MaxConns
 	if opts.MinOpenConns != nil {
-		minConns, err := safecast.ToInt32(*opts.MinOpenConns)
+		minConns, err := safecast.Convert[int32](*opts.MinOpenConns)
 		if err != nil {
 			return err
 		}
@@ -278,7 +279,11 @@ func (t *QuerierFuncs) QueryFunc(ctx context.Context, rowsFunc func(ctx context.
 		return err
 	}
 	defer rows.Close()
-	return rowsFunc(ctx, rows)
+	err = rowsFunc(ctx, rows)
+	if err != nil {
+		return err
+	}
+	return rows.Err()
 }
 
 func (t *QuerierFuncs) QueryRowFunc(ctx context.Context, rowFunc func(ctx context.Context, row pgx.Row) error, sql string, optionsAndArgs ...any) error {
@@ -315,6 +320,6 @@ func ConfigureDefaultQueryExecMode(config *pgx.ConnConfig) {
 	}
 
 	log.Info().
-		Str("details-url", "https://spicedb.dev/d/query-exec-mode").
+		Str("details-url", sharederrors.QueryExecModeErrorLink).
 		Msg("found default_query_exec_mode in DB URI; leaving as-is")
 }

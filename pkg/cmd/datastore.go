@@ -57,7 +57,7 @@ func NewGCDatastoreCommand(programName string, cfg *datastore.Config) *cobra.Com
 	return &cobra.Command{
 		Use:     "gc",
 		Short:   "executes garbage collection",
-		Long:    "Executes garbage collection against the datastore",
+		Long:    "Executes garbage collection against the datastore. Deletes stale relationships, expired relationships, and stale transactions.",
 		PreRunE: server.DefaultPreRunE(programName),
 		RunE: termination.PublishError(func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
@@ -70,6 +70,7 @@ func NewGCDatastoreCommand(programName string, cfg *datastore.Config) *cobra.Com
 			if err != nil {
 				return fmt.Errorf("failed to create datastore: %w", err)
 			}
+			defer ds.Close()
 
 			gcds := dspkg.UnwrapAs[common.GarbageCollectableDatastore](ds)
 			if gcds == nil {
@@ -109,6 +110,7 @@ func NewRepairDatastoreCommand(programName string, cfg *datastore.Config) *cobra
 			if err != nil {
 				return fmt.Errorf("failed to create datastore: %w", err)
 			}
+			defer ds.Close()
 
 			repairable := dspkg.UnwrapAs[dspkg.RepairableDatastore](ds)
 			if repairable == nil {

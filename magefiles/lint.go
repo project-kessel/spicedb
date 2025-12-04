@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -37,9 +38,13 @@ func (Lint) Yaml() error {
 	if err != nil {
 		return err
 	}
-	return sh.RunV("docker", "run", "--rm",
+	// Run prettier for yaml formatting
+	prettierErr := sh.RunV("docker", "run", "--rm", "-w", "/src", "-v", fmt.Sprintf("%s:/src:ro", cwd), "ghcr.io/tmknom/dockerfiles/prettier:3.6.2", "-c", ".")
+	// Run yamllint for content checking
+	yamllintErr := sh.RunV("docker", "run", "--rm",
 		"-v", fmt.Sprintf("%s:/src:ro", cwd),
 		"cytopia/yamllint:1", "-c", "/src/.yamllint", "/src")
+	return errors.Join(prettierErr, yamllintErr)
 }
 
 // Markdown Lint markdown
@@ -91,6 +96,8 @@ func (Lint) Analyzers() error {
 		"-zerologmarshalcheck",
 		"-zerologmarshalcheck.skip-files=_test,zz_",
 		"-protomarshalcheck",
+		"-telemetryconvcheck",
+		"-iferrafterrowclosecheck",
 		// Skip generated protobuf files for this check
 		// Also skip test where we're explicitly using proto.Marshal to assert
 		// that the proto.Marshal behavior matches foo.MarshalVT()

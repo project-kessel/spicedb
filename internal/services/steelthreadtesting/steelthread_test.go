@@ -1,5 +1,4 @@
 //go:build steelthread && docker && image
-// +build steelthread,docker,image
 
 package steelthreadtesting
 
@@ -10,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dustin/go-humanize"
 	"github.com/gosimple/slug"
 	"github.com/stretchr/testify/require"
 	yamlv3 "gopkg.in/yaml.v3"
@@ -27,8 +25,6 @@ import (
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/validationfile"
 )
-
-const defaultConnBufferSize = humanize.MiByte
 
 func TestMemdbSteelThreads(t *testing.T) {
 	for _, tc := range steelThreadTestCases {
@@ -58,7 +54,8 @@ func TestNonMemdbSteelThreads(t *testing.T) {
 						dsconfig.WithRevisionQuantization(10),
 						dsconfig.WithMaxRetries(50),
 						dsconfig.WithExperimentalColumnOptimization(true),
-						dsconfig.WithRequestHedgingEnabled(false)))
+						dsconfig.WithRequestHedgingEnabled(false),
+						dsconfig.WithWriteAcquisitionTimeout(5*time.Second)))
 
 					ds = indexcheck.WrapWithIndexCheckingDatastoreProxyIfApplicable(ds)
 					runSteelThreadTest(t, tc, ds)
@@ -87,13 +84,16 @@ func runSteelThreadTest(t *testing.T, tc steelThreadTestCase, ds datastore.Datas
 
 	t.Cleanup(cleanup)
 
-	psClient := v1.NewPermissionsServiceClient(clientConn)
+	clients := stClients{
+		PermissionsClient: v1.NewPermissionsServiceClient(clientConn),
+		SchemaClient:      v1.NewSchemaServiceClient(clientConn),
+	}
 	for _, operationInfo := range tc.operations {
 		t.Run(operationInfo.name, func(t *testing.T) {
 			handler, ok := operations[operationInfo.operationName]
 			require.True(t, ok, "operation not found: %s", operationInfo.name)
 
-			result, err := handler(operationInfo.arguments, psClient)
+			result, err := handler(operationInfo.arguments, clients)
 			require.NoError(t, err)
 
 			// Generate the actual results file.
@@ -107,7 +107,7 @@ func runSteelThreadTest(t *testing.T, tc steelThreadTestCase, ds datastore.Datas
 			}
 
 			if os.Getenv("REGENERATE_STEEL_RESULTS") == "true" {
-				err := os.WriteFile(resultsFileName, []byte("---\n"+string(actual)), 0o644)
+				err := os.WriteFile(resultsFileName, []byte("---\n"+string(actual)), 0o600)
 				require.NoError(t, err)
 				return
 			}

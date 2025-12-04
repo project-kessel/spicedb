@@ -2,11 +2,12 @@ package compiler
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	"github.com/jzelinskie/stringz"
 
 	"github.com/authzed/spicedb/pkg/caveats"
@@ -286,9 +287,14 @@ func getSourcePosition(dslNode *dslNode, mapper input.PositionMapper) *core.Sour
 		return nil
 	}
 
-	// We're okay with these being zero if the cast fails.
-	uintLine, _ := safecast.ToUint64(line)
-	uintCol, _ := safecast.ToUint64(col)
+	uintLine, err := safecast.Convert[uint64](line)
+	if err != nil {
+		uintLine = 0
+	}
+	uintCol, err := safecast.Convert[uint64](col)
+	if err != nil {
+		uintCol = 0
+	}
 
 	return &core.SourcePosition{
 		ZeroIndexedLineNumber:     uintLine,
@@ -502,9 +508,9 @@ func translateExpressionDirect(tctx *translationContext, expressionNode *dslNode
 		if err != nil {
 			return nil, err
 		}
-		leftOps := collapseOps(leftOperation, lookup)
-		rightOps := collapseOps(rightOperation, lookup)
-		ops := append(leftOps, rightOps...)
+		var ops []*core.SetOperation_Child
+		ops = append(ops, collapseOps(leftOperation, lookup)...)
+		ops = append(ops, collapseOps(rightOperation, lookup)...)
 		return builder(ops[0], ops[1:]...), nil
 	}
 
@@ -651,29 +657,6 @@ func translateSpecificTypeReference(tctx *translationContext, typeRefNode *dslNo
 		return nil, typeRefNode.Errorf("%w", err)
 	}
 
-	if typeRefNode.Has(dslshape.NodeSpecificReferencePredicateWildcard) {
-		ref := &core.AllowedRelation{
-			Namespace: nspath,
-			RelationOrWildcard: &core.AllowedRelation_PublicWildcard_{
-				PublicWildcard: &core.AllowedRelation_PublicWildcard{},
-			},
-		}
-
-		err = addWithCaveats(tctx, typeRefNode, ref)
-		if err != nil {
-			return nil, typeRefNode.Errorf("invalid caveat: %w", err)
-		}
-
-		if !tctx.skipValidate {
-			if err := ref.Validate(); err != nil {
-				return nil, typeRefNode.Errorf("invalid type relation: %w", err)
-			}
-		}
-
-		ref.SourcePosition = getSourcePosition(typeRefNode, tctx.mapper)
-		return ref, nil
-	}
-
 	relationName := Ellipsis
 	if typeRefNode.Has(dslshape.NodeSpecificReferencePredicateRelation) {
 		relationName, err = typeRefNode.GetString(dslshape.NodeSpecificReferencePredicateRelation)
@@ -681,12 +664,17 @@ func translateSpecificTypeReference(tctx *translationContext, typeRefNode *dslNo
 			return nil, typeRefNode.Errorf("invalid type relation: %w", err)
 		}
 	}
-
 	ref := &core.AllowedRelation{
 		Namespace: nspath,
 		RelationOrWildcard: &core.AllowedRelation_Relation{
 			Relation: relationName,
 		},
+	}
+
+	if typeRefNode.Has(dslshape.NodeSpecificReferencePredicateWildcard) {
+		ref.RelationOrWildcard = &core.AllowedRelation_PublicWildcard_{
+			PublicWildcard: &core.AllowedRelation_PublicWildcard{},
+		}
 	}
 
 	// Add the caveat(s), if any.
@@ -696,21 +684,9 @@ func translateSpecificTypeReference(tctx *translationContext, typeRefNode *dslNo
 	}
 
 	// Add the expiration trait, if any.
-	if traitNode, err := typeRefNode.Lookup(dslshape.NodeSpecificReferencePredicateTrait); err == nil {
-		traitName, err := traitNode.GetString(dslshape.NodeTraitPredicateTrait)
-		if err != nil {
-			return nil, typeRefNode.Errorf("invalid trait: %w", err)
-		}
-
-		if traitName != "expiration" {
-			return nil, typeRefNode.Errorf("invalid trait: %s", traitName)
-		}
-
-		if !slices.Contains(tctx.allowedFlags, "expiration") {
-			return nil, typeRefNode.Errorf("expiration trait is not allowed")
-		}
-
-		ref.RequiredExpiration = &core.ExpirationTrait{}
+	err = addWithExpiration(tctx, typeRefNode, ref)
+	if err != nil {
+		return nil, typeRefNode.Errorf("invalid expiration: %w", err)
 	}
 
 	if !tctx.skipValidate {
@@ -723,6 +699,26 @@ func translateSpecificTypeReference(tctx *translationContext, typeRefNode *dslNo
 	return ref, nil
 }
 
+func addWithExpiration(tctx *translationContext, typeRefNode *dslNode, ref *core.AllowedRelation) error {
+	if traitNode, err := typeRefNode.Lookup(dslshape.NodeSpecificReferencePredicateTrait); err == nil {
+		traitName, err := traitNode.GetString(dslshape.NodeTraitPredicateTrait)
+		if err != nil {
+			return err
+		}
+
+		if traitName != "expiration" {
+			return fmt.Errorf("invalid trait: %s", traitName)
+		}
+
+		if !slices.Contains(tctx.allowedFlags, "expiration") {
+			return errors.New("expiration trait is not allowed")
+		}
+
+		ref.RequiredExpiration = &core.ExpirationTrait{}
+	}
+	return nil
+}
+
 func addWithCaveats(tctx *translationContext, typeRefNode *dslNode, ref *core.AllowedRelation) error {
 	caveats := typeRefNode.List(dslshape.NodeSpecificReferencePredicateCaveat)
 	if len(caveats) == 0 {
@@ -730,7 +726,7 @@ func addWithCaveats(tctx *translationContext, typeRefNode *dslNode, ref *core.Al
 	}
 
 	if len(caveats) != 1 {
-		return fmt.Errorf("only one caveat is currently allowed per type reference")
+		return errors.New("only one caveat is currently allowed per type reference")
 	}
 
 	name, err := caveats[0].GetString(dslshape.NodeCaveatPredicateCaveat)

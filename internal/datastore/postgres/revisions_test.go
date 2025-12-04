@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -52,23 +52,27 @@ func TestRevisionSerDe(t *testing.T) {
 	maxSizeList := make([]uint64, 20)
 	for i := range maxSizeList {
 		// i should be nonnegative
-		index, _ := safecast.ToUint64(i)
+		index := safecast.RequireConvert[uint64](t, i)
 		maxSizeList[i] = maxInt - uint64(len(maxSizeList)) + index
 	}
 
 	testCases := []struct {
-		snapshot    pgSnapshot
-		expectedStr string
+		snapshot       pgSnapshot
+		expectedStr    string
+		optionalTxID   uint64
+		optionalNanoTS uint64
 	}{
-		{snap(0, 0), ""},
-		{snap(0, 5, 1), "EAUaAQE="},
-		{snap(1, 1), "CAE="},
-		{snap(1, 3, 1), "CAEQAhoBAA=="},
-		{snap(1, 2, 1), "CAEQARoBAA=="},
-		{snap(2, 2), "CAI="},
-		{snap(123, 123), "CHs="},
-		{snap(100, 150, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110), "CGQQMhoKAQIDBAUGBwgJCg=="},
-		{snap(maxSizeList[0], maxSizeList[len(maxSizeList)-1], maxSizeList...), "COv/////////fxATGhQAAQIDBAUGBwgJCgsMDQ4PEBESEw=="},
+		{snapshot: snap(0, 0), expectedStr: ""},
+		{snapshot: snap(0, 5, 1), expectedStr: "EAUaAQE="},
+		{snapshot: snap(1, 1), expectedStr: "CAE="},
+		{snapshot: snap(1, 3, 1), expectedStr: "CAEQAhoBAA=="},
+		{snapshot: snap(1, 2, 1), expectedStr: "CAEQARoBAA=="},
+		{snapshot: snap(2, 2), expectedStr: "CAI="},
+		{snapshot: snap(123, 123), expectedStr: "CHs="},
+		{snapshot: snap(100, 150, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110), expectedStr: "CGQQMhoKAQIDBAUGBwgJCg=="},
+		{snapshot: snap(maxSizeList[0], maxSizeList[len(maxSizeList)-1], maxSizeList...), expectedStr: "COv/////////fxATGhQAAQIDBAUGBwgJCgsMDQ4PEBESEw=="},
+		{snapshot: snap(1, 1), expectedStr: "CAEgASi4o46CjtKKvBg=", optionalTxID: 1, optionalNanoTS: 1763206055841731000},
+		{snapshot: snap(1, 3, 1), expectedStr: "CAEQAhoBACAKKIitk9OQ5Iq8GA==", optionalTxID: 10, optionalNanoTS: 1763206675023845000},
 	}
 
 	for _, tc := range testCases {
@@ -76,7 +80,11 @@ func TestRevisionSerDe(t *testing.T) {
 		t.Run(tc.snapshot.String(), func(t *testing.T) {
 			require := require.New(t)
 
-			rev := postgresRevision{snapshot: tc.snapshot}
+			rev := postgresRevision{
+				snapshot:               tc.snapshot,
+				optionalTxID:           xid8{Uint64: tc.optionalTxID, Valid: tc.optionalTxID > 0},
+				optionalNanosTimestamp: tc.optionalNanoTS,
+			}
 			serialized := rev.String()
 			require.Equal(tc.expectedStr, serialized)
 
@@ -89,15 +97,15 @@ func TestRevisionSerDe(t *testing.T) {
 
 func TestTxIDTimestampAvailable(t *testing.T) {
 	// Timestamps should be non-negative
-	testTimestamp, _ := safecast.ToUint64(time.Now().Unix())
+	testTimestamp := safecast.RequireConvert[uint64](t, time.Now().Unix())
 	snapshot := snap(0, 5, 1)
-	pgr := postgresRevision{snapshot: snapshot, optionalTxID: newXid8(1), optionalNanosTimestamp: testTimestamp}
+	pgr := postgresRevision{snapshot: snapshot, optionalTxID: NewXid8(1), optionalNanosTimestamp: testTimestamp}
 	receivedTimestamp, ok := pgr.OptionalNanosTimestamp()
 	require.True(t, ok)
 	require.Equal(t, receivedTimestamp, testTimestamp)
 	txid, ok := pgr.OptionalTransactionID()
 	require.True(t, ok)
-	require.Equal(t, newXid8(1), txid)
+	require.Equal(t, NewXid8(1), txid)
 
 	anotherRev := postgresRevision{snapshot: snapshot}
 	_, ok = anotherRev.OptionalNanosTimestamp()

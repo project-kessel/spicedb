@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/Masterminds/squirrel"
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 
 	"github.com/authzed/spicedb/internal/datastore/common"
 	"github.com/authzed/spicedb/pkg/datastore"
@@ -30,7 +30,7 @@ func (mds *Datastore) Statistics(ctx context.Context) (datastore.Stats, error) {
 		}
 	}
 
-	uniqueID, err := mds.getUniqueID(ctx)
+	uniqueID, err := mds.UniqueID(ctx)
 	if err != nil {
 		return datastore.Stats{}, err
 	}
@@ -76,7 +76,7 @@ func (mds *Datastore) Statistics(ctx context.Context) (datastore.Stats, error) {
 		return datastore.Stats{}, fmt.Errorf("unable to load namespaces: %w", err)
 	}
 
-	uintCount, err := safecast.ToUint64(count.Int64)
+	uintCount, err := safecast.Convert[uint64](count.Int64)
 	if err != nil {
 		return datastore.Stats{}, spiceerrors.MustBugf("could not cast count to uint64: %v", err)
 	}
@@ -88,16 +88,20 @@ func (mds *Datastore) Statistics(ctx context.Context) (datastore.Stats, error) {
 	}, nil
 }
 
-func (mds *Datastore) getUniqueID(ctx context.Context) (string, error) {
-	sql, args, err := sb.Select(metadataUniqueIDColumn).From(mds.driver.Metadata()).ToSql()
-	if err != nil {
-		return "", fmt.Errorf("unable to generate query sql: %w", err)
+func (mds *Datastore) UniqueID(ctx context.Context) (string, error) {
+	if mds.uniqueID.Load() == nil {
+		sql, args, err := sb.Select(metadataUniqueIDColumn).From(mds.driver.Metadata()).ToSql()
+		if err != nil {
+			return "", fmt.Errorf("unable to generate query sql: %w", err)
+		}
+
+		var uniqueID string
+		if err := mds.db.QueryRowContext(ctx, sql, args...).Scan(&uniqueID); err != nil {
+			return "", fmt.Errorf("unable to query unique ID: %w", err)
+		}
+		mds.uniqueID.Store(&uniqueID)
+		return uniqueID, nil
 	}
 
-	var uniqueID string
-	if err := mds.db.QueryRowContext(ctx, sql, args...).Scan(&uniqueID); err != nil {
-		return "", fmt.Errorf("unable to query unique ID: %w", err)
-	}
-
-	return uniqueID, nil
+	return *mds.uniqueID.Load(), nil
 }

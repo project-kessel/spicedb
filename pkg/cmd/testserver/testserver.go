@@ -7,6 +7,8 @@ import (
 
 	helpers "github.com/ecordell/optgen/helpers"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc/filters"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 
@@ -65,7 +67,17 @@ func (c *Config) Complete() (RunnableTestServer, error) {
 
 	cts := caveattypes.TypeSetOrDefault(c.CaveatTypeSet)
 
-	dispatcher := graph.NewLocalOnlyDispatcher(cts, defaultConcurrencyLimit, defaultMaxChunkSize)
+	params, err := graph.NewDefaultDispatcherParametersForTesting()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create default dispatcher parameters: %w", err)
+	}
+	params.TypeSet = cts
+	params.ConcurrencyLimits = graph.SharedConcurrencyLimits(defaultConcurrencyLimit)
+	params.DispatchChunkSize = defaultMaxChunkSize
+	dispatcher, err := graph.NewLocalOnlyDispatcher(params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create dispatcher: %w", err)
+	}
 	datastoreMiddleware := pertoken.NewMiddleware(c.LoadConfigs, cts)
 	healthManager := health.NewHealthManager(dispatcher, &datastoreReady{})
 
@@ -93,10 +105,11 @@ func (c *Config) Complete() (RunnableTestServer, error) {
 		)
 	}
 
-	opts := *server.NewMiddlewareOptionWithOptions(server.WithAuthFunc(func(ctx context.Context) (context.Context, error) {
+	noAuth := server.WithAuthFunc(func(ctx context.Context) (context.Context, error) {
 		// Turn off the default auth system.
 		return ctx, nil
-	}))
+	})
+	opts := *server.NewMiddlewareOptionWithOptions(noAuth, server.WithLogger(log.Logger))
 	opts = opts.WithDatastoreMiddleware(datastoreMiddleware)
 
 	unaryMiddleware, err := server.DefaultUnaryMiddleware(opts)
@@ -109,9 +122,16 @@ func (c *Config) Complete() (RunnableTestServer, error) {
 		return nil, err
 	}
 
+	// Build OTel stats handler options
+	// Always disable health check tracing to reduce trace volume
+	statsHandlerOpts := []otelgrpc.Option{
+		otelgrpc.WithFilter(filters.Not(filters.HealthCheck())),
+	}
+
 	gRPCSrv, err := c.GRPCServer.Complete(zerolog.InfoLevel, registerServices,
 		grpc.ChainUnaryInterceptor(unaryMiddleware.ToGRPCInterceptors()...),
 		grpc.ChainStreamInterceptor(streamMiddleware.ToGRPCInterceptors()...),
+		grpc.StatsHandler(otelgrpc.NewServerHandler(statsHandlerOpts...)),
 	)
 	if err != nil {
 		return nil, err
@@ -124,6 +144,7 @@ func (c *Config) Complete() (RunnableTestServer, error) {
 		grpc.ChainStreamInterceptor(
 			append(streamMiddleware.ToGRPCInterceptors(), readonly.StreamServerInterceptor())...,
 		),
+		grpc.StatsHandler(otelgrpc.NewServerHandler(statsHandlerOpts...)),
 	)
 	if err != nil {
 		return nil, err

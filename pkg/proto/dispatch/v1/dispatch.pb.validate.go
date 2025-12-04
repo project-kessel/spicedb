@@ -229,7 +229,7 @@ type DispatchCheckRequestMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m DispatchCheckRequestMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -419,7 +419,7 @@ type CheckHintMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m CheckHintMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -594,7 +594,7 @@ type DispatchCheckResponseMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m DispatchCheckResponseMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -727,7 +727,7 @@ type ResourceCheckResultMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m ResourceCheckResultMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -911,7 +911,7 @@ type DispatchExpandRequestMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m DispatchExpandRequestMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -1071,7 +1071,7 @@ type DispatchExpandResponseMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m DispatchExpandResponseMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -1173,7 +1173,7 @@ type CursorMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m CursorMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -1493,7 +1493,7 @@ type DispatchLookupResources2RequestMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m DispatchLookupResources2RequestMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -1598,7 +1598,7 @@ type PossibleResourceMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m PossibleResourceMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -1787,7 +1787,7 @@ type DispatchLookupResources2ResponseMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m DispatchLookupResources2ResponseMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -1853,6 +1853,539 @@ var _ interface {
 	Cause() error
 	ErrorName() string
 } = DispatchLookupResources2ResponseValidationError{}
+
+// Validate checks the field values on DispatchLookupResources3Request with the
+// rules defined in the proto definition for this message. If any rules are
+// violated, the first error encountered is returned, or nil if there are no violations.
+func (m *DispatchLookupResources3Request) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on DispatchLookupResources3Request with
+// the rules defined in the proto definition for this message. If any rules
+// are violated, the result is a list of violation errors wrapped in
+// DispatchLookupResources3RequestMultiError, or nil if none found.
+func (m *DispatchLookupResources3Request) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *DispatchLookupResources3Request) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	if m.GetMetadata() == nil {
+		err := DispatchLookupResources3RequestValidationError{
+			field:  "Metadata",
+			reason: "value is required",
+		}
+		if !all {
+			return err
+		}
+		errors = append(errors, err)
+	}
+
+	if all {
+		switch v := interface{}(m.GetMetadata()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, DispatchLookupResources3RequestValidationError{
+					field:  "Metadata",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, DispatchLookupResources3RequestValidationError{
+					field:  "Metadata",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetMetadata()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return DispatchLookupResources3RequestValidationError{
+				field:  "Metadata",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	if m.GetResourceRelation() == nil {
+		err := DispatchLookupResources3RequestValidationError{
+			field:  "ResourceRelation",
+			reason: "value is required",
+		}
+		if !all {
+			return err
+		}
+		errors = append(errors, err)
+	}
+
+	if all {
+		switch v := interface{}(m.GetResourceRelation()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, DispatchLookupResources3RequestValidationError{
+					field:  "ResourceRelation",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, DispatchLookupResources3RequestValidationError{
+					field:  "ResourceRelation",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetResourceRelation()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return DispatchLookupResources3RequestValidationError{
+				field:  "ResourceRelation",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	if m.GetSubjectRelation() == nil {
+		err := DispatchLookupResources3RequestValidationError{
+			field:  "SubjectRelation",
+			reason: "value is required",
+		}
+		if !all {
+			return err
+		}
+		errors = append(errors, err)
+	}
+
+	if all {
+		switch v := interface{}(m.GetSubjectRelation()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, DispatchLookupResources3RequestValidationError{
+					field:  "SubjectRelation",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, DispatchLookupResources3RequestValidationError{
+					field:  "SubjectRelation",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetSubjectRelation()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return DispatchLookupResources3RequestValidationError{
+				field:  "SubjectRelation",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	if m.GetTerminalSubject() == nil {
+		err := DispatchLookupResources3RequestValidationError{
+			field:  "TerminalSubject",
+			reason: "value is required",
+		}
+		if !all {
+			return err
+		}
+		errors = append(errors, err)
+	}
+
+	if all {
+		switch v := interface{}(m.GetTerminalSubject()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, DispatchLookupResources3RequestValidationError{
+					field:  "TerminalSubject",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, DispatchLookupResources3RequestValidationError{
+					field:  "TerminalSubject",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetTerminalSubject()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return DispatchLookupResources3RequestValidationError{
+				field:  "TerminalSubject",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	if all {
+		switch v := interface{}(m.GetContext()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, DispatchLookupResources3RequestValidationError{
+					field:  "Context",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, DispatchLookupResources3RequestValidationError{
+					field:  "Context",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetContext()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return DispatchLookupResources3RequestValidationError{
+				field:  "Context",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	// no validation rules for OptionalLimit
+
+	if len(errors) > 0 {
+		return DispatchLookupResources3RequestMultiError(errors)
+	}
+
+	return nil
+}
+
+// DispatchLookupResources3RequestMultiError is an error wrapping multiple
+// validation errors returned by DispatchLookupResources3Request.ValidateAll()
+// if the designated constraints aren't met.
+type DispatchLookupResources3RequestMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m DispatchLookupResources3RequestMultiError) Error() string {
+	msgs := make([]string, 0, len(m))
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m DispatchLookupResources3RequestMultiError) AllErrors() []error { return m }
+
+// DispatchLookupResources3RequestValidationError is the validation error
+// returned by DispatchLookupResources3Request.Validate if the designated
+// constraints aren't met.
+type DispatchLookupResources3RequestValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e DispatchLookupResources3RequestValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e DispatchLookupResources3RequestValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e DispatchLookupResources3RequestValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e DispatchLookupResources3RequestValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e DispatchLookupResources3RequestValidationError) ErrorName() string {
+	return "DispatchLookupResources3RequestValidationError"
+}
+
+// Error satisfies the builtin error interface
+func (e DispatchLookupResources3RequestValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sDispatchLookupResources3Request.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = DispatchLookupResources3RequestValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = DispatchLookupResources3RequestValidationError{}
+
+// Validate checks the field values on DispatchLookupResources3Response with
+// the rules defined in the proto definition for this message. If any rules
+// are violated, the first error encountered is returned, or nil if there are
+// no violations.
+func (m *DispatchLookupResources3Response) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on DispatchLookupResources3Response with
+// the rules defined in the proto definition for this message. If any rules
+// are violated, the result is a list of violation errors wrapped in
+// DispatchLookupResources3ResponseMultiError, or nil if none found.
+func (m *DispatchLookupResources3Response) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *DispatchLookupResources3Response) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	for idx, item := range m.GetItems() {
+		_, _ = idx, item
+
+		if all {
+			switch v := interface{}(item).(type) {
+			case interface{ ValidateAll() error }:
+				if err := v.ValidateAll(); err != nil {
+					errors = append(errors, DispatchLookupResources3ResponseValidationError{
+						field:  fmt.Sprintf("Items[%v]", idx),
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			case interface{ Validate() error }:
+				if err := v.Validate(); err != nil {
+					errors = append(errors, DispatchLookupResources3ResponseValidationError{
+						field:  fmt.Sprintf("Items[%v]", idx),
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			}
+		} else if v, ok := interface{}(item).(interface{ Validate() error }); ok {
+			if err := v.Validate(); err != nil {
+				return DispatchLookupResources3ResponseValidationError{
+					field:  fmt.Sprintf("Items[%v]", idx),
+					reason: "embedded message failed validation",
+					cause:  err,
+				}
+			}
+		}
+
+	}
+
+	if len(errors) > 0 {
+		return DispatchLookupResources3ResponseMultiError(errors)
+	}
+
+	return nil
+}
+
+// DispatchLookupResources3ResponseMultiError is an error wrapping multiple
+// validation errors returned by
+// DispatchLookupResources3Response.ValidateAll() if the designated
+// constraints aren't met.
+type DispatchLookupResources3ResponseMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m DispatchLookupResources3ResponseMultiError) Error() string {
+	msgs := make([]string, 0, len(m))
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m DispatchLookupResources3ResponseMultiError) AllErrors() []error { return m }
+
+// DispatchLookupResources3ResponseValidationError is the validation error
+// returned by DispatchLookupResources3Response.Validate if the designated
+// constraints aren't met.
+type DispatchLookupResources3ResponseValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e DispatchLookupResources3ResponseValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e DispatchLookupResources3ResponseValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e DispatchLookupResources3ResponseValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e DispatchLookupResources3ResponseValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e DispatchLookupResources3ResponseValidationError) ErrorName() string {
+	return "DispatchLookupResources3ResponseValidationError"
+}
+
+// Error satisfies the builtin error interface
+func (e DispatchLookupResources3ResponseValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sDispatchLookupResources3Response.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = DispatchLookupResources3ResponseValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = DispatchLookupResources3ResponseValidationError{}
+
+// Validate checks the field values on LR3Item with the rules defined in the
+// proto definition for this message. If any rules are violated, the first
+// error encountered is returned, or nil if there are no violations.
+func (m *LR3Item) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on LR3Item with the rules defined in the
+// proto definition for this message. If any rules are violated, the result is
+// a list of violation errors wrapped in LR3ItemMultiError, or nil if none found.
+func (m *LR3Item) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *LR3Item) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	// no validation rules for ResourceId
+
+	if len(errors) > 0 {
+		return LR3ItemMultiError(errors)
+	}
+
+	return nil
+}
+
+// LR3ItemMultiError is an error wrapping multiple validation errors returned
+// by LR3Item.ValidateAll() if the designated constraints aren't met.
+type LR3ItemMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m LR3ItemMultiError) Error() string {
+	msgs := make([]string, 0, len(m))
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m LR3ItemMultiError) AllErrors() []error { return m }
+
+// LR3ItemValidationError is the validation error returned by LR3Item.Validate
+// if the designated constraints aren't met.
+type LR3ItemValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e LR3ItemValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e LR3ItemValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e LR3ItemValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e LR3ItemValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e LR3ItemValidationError) ErrorName() string { return "LR3ItemValidationError" }
+
+// Error satisfies the builtin error interface
+func (e LR3ItemValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sLR3Item.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = LR3ItemValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = LR3ItemValidationError{}
 
 // Validate checks the field values on DispatchLookupSubjectsRequest with the
 // rules defined in the proto definition for this message. If any rules are
@@ -2010,7 +2543,7 @@ type DispatchLookupSubjectsRequestMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m DispatchLookupSubjectsRequestMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -2177,7 +2710,7 @@ type FoundSubjectMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m FoundSubjectMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -2311,7 +2844,7 @@ type FoundSubjectsMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m FoundSubjectsMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -2486,7 +3019,7 @@ type DispatchLookupSubjectsResponseMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m DispatchLookupSubjectsResponseMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -2614,7 +3147,7 @@ type ResolverMetaMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m ResolverMetaMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -2748,7 +3281,7 @@ type ResponseMetaMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m ResponseMetaMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -2877,7 +3410,7 @@ type DebugInformationMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m DebugInformationMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -3123,7 +3656,7 @@ type CheckDebugTraceMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m CheckDebugTraceMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}

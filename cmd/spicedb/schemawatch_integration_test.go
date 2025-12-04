@@ -1,5 +1,4 @@
 //go:build docker && image
-// +build docker,image
 
 package main
 
@@ -44,7 +43,7 @@ func TestSchemaWatch(t *testing.T) {
 			})
 			require.NoError(t, err)
 			t.Cleanup(func() {
-				pool.Client.RemoveNetwork(network.ID)
+				_ = pool.Client.RemoveNetwork(network.ID)
 			})
 
 			engine := testdatastore.RunDatastoreEngineWithBridge(t, driverName, bridgeNetworkName)
@@ -68,12 +67,12 @@ func TestSchemaWatch(t *testing.T) {
 				}
 			})
 			require.NoError(t, err)
-
-			waitCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
+			t.Cleanup(func() {
+				_ = pool.Purge(migrateResource)
+			})
 
 			// Ensure the command completed successfully.
-			status, err := pool.Client.WaitContainerWithContext(migrateResource.Container.ID, waitCtx)
+			status, err := pool.Client.WaitContainerWithContext(migrateResource.Container.ID, t.Context())
 			require.NoError(t, err)
 			require.Equal(t, 0, status)
 

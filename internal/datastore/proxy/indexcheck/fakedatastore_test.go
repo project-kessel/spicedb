@@ -22,6 +22,10 @@ func (f fakeDatastore) MetricsID() (string, error) {
 	return "fake", nil
 }
 
+func (f fakeDatastore) UniqueID(_ context.Context) (string, error) {
+	return "fake", nil
+}
+
 func (f fakeDatastore) SnapshotReader(revision datastore.Revision) datastore.Reader {
 	return fakeSnapshotReader{
 		revision:    revision,
@@ -203,7 +207,7 @@ func (f *fakeRWT) WriteNamespaces(ctx context.Context, newConfigs ...*corev1.Nam
 	return nil
 }
 
-func (f *fakeRWT) DeleteNamespaces(ctx context.Context, nsNames ...string) error {
+func (f *fakeRWT) DeleteNamespaces(ctx context.Context, nsNames []string, delOption datastore.DeleteNamespacesRelationshipsOption) error {
 	return nil
 }
 

@@ -3,7 +3,7 @@ package development
 import (
 	"fmt"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 
 	log "github.com/authzed/spicedb/internal/logging"
 	devinterface "github.com/authzed/spicedb/pkg/proto/developer/v1"
@@ -16,6 +16,8 @@ const maxDispatchDepth = 25
 // RunAllAssertions runs all assertions found in the given assertions block against the
 // developer context, returning whether any errors occurred.
 func RunAllAssertions(devContext *DevContext, assertions *blocks.Assertions) ([]*devinterface.DeveloperError, error) {
+	var allFailures []*devinterface.DeveloperError
+
 	trueFailures, err := runAssertions(devContext, assertions.AssertTrue, v1.ResourceCheckResult_MEMBER, "Expected relation or permission %s to exist")
 	if err != nil {
 		return nil, err
@@ -31,9 +33,10 @@ func RunAllAssertions(devContext *DevContext, assertions *blocks.Assertions) ([]
 		return nil, err
 	}
 
-	failures := append(trueFailures, caveatedFailures...)
-	failures = append(failures, falseFailures...)
-	return failures, nil
+	allFailures = append(allFailures, trueFailures...)
+	allFailures = append(allFailures, caveatedFailures...)
+	allFailures = append(allFailures, falseFailures...)
+	return allFailures, nil
 }
 
 func runAssertions(devContext *DevContext, assertions []blocks.Assertion, expected v1.ResourceCheckResult_Membership, fmtString string) ([]*devinterface.DeveloperError, error) {
@@ -41,11 +44,11 @@ func runAssertions(devContext *DevContext, assertions []blocks.Assertion, expect
 
 	for _, assertion := range assertions {
 		// NOTE: zeroes are fine here to mean "unknown"
-		lineNumber, err := safecast.ToUint32(assertion.SourcePosition.LineNumber)
+		lineNumber, err := safecast.Convert[uint32](assertion.SourcePosition.LineNumber)
 		if err != nil {
 			log.Err(err).Msg("could not cast lineNumber to uint32")
 		}
-		columnPosition, err := safecast.ToUint32(assertion.SourcePosition.ColumnPosition)
+		columnPosition, err := safecast.Convert[uint32](assertion.SourcePosition.ColumnPosition)
 		if err != nil {
 			log.Err(err).Msg("could not cast columnPosition to uint32")
 		}
