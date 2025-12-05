@@ -1605,8 +1605,8 @@ github.com/curioswitch/go-reassign v0.3.0 h1:dh3kpQHuADL3cobV/sSGETA8DOv457dwl+f
 github.com/curioswitch/go-reassign v0.3.0/go.mod h1:nApPCCTtqLJN/s8HfItCcKV0jIPwluBOvZP+dsJGA88=
 github.com/daixiang0/gci v0.13.7 h1:+0bG5eK9vlI08J+J/NWGbWPTNiXPG4WhNLJOkSxWITQ=
 github.com/daixiang0/gci v0.13.7/go.mod h1:812WVN6JLFY9S6Tv76twqmNqevN0pa3SX3nih0brVzQ=
-github.com/dalzilio/rudd v1.1.1-0.20230806153452-9e08a6ea8170 h1:bHEN1z3EOO/IXHTQ8ZcmGoW4gTJt+mSrH2Sd458uo0E=
-github.com/dalzilio/rudd v1.1.1-0.20230806153452-9e08a6ea8170/go.mod h1:IxPC4Bdi3WqUwyGBMgLrWWGx67aRtUAZmOZrkIr7qaM=
+github.com/dalzilio/rudd v1.1.1-0.20241120145527-793901a0ab65 h1:OfgE2BKF7iqoTM/ITjw274F0jODGtEdmJlrPXwbB6Ug=
+github.com/dalzilio/rudd v1.1.1-0.20241120145527-793901a0ab65/go.mod h1:3wI/AQCCkwC825aW7TvhXMNrScvCKJC19hetIEUp5sc=
 github.com/dave/dst v0.27.3 h1:P1HPoMza3cMEquVf9kKy8yXsFirry4zEnWOdYPOoIzY=
 github.com/dave/dst v0.27.3/go.mod h1:jHh6EOibnHgcUW3WjKHisiooEkYwqpHLBSX1iOBhEyc=
 github.com/dave/jennifer v1.7.1 h1:B4jJJDHelWcDhlRQxWeo0Npa/pYKBLrirAQoTN45txo=

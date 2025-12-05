@@ -47,7 +47,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/cloudspannerecosystem/spanner-change-streams-tail v0.3.1
 	github.com/creasty/defaults v1.8.0
-	github.com/dalzilio/rudd v1.1.1-0.20230806153452-9e08a6ea8170
+	github.com/dalzilio/rudd v1.1.1-0.20241120145527-793901a0ab65
 	github.com/dlmiddlecote/sqlstats v1.0.2
 	github.com/dustin/go-humanize v1.0.1
 	github.com/ecordell/optgen v0.1.0
