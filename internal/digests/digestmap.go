@@ -3,7 +3,7 @@ package digests
 import (
 	"sync"
 
-	"github.com/caio/go-tdigest/v4"
+	"github.com/caio/go-tdigest/v5"
 	"github.com/puzpuzpuz/xsync/v4"
 
 	log "github.com/authzed/spicedb/internal/logging"

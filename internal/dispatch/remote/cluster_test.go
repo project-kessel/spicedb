@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/caio/go-tdigest/v4"
+	"github.com/caio/go-tdigest/v5"
 	"github.com/ccoveille/go-safecast/v2"
 	"github.com/dustin/go-humanize"
 	"github.com/stretchr/testify/require"

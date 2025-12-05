@@ -41,7 +41,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/feature/rds/auth v1.6.12
 	github.com/benbjohnson/clock v1.3.5
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
-	github.com/caio/go-tdigest/v4 v4.1.0
+	github.com/caio/go-tdigest/v5 v5.0.0
 	github.com/ccoveille/go-safecast/v2 v2.0.0
 	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/cespare/xxhash/v2 v2.3.0

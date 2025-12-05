@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/caio/go-tdigest/v4"
+	"github.com/caio/go-tdigest/v5"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/puzpuzpuz/xsync/v4"
 	"github.com/rs/zerolog"
