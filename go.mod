@@ -76,7 +76,7 @@ require (
 	github.com/jzelinskie/persistent v0.0.0-20230816160542-1205ef8f0e15
 	github.com/jzelinskie/stringz v0.0.3
 	github.com/lithammer/fuzzysearch v1.1.8
-	github.com/lthibault/jitterbug v2.0.0+incompatible
+	github.com/lthibault/jitterbug v2.2.2+incompatible
 	github.com/mattn/go-isatty v0.0.20
 	github.com/maypok86/otter/v2 v2.2.1
 	github.com/mostynb/go-grpc-compression v1.2.3
