@@ -293,7 +293,7 @@ func TestCheckPermissionWithDebug(t *testing.T) {
 							// Ensure that all the resource IDs are batched into a single frame.
 							found := findFrame(debugInfo.Check, "folder", "fview")
 							req.NotNil(found)
-							req.Equal(6, len(strings.Split(found.Resource.ObjectId, ",")))
+							req.Len(strings.Split(found.Resource.ObjectId, ","), 6)
 
 							// Ensure there are no more than 2 subframes, to verify we haven't
 							// accidentally fanned out.
@@ -508,7 +508,7 @@ func TestCheckPermissionWithDebug(t *testing.T) {
 					checkResp, err := client.CheckPermission(ctx, &v1.CheckPermissionRequest{
 						Consistency: &v1.Consistency{
 							Requirement: &v1.Consistency_AtLeastAsFresh{
-								AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+								AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 							},
 						},
 						Resource:   stc.checkRequest.resource,
@@ -575,7 +575,7 @@ func expectFrames(req *require.Assertions, frames []frameInfo, check *v1.CheckDe
 	req.Equal(frame.resourceType, check.Resource.ObjectType)
 	req.Equal(frame.resourceIDs, strings.Split(check.Resource.ObjectId, ","))
 	req.Equal(frame.permission, check.Permission)
-	req.Equal(frame.permissionship, check.Result)
+	req.Equal(frame.permissionship, check.Result, "frame: %s", prototext.Format(check))
 
 	remainingFrames := frames[1:]
 	if len(remainingFrames) > 0 {
@@ -813,13 +813,13 @@ func TestBulkCheckPermissionWithDebug(t *testing.T) {
 								resourceType:   "document",
 								resourceIDs:    []string{"first", "second", "third"},
 								permission:     "view",
-								permissionship: v1.CheckDebugTrace_PERMISSIONSHIP_UNSPECIFIED,
+								permissionship: v1.CheckDebugTrace_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
 							},
 							frameInfo{
 								resourceType:   "document",
 								resourceIDs:    []string{"first", "second", "third"},
 								permission:     "viewer",
-								permissionship: v1.CheckDebugTrace_PERMISSIONSHIP_UNSPECIFIED,
+								permissionship: v1.CheckDebugTrace_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
 							},
 						),
 					},
@@ -838,13 +838,13 @@ func TestBulkCheckPermissionWithDebug(t *testing.T) {
 								resourceType:   "document",
 								resourceIDs:    []string{"first", "second", "third"},
 								permission:     "view",
-								permissionship: v1.CheckDebugTrace_PERMISSIONSHIP_UNSPECIFIED,
+								permissionship: v1.CheckDebugTrace_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
 							},
 							frameInfo{
 								resourceType:   "document",
 								resourceIDs:    []string{"first", "second", "third"},
 								permission:     "viewer",
-								permissionship: v1.CheckDebugTrace_PERMISSIONSHIP_UNSPECIFIED,
+								permissionship: v1.CheckDebugTrace_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
 							},
 						),
 					},
@@ -863,13 +863,13 @@ func TestBulkCheckPermissionWithDebug(t *testing.T) {
 								resourceType:   "document",
 								resourceIDs:    []string{"first", "second", "third"},
 								permission:     "view",
-								permissionship: v1.CheckDebugTrace_PERMISSIONSHIP_UNSPECIFIED,
+								permissionship: v1.CheckDebugTrace_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
 							},
 							frameInfo{
 								resourceType:   "document",
 								resourceIDs:    []string{"first", "second", "third"},
 								permission:     "viewer",
-								permissionship: v1.CheckDebugTrace_PERMISSIONSHIP_UNSPECIFIED,
+								permissionship: v1.CheckDebugTrace_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
 							},
 						),
 					},
@@ -906,7 +906,7 @@ func TestBulkCheckPermissionWithDebug(t *testing.T) {
 			checkResp, err := client.CheckBulkPermissions(ctx, &v1.CheckBulkPermissionsRequest{
 				Consistency: &v1.Consistency{
 					Requirement: &v1.Consistency_AtLeastAsFresh{
-						AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+						AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 					},
 				},
 				WithTracing: true,

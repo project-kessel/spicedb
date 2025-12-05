@@ -11,6 +11,7 @@ import (
 
 	"github.com/caio/go-tdigest/v4"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/puzpuzpuz/xsync/v4"
 	"github.com/rs/zerolog"
 	"go.uber.org/atomic"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
@@ -87,11 +88,12 @@ type ClusterClient interface {
 	DispatchCheck(ctx context.Context, req *v1.DispatchCheckRequest, opts ...grpc.CallOption) (*v1.DispatchCheckResponse, error)
 	DispatchExpand(ctx context.Context, req *v1.DispatchExpandRequest, opts ...grpc.CallOption) (*v1.DispatchExpandResponse, error)
 	DispatchLookupResources2(ctx context.Context, in *v1.DispatchLookupResources2Request, opts ...grpc.CallOption) (v1.DispatchService_DispatchLookupResources2Client, error)
+	DispatchLookupResources3(ctx context.Context, in *v1.DispatchLookupResources3Request, opts ...grpc.CallOption) (v1.DispatchService_DispatchLookupResources3Client, error)
 	DispatchLookupSubjects(ctx context.Context, in *v1.DispatchLookupSubjectsRequest, opts ...grpc.CallOption) (v1.DispatchService_DispatchLookupSubjectsClient, error)
 }
 
 type ClusterDispatcherConfig struct {
-	// KeyHandler is then handler to use for generating dispatch hash ring keys.
+	// KeyHandler is the handler to use for generating dispatch hash ring keys.
 	KeyHandler keys.Handler
 
 	// DispatchOverallTimeout is the maximum duration of a dispatched request
@@ -176,7 +178,6 @@ type digestAndLock struct {
 }
 
 // getWaitTime returns the configured percentile of the digest, or a default value if the digest is empty.
-// In
 func (dal *digestAndLock) getWaitTime(maximumHedgingDelay time.Duration) time.Duration {
 	dal.lock.RLock()
 	milliseconds := dal.digest.Quantile(defaultHedgerQuantile)
@@ -252,8 +253,6 @@ type responseMessage interface {
 }
 
 type streamingRequestMessage interface {
-	requestMessage
-
 	GetResourceRelation() *corev1.RelationReference
 	GetSubjectRelation() *corev1.RelationReference
 }
@@ -268,6 +267,9 @@ type secondaryRespTuple[S responseMessage] struct {
 	resp        S
 }
 
+// dispatchSyncRequest handles the dispatch of a unary request.
+// It first attempts to use the secondary dispatchers, if any are defined and match,
+// before falling back to the primary dispatcher.
 func dispatchSyncRequest[Q requestMessage, S responseMessage](
 	ctx context.Context,
 	cr *clusterDispatcher,
@@ -385,7 +387,7 @@ func dispatchSyncRequest[Q requestMessage, S responseMessage](
 	var foundError error
 	select {
 	case <-withTimeout.Done():
-		return *new(S), fmt.Errorf("check dispatch has timed out")
+		return *new(S), errors.New("check dispatch has timed out")
 
 	case r := <-primaryResultChan:
 		if r.err == nil {
@@ -416,7 +418,7 @@ type responseMessageWithCursor interface {
 	GetAfterResponseCursor() *v1.Cursor
 }
 
-type receiver[S responseMessage] interface {
+type receiver[S any] interface {
 	Recv() (S, error)
 	grpc.ClientStream
 }
@@ -426,48 +428,41 @@ const (
 	primaryDispatcher     = "$primary"
 )
 
-func publishClient[R responseMessage](ctx context.Context, client receiver[R], reqKey string, stream dispatch.Stream[R], secondaryDispatchName string) error {
+func publishClient[R any](ctx context.Context, client receiver[R], reqKey string, stream dispatch.Stream[R], secondaryDispatchName string) error {
 	isFirstResult := true
 	for {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			return ctx.Err()
+		}
 
-		default:
-			result, err := client.Recv()
-			if errors.Is(err, io.EOF) {
-				if isFirstResult {
-					dispatchCounter.WithLabelValues(reqKey, secondaryDispatchName).Add(1)
-				}
-				return nil
-			} else if err != nil {
-				return err
-			}
-
+		result, err := client.Recv()
+		if errors.Is(err, io.EOF) {
 			if isFirstResult {
 				dispatchCounter.WithLabelValues(reqKey, secondaryDispatchName).Add(1)
 			}
-			isFirstResult = false
+			return nil
+		} else if err != nil {
+			return err
+		}
 
-			merr := adjustMetadataForDispatch(result.GetMetadata())
-			if merr != nil {
-				return merr
-			}
+		if isFirstResult {
+			dispatchCounter.WithLabelValues(reqKey, secondaryDispatchName).Add(1)
+		}
+		isFirstResult = false
 
-			if secondaryDispatchName != primaryDispatcher {
-				if supportsCursors, ok := any(result).(responseMessageWithCursor); ok {
-					afterResponseCursor := supportsCursors.GetAfterResponseCursor()
-					if afterResponseCursor == nil {
-						return spiceerrors.MustBugf("received a nil after response cursor for secondary dispatch")
-					}
-					afterResponseCursor.Sections = append([]string{secondaryCursorPrefix + secondaryDispatchName}, afterResponseCursor.Sections...)
+		if secondaryDispatchName != primaryDispatcher {
+			if supportsCursors, ok := any(result).(responseMessageWithCursor); ok {
+				afterResponseCursor := supportsCursors.GetAfterResponseCursor()
+				if afterResponseCursor == nil {
+					return spiceerrors.MustBugf("received a nil after response cursor for secondary dispatch")
 				}
+				afterResponseCursor.Sections = append([]string{secondaryCursorPrefix + secondaryDispatchName}, afterResponseCursor.Sections...)
 			}
+		}
 
-			serr := stream.Publish(result)
-			if serr != nil {
-				return serr
-			}
+		serr := stream.Publish(result)
+		if serr != nil {
+			return serr
 		}
 	}
 }
@@ -478,10 +473,10 @@ type ctxAndCancel struct {
 }
 
 // dispatchStreamingRequest handles the dispatching of a streaming request to the primary and any
-// secondary dispatchers. Unlike the non-streaming version, this will first attempt to dispatch
+// secondary dispatchers. Unlike dispatchSyncRequest, this will first attempt to dispatch
 // from the allowed secondary dispatchers before falling back to the primary, rather than running
 // them in parallel.
-func dispatchStreamingRequest[Q streamingRequestMessage, R responseMessage](
+func dispatchStreamingRequest[Q streamingRequestMessage, R any](
 	ctx context.Context,
 	cr *clusterDispatcher,
 	reqKey string,
@@ -538,7 +533,7 @@ func dispatchStreamingRequest[Q streamingRequestMessage, R responseMessage](
 	// If no secondary dispatches are defined, just invoke directly.
 	if len(validSecondaryDispatchers) == 0 {
 		if !allowPrimary {
-			return fmt.Errorf("cursor locked to unknown secondary dispatcher")
+			return errors.New("cursor locked to unknown secondary dispatcher")
 		}
 
 		client, err := handler(withTimeout, cr.clusterClient)
@@ -564,8 +559,7 @@ func dispatchStreamingRequest[Q streamingRequestMessage, R responseMessage](
 
 	// For each secondary dispatch (as well as the primary), dispatch. Whichever one returns first,
 	// stream its results and cancel the remaining dispatches.
-	var errorsLock sync.Mutex
-	errorsByDispatcherName := make(map[string]error)
+	errorsByDispatcherName := xsync.NewMap[string, error]()
 
 	var wg sync.WaitGroup
 	if allowPrimary {
@@ -620,9 +614,7 @@ func dispatchStreamingRequest[Q streamingRequestMessage, R responseMessage](
 			}
 
 			log.Warn().Err(err).Str("dispatcher", name).Msg("error when trying to run secondary dispatcher")
-			errorsLock.Lock()
-			errorsByDispatcherName[name] = err
-			errorsLock.Unlock()
+			errorsByDispatcherName.Store(name, err)
 			return
 		}
 
@@ -688,26 +680,14 @@ func dispatchStreamingRequest[Q streamingRequestMessage, R responseMessage](
 						primarySleeper.cancelSleep()
 					}
 
-					errorsLock.Lock()
-					errorsByDispatcherName[name] = err
-					errorsLock.Unlock()
+					errorsByDispatcherName.Store(name, err)
 					return
 				}
 
 				hasPublishedFirstResult = true
-				merr := adjustMetadataForDispatch(result.GetMetadata())
-				if merr != nil {
-					errorsLock.Lock()
-					errorsByDispatcherName[name] = merr
-					errorsLock.Unlock()
-					return
-				}
-
 				serr := stream.Publish(result)
 				if serr != nil {
-					errorsLock.Lock()
-					errorsByDispatcherName[name] = serr
-					errorsLock.Unlock()
+					errorsByDispatcherName.Store(name, serr)
 					return
 				}
 			}
@@ -730,18 +710,25 @@ func dispatchStreamingRequest[Q streamingRequestMessage, R responseMessage](
 	// Check for the first dispatcher that returned results and return its error, if any.
 	resultHandlerName := returnedResultsDispatcherName.Load()
 	if resultHandlerName != "" {
-		if err, ok := errorsByDispatcherName[resultHandlerName]; ok {
+		if err, ok := errorsByDispatcherName.Load(resultHandlerName); ok {
 			return err
 		}
 		return nil
 	}
 
-	// Otherwise return a combined error.
-	cerr := fmt.Errorf("no dispatcher returned results")
-	for name, err := range errorsByDispatcherName {
-		cerr = fmt.Errorf("%w; error in dispatcher %s: %w", cerr, name, err)
+	// If there is a primary dispatcher error, return it.
+	if primaryErr, ok := errorsByDispatcherName.Load(primaryDispatcher); ok {
+		allErrors := make([]error, 0, errorsByDispatcherName.Size())
+		errorsByDispatcherName.Range(func(key string, value error) bool {
+			allErrors = append(allErrors, value)
+			return true
+		})
+		log.Warn().Err(primaryErr).Errs("all-errors", allErrors).Msg("returning primary dispatcher error as no dispatchers returned results")
+		return primaryErr
 	}
-	return cerr
+
+	// Otherwise return a combined error.
+	return errors.New("no dispatcher returned results; please check the logs for more information")
 }
 
 func adjustMetadataForDispatch(metadata *v1.ResponseMeta) error {
@@ -801,6 +788,28 @@ func (cr *clusterDispatcher) DispatchLookupResources2(
 	return dispatchStreamingRequest(ctx, cr, "lookupresources", req, stream,
 		func(ctx context.Context, client ClusterClient) (receiver[*v1.DispatchLookupResources2Response], error) {
 			return client.DispatchLookupResources2(ctx, req)
+		})
+}
+
+func (cr *clusterDispatcher) DispatchLookupResources3(
+	req *v1.DispatchLookupResources3Request,
+	stream dispatch.LookupResources3Stream,
+) error {
+	requestKey, err := cr.keyHandler.LookupResources3DispatchKey(stream.Context(), req)
+	if err != nil {
+		return err
+	}
+
+	ctx := context.WithValue(stream.Context(), consistent.CtxKey, requestKey)
+	stream = dispatch.StreamWithContext(ctx, stream)
+
+	if err := dispatch.CheckDepth(ctx, req); err != nil {
+		return err
+	}
+
+	return dispatchStreamingRequest(ctx, cr, "lookupresources", req, stream,
+		func(ctx context.Context, client ClusterClient) (receiver[*v1.DispatchLookupResources3Response], error) {
+			return client.DispatchLookupResources3(ctx, req)
 		})
 }
 
@@ -972,6 +981,7 @@ type primarySleeper struct {
 	lock       sync.Mutex
 }
 
+// sleep sets the value of cancelFunc, and sleeps for the configured wait time or exits early if the context is cancelled.
 func (s *primarySleeper) sleep(parentCtx context.Context) {
 	if s.waitTime <= 0 {
 		return

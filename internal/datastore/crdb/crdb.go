@@ -7,11 +7,12 @@ import (
 	"regexp"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/IBM/pgxpoolprometheus"
 	sq "github.com/Masterminds/squirrel"
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -29,6 +30,7 @@ import (
 	pgxcommon "github.com/authzed/spicedb/internal/datastore/postgres/common"
 	"github.com/authzed/spicedb/internal/datastore/revisions"
 	log "github.com/authzed/spicedb/internal/logging"
+	"github.com/authzed/spicedb/internal/sharederrors"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/datastore/options"
 	"github.com/authzed/spicedb/pkg/spiceerrors"
@@ -118,6 +120,10 @@ func newCRDBDatastore(ctx context.Context, url string, options ...Option) (datas
 		log.Info().Object("version", version).Msg("using changefeed query for CRDB version < 22")
 		changefeedQuery = queryChangefeedPreV22
 	}
+	if version.Major < 25 {
+		log.Info().Object("version", version).Msg("using changefeed query for CRDB version < 25")
+		changefeedQuery = queryChangefeedPreV25
+	}
 
 	transactionNowQuery := queryTransactionNow
 	if version.Major < 23 {
@@ -135,7 +141,7 @@ func newCRDBDatastore(ctx context.Context, url string, options ...Option) (datas
 		log.Warn().
 			Int64("cockroach_cluster_gc_window_nanos", clusterTTLNanos).
 			Int64("spicedb_gc_window_nanos", gcWindowNanos).
-			Msg("configured CockroachDB cluster gc window is less than configured SpiceDB gc window, falling back to CRDB value - see https://spicedb.dev/d/crdb-gc-window-warning")
+			Msg("configured CockroachDB cluster gc window is less than configured SpiceDB gc window, falling back to CRDB value. See " + sharederrors.CrdbGcWindowErrorLink)
 		config.gcWindow = time.Duration(clusterTTLNanos) * time.Nanosecond
 	}
 
@@ -144,7 +150,7 @@ func newCRDBDatastore(ctx context.Context, url string, options ...Option) (datas
 	switch config.overlapStrategy {
 	case overlapStrategyStatic:
 		if len(config.overlapKey) == 0 {
-			return nil, fmt.Errorf("static tx overlap strategy specified without an overlap key")
+			return nil, errors.New("static tx overlap strategy specified without an overlap key")
 		}
 		keyer = appendStaticKey(config.overlapKey)
 	case overlapStrategyPrefix:
@@ -177,6 +183,7 @@ func newCRDBDatastore(ctx context.Context, url string, options ...Option) (datas
 		CommonDecoder:           revisions.CommonDecoder{Kind: revisions.HybridLogicalClock},
 		MigrationValidator:      common.NewMigrationValidator(headMigration, config.allowedMigrations),
 		dburl:                   url,
+		acquireTimeout:          config.acquireTimeout,
 		watchBufferLength:       config.watchBufferLength,
 		watchBufferWriteTimeout: config.watchBufferWriteTimeout,
 		watchConnectTimeout:     config.watchConnectTimeout,
@@ -188,9 +195,8 @@ func newCRDBDatastore(ctx context.Context, url string, options ...Option) (datas
 		filterMaximumIDCount:    config.filterMaximumIDCount,
 		supportsIntegrity:       config.withIntegrity,
 		gcWindow:                config.gcWindow,
-		expirationEnabled:       !config.expirationDisabled,
 		watchEnabled:            !config.watchDisabled,
-		schema:                  *schema.Schema(config.columnOptimizationOption, config.withIntegrity, config.expirationDisabled),
+		schema:                  *schema.Schema(config.columnOptimizationOption, config.withIntegrity, false),
 	}
 	ds.SetNowFunc(ds.headRevisionInternal)
 
@@ -207,22 +213,10 @@ func newCRDBDatastore(ctx context.Context, url string, options ...Option) (datas
 		return nil, common.RedactAndLogSensitiveConnString(ctx, errUnableToInstantiate, err, url)
 	}
 
-	if config.enablePrometheusStats {
-		if err := prometheus.Register(pgxpoolprometheus.NewCollector(ds.writePool, map[string]string{
-			"db_name":    "spicedb",
-			"pool_usage": "write",
-		})); err != nil {
-			ds.cancel()
-			return nil, err
-		}
-
-		if err := prometheus.Register(pgxpoolprometheus.NewCollector(ds.readPool, map[string]string{
-			"db_name":    "spicedb",
-			"pool_usage": "read",
-		})); err != nil {
-			ds.cancel()
-			return nil, err
-		}
+	err = ds.registerPrometheusCollectors(config.enablePrometheusStats)
+	if err != nil {
+		ds.cancel()
+		return nil, err
 	}
 
 	// TODO: this (and the GC startup that it's based on for mysql/pg) should
@@ -269,6 +263,7 @@ type crdbDatastore struct {
 
 	dburl                   string
 	readPool, writePool     *pool.RetryPool
+	collectors              []prometheus.Collector
 	watchBufferLength       uint16
 	watchBufferWriteTimeout time.Duration
 	watchConnectTimeout     time.Duration
@@ -277,6 +272,7 @@ type crdbDatastore struct {
 	analyzeBeforeStatistics bool
 	gcWindow                time.Duration
 	schema                  common.SchemaInformation
+	acquireTimeout          time.Duration
 
 	beginChangefeedQuery string
 	transactionNowQuery  string
@@ -290,8 +286,9 @@ type crdbDatastore struct {
 	cancel               context.CancelFunc
 	filterMaximumIDCount uint16
 	supportsIntegrity    bool
-	expirationEnabled    bool
 	watchEnabled         bool
+
+	uniqueID atomic.Pointer[string]
 }
 
 func (cds *crdbDatastore) SnapshotReader(rev datastore.Revision) datastore.Reader {
@@ -326,7 +323,7 @@ func (cds *crdbDatastore) ReadWriteTx(
 		ctx = context.WithValue(ctx, pool.CtxDisableRetries, true)
 	}
 
-	err := cds.writePool.BeginFunc(ctx, func(tx pgx.Tx) error {
+	err := cds.writePool.TryBeginFunc(ctx, cds.acquireTimeout, func(tx pgx.Tx) error {
 		querier := pgxcommon.QuerierFuncsFor(tx)
 		executor := common.QueryRelationshipsExecutor{
 			Executor: pgxcommon.NewPGXQueryRelationshipsExecutor(querier, cds),
@@ -360,11 +357,11 @@ func (cds *crdbDatastore) ReadWriteTx(
 		//    a deletion of expired relationships.
 		//
 		//    A transaction is marked as such IF and only IF the operations in the transaction
-		//    consist solely of deletions, as in that scenario, we cannot be certain in the Watc
+		//    consist solely of deletions, as in that scenario, we cannot be certain in the Watch
 		//    changefeed that the transaction is not a deletion of expired relationships performed
 		//    by CRDB itself. This is also only necessary if both expiration and watch are enabled.
 		metadata := config.Metadata.AsMap()
-		requiresMetadata := len(metadata) > 0 || (cds.expirationEnabled && cds.watchEnabled && !rwt.hasNonExpiredDeletionChange)
+		requiresMetadata := len(metadata) > 0 || (cds.watchEnabled && (config.IncludesExpiredAt || !rwt.hasNonExpiredDeletionChange))
 		if requiresMetadata {
 			// Mark the transaction as coming from SpiceDB. See the comment in watch.go
 			// for why this is necessary.
@@ -440,11 +437,11 @@ func (cds *crdbDatastore) ReadyState(ctx context.Context) (datastore.ReadyState,
 	if writeMin > 0 {
 		writeMin--
 	}
-	writeTotal, err := safecast.ToUint32(cds.writePool.Stat().TotalConns())
+	writeTotal, err := safecast.Convert[uint32](cds.writePool.Stat().TotalConns())
 	if err != nil {
 		return datastore.ReadyState{}, spiceerrors.MustBugf("could not cast writeTotal to uint32: %v", err)
 	}
-	readTotal, err := safecast.ToUint32(cds.readPool.Stat().TotalConns())
+	readTotal, err := safecast.Convert[uint32](cds.readPool.Stat().TotalConns())
 	if err != nil {
 		return datastore.ReadyState{}, spiceerrors.MustBugf("could not cast readTotal to uint32: %v", err)
 	}
@@ -467,6 +464,9 @@ func (cds *crdbDatastore) Close() error {
 	cds.cancel()
 	cds.readPool.Close()
 	cds.writePool.Close()
+	for _, collector := range cds.collectors {
+		_ = prometheus.Unregister(collector)
+	}
 	return nil
 }
 
@@ -573,7 +573,7 @@ func (cds *crdbDatastore) features(ctx context.Context) (*datastore.Features, er
 			}
 
 			features.Watch.Status = datastore.FeatureUnsupported
-			features.Watch.Reason = fmt.Sprintf("Range feeds must be enabled in CockroachDB and the user must have permission to create them in order to enable the Watch API: %s", err.Error())
+			features.Watch.Reason = "Range feeds must be enabled in CockroachDB and the user must have permission to create them in order to enable the Watch API: " + err.Error()
 			return nil
 		}, fmt.Sprintf(cds.beginChangefeedQuery, cds.schema.RelationshipTableName, head, "-1s"))
 	} else {
@@ -622,7 +622,7 @@ func readClusterTTLNanos(ctx context.Context, conn pgxcommon.DBFuncQuerier) (int
 
 	groups := gcTTLRegex.FindStringSubmatch(configSQL)
 	if groups == nil || len(groups) != 2 {
-		return 0, fmt.Errorf("CRDB zone config unexpected format")
+		return 0, errors.New("CRDB zone config unexpected format")
 	}
 
 	gcSeconds, err := strconv.ParseInt(groups[1], 10, 64)
@@ -631,4 +631,32 @@ func readClusterTTLNanos(ctx context.Context, conn pgxcommon.DBFuncQuerier) (int
 	}
 
 	return gcSeconds * 1_000_000_000, nil
+}
+
+func (cds *crdbDatastore) registerPrometheusCollectors(enablePrometheusStats bool) error {
+	if !enablePrometheusStats {
+		return nil
+	}
+
+	readCollector := pgxpoolprometheus.NewCollector(cds.writePool, map[string]string{
+		"db_name":    "spicedb",
+		"pool_usage": "read",
+	})
+
+	if err := prometheus.Register(readCollector); err != nil {
+		return err
+	}
+	cds.collectors = append(cds.collectors, readCollector)
+
+	writeCollector := pgxpoolprometheus.NewCollector(cds.readPool, map[string]string{
+		"db_name":    "spicedb",
+		"pool_usage": "write",
+	})
+
+	if err := prometheus.Register(writeCollector); err != nil {
+		return err
+	}
+	cds.collectors = append(cds.collectors, writeCollector)
+
+	return nil
 }

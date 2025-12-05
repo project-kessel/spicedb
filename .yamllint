@@ -6,7 +6,11 @@ yaml-files:
   - "*.yaml"
   - "*.yml"
   - ".yamllint"
+ignore:
+  - "dist"
+  - "steelthreadtesting"
 extends: "default"
 rules:
   quoted-strings: "enable"
   line-length: "disable"
+  comments: "disable"

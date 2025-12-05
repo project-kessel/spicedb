@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
@@ -280,7 +280,7 @@ func TestCheckPermissions(t *testing.T) {
 							checkResp, err := client.CheckPermission(ctx, &v1.CheckPermissionRequest{
 								Consistency: &v1.Consistency{
 									Requirement: &v1.Consistency_AtLeastAsFresh{
-										AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+										AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 									},
 								},
 								Resource:   tc.resource,
@@ -335,7 +335,7 @@ func TestCheckPermissionWithWildcardSubject(t *testing.T) {
 	_, err := client.CheckPermission(ctx, &v1.CheckPermissionRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 			},
 		},
 		Resource:   obj("document", "masterplan"),
@@ -361,7 +361,7 @@ func TestCheckPermissionWithDebugInfo(t *testing.T) {
 	checkResp, err := client.CheckPermission(ctx, &v1.CheckPermissionRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 			},
 		},
 		Resource:   obj("document", "masterplan"),
@@ -388,7 +388,7 @@ func TestCheckPermissionWithDebugInfo(t *testing.T) {
 		SchemaString: debugInfo.SchemaUsed,
 	}, compiler.AllowUnprefixedObjectType())
 	require.NoError(err, "Invalid schema: %s", debugInfo.SchemaUsed)
-	require.Equal(4, len(compiled.OrderedDefinitions))
+	require.Len(compiled.OrderedDefinitions, 4)
 }
 
 func TestCheckPermissionWithDebugInfoInError(t *testing.T) {
@@ -398,7 +398,7 @@ func TestCheckPermissionWithDebugInfoInError(t *testing.T) {
 			return tf.DatastoreFromSchemaAndTestRelationships(
 				ds,
 				`definition user {}
-				
+
 				 definition document {
 					relation viewer: user | document#view
 					permission view = viewer
@@ -423,7 +423,7 @@ func TestCheckPermissionWithDebugInfoInError(t *testing.T) {
 	_, err := client.CheckPermission(ctx, &v1.CheckPermissionRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 			},
 		},
 		Resource:   obj("document", "doc1"),
@@ -448,8 +448,8 @@ func TestCheckPermissionWithDebugInfoInError(t *testing.T) {
 			err = prototext.Unmarshal([]byte(errInfo.Metadata[string(spiceerrors.DebugTraceErrorDetailsKey)]), debugInfo)
 			req.NoError(err)
 
-			req.Equal(1, len(debugInfo.Check.GetSubProblems().Traces))
-			req.Equal(1, len(debugInfo.Check.GetSubProblems().Traces[0].GetSubProblems().Traces))
+			req.Len(debugInfo.Check.GetSubProblems().Traces, 1)
+			req.Len(debugInfo.Check.GetSubProblems().Traces[0].GetSubProblems().Traces, 1)
 
 			foundDebugInfo = true
 		}
@@ -646,10 +646,8 @@ func TestLookupResources(t *testing.T) {
 								tf.StandardDatastoreWithData,
 							)
 							client := v1.NewPermissionsServiceClient(conn)
-							t.Cleanup(func() {
-								goleak.VerifyNone(t, goleak.IgnoreCurrent())
-							})
-							t.Cleanup(cleanup)
+							defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+							defer cleanup()
 
 							var trailer metadata.MD
 							lookupClient, err := client.LookupResources(t.Context(), &v1.LookupResourcesRequest{
@@ -658,7 +656,7 @@ func TestLookupResources(t *testing.T) {
 								Subject:            tc.subject,
 								Consistency: &v1.Consistency{
 									Requirement: &v1.Consistency_AtLeastAsFresh{
-										AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+										AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 									},
 								},
 							}, grpc.Trailer(&trailer))
@@ -735,7 +733,7 @@ func TestExpand(t *testing.T) {
 						Permission: tc.startPermission,
 						Consistency: &v1.Consistency{
 							Requirement: &v1.Consistency_AtLeastAsFresh{
-								AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+								AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 							},
 						},
 					}, grpc.Trailer(&trailer))
@@ -871,7 +869,7 @@ func TestLookupSubjectsWithConcreteLimit(t *testing.T) {
 		SubjectObjectType: "user",
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 			},
 		},
 		OptionalConcreteLimit: 2,
@@ -994,10 +992,8 @@ func TestLookupSubjects(t *testing.T) {
 					require := require.New(t)
 					conn, cleanup, _, revision := testserver.NewTestServer(require, delta, memdb.DisableGC, true, tf.StandardDatastoreWithData)
 					client := v1.NewPermissionsServiceClient(conn)
-					t.Cleanup(func() {
-						goleak.VerifyNone(t, goleak.IgnoreCurrent())
-					})
-					t.Cleanup(cleanup)
+					defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+					defer cleanup()
 
 					var trailer metadata.MD
 					lookupClient, err := client.LookupSubjects(t.Context(), &v1.LookupSubjectsRequest{
@@ -1007,7 +1003,7 @@ func TestLookupSubjects(t *testing.T) {
 						OptionalSubjectRelation: tc.subjectRelation,
 						Consistency: &v1.Consistency{
 							Requirement: &v1.Consistency_AtLeastAsFresh{
-								AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+								AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 							},
 						},
 					}, grpc.Trailer(&trailer))
@@ -1055,7 +1051,7 @@ func TestCheckWithCaveats(t *testing.T) {
 	request := &v1.CheckPermissionRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 			},
 		},
 		Resource:   obj("document", "caveatedplan"),
@@ -1085,7 +1081,7 @@ func TestCheckWithCaveats(t *testing.T) {
 	checkResp, err = client.CheckPermission(ctx, request)
 	req.NoError(err)
 	req.Equal(v1.CheckPermissionResponse_PERMISSIONSHIP_CONDITIONAL_PERMISSION, checkResp.Permissionship)
-	req.EqualValues([]string{"secret"}, checkResp.PartialCaveatInfo.MissingRequiredContext)
+	req.Equal([]string{"secret"}, checkResp.PartialCaveatInfo.MissingRequiredContext)
 
 	// context exceeds length limit
 	request.Context, err = structpb.NewStruct(generateMap(64))
@@ -1110,7 +1106,7 @@ func TestCheckWithCaveatErrors(t *testing.T) {
 				 caveat somecaveat(somemap map<any>) {
 					  somemap.first == 42 && somemap.second < 56
 				 }
-				
+
 				 definition document {
 					relation viewer: user with somecaveat
 					permission view = viewer
@@ -1167,7 +1163,7 @@ func TestCheckWithCaveatErrors(t *testing.T) {
 			request := &v1.CheckPermissionRequest{
 				Consistency: &v1.Consistency{
 					Requirement: &v1.Consistency_AtLeastAsFresh{
-						AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+						AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 					},
 				},
 				Resource:   obj("document", "firstdoc"),
@@ -1220,7 +1216,7 @@ func TestLookupResourcesWithCaveats(t *testing.T) {
 	request := &v1.LookupResourcesRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 			},
 		},
 		ResourceObjectType: "document",
@@ -1266,7 +1262,7 @@ func TestLookupResourcesWithCaveats(t *testing.T) {
 	request = &v1.LookupResourcesRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 			},
 		},
 		ResourceObjectType: "document",
@@ -1289,7 +1285,7 @@ func TestLookupResourcesWithCaveats(t *testing.T) {
 		responses = append(responses, res)
 	}
 
-	require.Equal(t, 2, len(responses))
+	require.Len(t, responses, 2)
 	slices.SortFunc(responses, byIDAndPermission)
 
 	require.Equal(t, "first", responses[0].ResourceObjectId)                                                    // nolint: gosec
@@ -1339,7 +1335,7 @@ func TestLookupSubjectsWithCaveats(t *testing.T) {
 	request := &v1.LookupSubjectsRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 			},
 		},
 		Resource:          obj("document", "first"),
@@ -1384,7 +1380,7 @@ func TestLookupSubjectsWithCaveats(t *testing.T) {
 	request = &v1.LookupSubjectsRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 			},
 		},
 		Resource:          obj("document", "first"),
@@ -1429,7 +1425,7 @@ func TestLookupSubjectsWithCaveats(t *testing.T) {
 	request = &v1.LookupSubjectsRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 			},
 		},
 		Resource:          obj("document", "first"),
@@ -1503,7 +1499,7 @@ func TestLookupSubjectsWithCaveatedWildcards(t *testing.T) {
 	request := &v1.LookupSubjectsRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 			},
 		},
 		Resource:          obj("document", "first"),
@@ -1526,7 +1522,7 @@ func TestLookupSubjectsWithCaveatedWildcards(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "*", resp.Subject.SubjectObjectId)
 		require.Equal(t, v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION, resp.Subject.Permissionship)
-		require.Equal(t, 1, len(resp.ExcludedSubjects))
+		require.Len(t, resp.ExcludedSubjects, 1)
 
 		require.Equal(t, "bannedguy", resp.ExcludedSubjects[0].SubjectObjectId)
 		require.Equal(t, v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION, resp.ExcludedSubjects[0].Permissionship)
@@ -1542,7 +1538,7 @@ func TestLookupSubjectsWithCaveatedWildcards(t *testing.T) {
 	request = &v1.LookupSubjectsRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 			},
 		},
 		Resource:          obj("document", "first"),
@@ -1565,7 +1561,7 @@ func TestLookupSubjectsWithCaveatedWildcards(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "*", resp.Subject.SubjectObjectId)
 		require.Equal(t, v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION, resp.Subject.Permissionship)
-		require.Equal(t, 0, len(resp.ExcludedSubjects))
+		require.Empty(t, resp.ExcludedSubjects)
 	}
 	require.True(t, found)
 }
@@ -1670,17 +1666,15 @@ func TestLookupResourcesWithCursors(t *testing.T) {
 							require := require.New(t)
 							conn, cleanup, _, revision := testserver.NewTestServer(require, delta, memdb.DisableGC, true, tf.StandardDatastoreWithData)
 							client := v1.NewPermissionsServiceClient(conn)
-							t.Cleanup(func() {
-								goleak.VerifyNone(t, goleak.IgnoreCurrent())
-							})
-							t.Cleanup(cleanup)
+							defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+							defer cleanup()
 
 							var currentCursor *v1.Cursor
 							foundObjectIds := mapz.NewSet[string]()
 
 							for i := 0; i < 5; i++ {
 								var trailer metadata.MD
-								uintLimit, err := safecast.ToUint32(limit)
+								uintLimit, err := safecast.Convert[uint32](limit)
 								require.NoError(err)
 								lookupClient, err := client.LookupResources(t.Context(), &v1.LookupResourcesRequest{
 									ResourceObjectType: tc.objectType,
@@ -1688,7 +1682,7 @@ func TestLookupResourcesWithCursors(t *testing.T) {
 									Subject:            tc.subject,
 									Consistency: &v1.Consistency{
 										Requirement: &v1.Consistency_AtLeastAsFresh{
-											AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+											AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 										},
 									},
 									OptionalLimit:  uintLimit,
@@ -1757,7 +1751,7 @@ func TestLookupResourcesDeduplication(t *testing.T) {
 		Subject:            sub("user", "tom", ""),
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
 			},
 		},
 	})
@@ -2049,7 +2043,7 @@ func TestCheckBulkPermissions(t *testing.T) {
 							if pair.GetItem() != nil {
 								parsed := tuple.MustParse(tt.requests[index])
 								require.NotNil(t, pair.GetItem().DebugTrace, "missing debug trace in response for item %v", pair.GetItem())
-								require.True(t, pair.GetItem().DebugTrace.Check != nil, "missing check trace in response for item %v", pair.GetItem())
+								require.NotNil(t, pair.GetItem().DebugTrace.Check, "missing check trace in response for item %v", pair.GetItem())
 								require.Equal(t, parsed.Resource.ObjectID, pair.GetItem().DebugTrace.Check.Resource.ObjectId, "resource in debug trace does not match")
 								require.NotEmpty(t, pair.GetItem().DebugTrace.Check.TraceOperationId, "trace operation ID in debug trace is empty")
 								require.NotEmpty(t, pair.GetItem().DebugTrace.Check.Source, "source in debug trace is empty")
@@ -2255,7 +2249,7 @@ func TestExportBulkRelationships(t *testing.T) {
 
 	resp, err := writer.CloseAndRecv()
 	require.NoError(t, err)
-	numLoaded, err := safecast.ToInt(resp.NumLoaded)
+	numLoaded, err := safecast.Convert[int](resp.NumLoaded)
 	require.NoError(t, err)
 	require.Equal(t, totalToWrite, numLoaded)
 
@@ -2440,7 +2434,7 @@ func TestExportBulkRelationshipsWithFilter(t *testing.T) {
 				}
 
 				require.NoError(err)
-				relLength, err := safecast.ToUint32(len(batch.Relationships))
+				relLength, err := safecast.Convert[uint32](len(batch.Relationships))
 				require.NoError(err)
 				require.LessOrEqual(relLength, batchSize)
 				require.NotNil(batch.AfterResultCursor)
@@ -2464,8 +2458,7 @@ func TestExportBulkRelationshipsWithFilter(t *testing.T) {
 				cancel()
 			}
 
-			// These are statically defined.
-			expectedCount, _ := safecast.ToUint64(tc.expectedCount)
+			expectedCount := safecast.RequireConvert[uint64](t, tc.expectedCount)
 			require.Equal(expectedCount, totalRead, "found: %v", foundRels.AsSlice())
 			require.True(remainingRels.IsEmpty(), "rels were not exported %#v", remainingRels.AsSlice())
 		})

@@ -1,7 +1,9 @@
+//go:generate go run go.uber.org/mock/mockgen -source datastore.go -destination ./mocks/mock_datastore.go -package mocks Datastore
 package datastore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"slices"
@@ -42,7 +44,7 @@ func EngineOptions() string {
 // hand side of a tuple.
 const Ellipsis = "..."
 
-// RevisionChanges represents the changes in a single transaction.
+// RevisionChanges represents the changes in a single revision.
 type RevisionChanges struct {
 	Revision Revision
 
@@ -63,8 +65,8 @@ type RevisionChanges struct {
 	// have occurred before this point.
 	IsCheckpoint bool
 
-	// Metadata is the metadata associated with the revision, if any.
-	Metadata *structpb.Struct
+	// Metadatas is the list of metadata associated with the revision, if any.
+	Metadatas []*structpb.Struct
 }
 
 func (rc RevisionChanges) DebugString() string {
@@ -72,25 +74,25 @@ func (rc RevisionChanges) DebugString() string {
 		return "[checkpoint]"
 	}
 
-	debugString := ""
+	var debugString strings.Builder
 
 	for _, relChange := range rc.RelationshipChanges {
-		debugString += relChange.DebugString() + "\n"
+		debugString.WriteString(relChange.DebugString() + "\n")
 	}
 
 	for _, def := range rc.ChangedDefinitions {
-		debugString += fmt.Sprintf("Definition: %T:%s\n", def, def.GetName())
+		debugString.WriteString(fmt.Sprintf("Definition: %T:%s\n", def, def.GetName()))
 	}
 
 	for _, ns := range rc.DeletedNamespaces {
-		debugString += fmt.Sprintf("DeletedNamespace: %s\n", ns)
+		debugString.WriteString(fmt.Sprintf("DeletedNamespace: %s\n", ns))
 	}
 
 	for _, caveat := range rc.DeletedCaveats {
-		debugString += fmt.Sprintf("DeletedCaveat: %s\n", caveat)
+		debugString.WriteString(fmt.Sprintf("DeletedCaveat: %s\n", caveat))
 	}
 
-	return debugString
+	return debugString.String()
 }
 
 func (rc RevisionChanges) MarshalZerologObject(e *zerolog.Event) {
@@ -312,11 +314,11 @@ func RelationshipsFilterFromCoreFilter(filter *core.RelationshipFilter) (Relatio
 	}
 
 	if filter.OptionalResourceId != "" && filter.OptionalResourceIdPrefix != "" {
-		return RelationshipsFilter{}, fmt.Errorf("cannot specify both OptionalResourceId and OptionalResourceIDPrefix")
+		return RelationshipsFilter{}, errors.New("cannot specify both OptionalResourceId and OptionalResourceIDPrefix")
 	}
 
 	if filter.ResourceType == "" && filter.OptionalRelation == "" && len(resourceIds) == 0 && filter.OptionalResourceIdPrefix == "" && len(subjectsSelectors) == 0 {
-		return RelationshipsFilter{}, fmt.Errorf("at least one filter field must be set")
+		return RelationshipsFilter{}, errors.New("at least one filter field must be set")
 	}
 
 	return RelationshipsFilter{
@@ -361,11 +363,11 @@ func RelationshipsFilterFromPublicFilter(filter *v1.RelationshipFilter) (Relatio
 	}
 
 	if filter.OptionalResourceId != "" && filter.OptionalResourceIdPrefix != "" {
-		return RelationshipsFilter{}, fmt.Errorf("cannot specify both OptionalResourceId and OptionalResourceIDPrefix")
+		return RelationshipsFilter{}, errors.New("cannot specify both OptionalResourceId and OptionalResourceIDPrefix")
 	}
 
 	if filter.ResourceType == "" && filter.OptionalRelation == "" && len(resourceIds) == 0 && filter.OptionalResourceIdPrefix == "" && len(subjectsSelectors) == 0 {
-		return RelationshipsFilter{}, fmt.Errorf("at least one filter field must be set")
+		return RelationshipsFilter{}, errors.New("at least one filter field must be set")
 	}
 
 	return RelationshipsFilter{
@@ -543,6 +545,19 @@ type Reader interface {
 	LookupNamespacesWithNames(ctx context.Context, nsNames []string) ([]RevisionedNamespace, error)
 }
 
+// DeleteNamespacesRelationshipsOption is an option for deleting namespaces and their relationships.
+type DeleteNamespacesRelationshipsOption int
+
+const (
+	// DeleteNamespacesOnly indicates that only namespaces should be deleted.
+	// It is therefore the caller's responsibility to delete any relationships in those namespaces.
+	DeleteNamespacesOnly DeleteNamespacesRelationshipsOption = iota
+
+	// DeleteNamespacesAndRelationships indicates that namespaces and all relationships
+	// in those namespaces should be deleted.
+	DeleteNamespacesAndRelationships
+)
+
 type ReadWriteTransaction interface {
 	Reader
 	CaveatStorer
@@ -562,8 +577,8 @@ type ReadWriteTransaction interface {
 	// WriteNamespaces takes proto namespace definitions and persists them.
 	WriteNamespaces(ctx context.Context, newConfigs ...*core.NamespaceDefinition) error
 
-	// DeleteNamespaces deletes namespaces including associated relationships.
-	DeleteNamespaces(ctx context.Context, nsNames ...string) error
+	// DeleteNamespaces deletes namespaces.
+	DeleteNamespaces(ctx context.Context, nsNames []string, delOption DeleteNamespacesRelationshipsOption) error
 
 	// BulkLoad takes a relationship source iterator, and writes all of the
 	// relationships to the backing datastore in an optimized fashion. This
@@ -681,6 +696,11 @@ type ReadOnlyDatastore interface {
 	// This identifier is typically the hostname of the datastore (where applicable)
 	// and may not be unique; callers should not rely on uniqueness.
 	MetricsID() (string, error)
+
+	// UniqueID returns a unique identifier for the datastore. This identifier
+	// must be stable across restarts of the datastore if the datastore is
+	// persistent.
+	UniqueID(context.Context) (string, error)
 
 	// SnapshotReader creates a read-only handle that reads the datastore at the specified revision.
 	// Any errors establishing the reader will be returned by subsequent calls.

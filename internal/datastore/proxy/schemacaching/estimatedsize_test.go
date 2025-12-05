@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/authzed/spicedb/internal/datastore/dsfortesting"
@@ -41,7 +41,7 @@ func TestEstimatedDefinitionSizes(t *testing.T) {
 		return nil
 	})
 	require.NoError(t, err)
-	require.NotEqual(t, 0, len(consistencyTestFiles))
+	require.NotEmpty(t, consistencyTestFiles)
 
 	for _, filePath := range consistencyTestFiles {
 		filePath := filePath
@@ -77,7 +77,7 @@ func TestEstimatedDefinitionSizes(t *testing.T) {
 						used := m2.TotalAlloc - m1.TotalAlloc
 
 						// Ensure the memory used is less than the SizeVT * the multiplier.
-						uintEstimated, err := safecast.ToUint64(estimated)
+						uintEstimated, err := safecast.Convert[uint64](estimated)
 						require.NoError(err)
 						if used <= uintEstimated {
 							succeeded = true
@@ -115,7 +115,7 @@ func TestEstimatedDefinitionSizes(t *testing.T) {
 						used := m2.TotalAlloc - m1.TotalAlloc
 
 						// Ensure the memory used is less than the SizeVT * the multiplier.
-						uintEstimated, err := safecast.ToUint64(estimated)
+						uintEstimated, err := safecast.Convert[uint64](estimated)
 						require.NoError(err)
 						if used <= uintEstimated {
 							succeeded = true

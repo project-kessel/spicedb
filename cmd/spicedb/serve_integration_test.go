@@ -1,5 +1,4 @@
 //go:build docker && image
-// +build docker,image
 
 package main
 
@@ -10,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
-	"github.com/authzed/grpcutil"
 	"github.com/google/uuid"
 	"github.com/ory/dockertest/v3"
 	"github.com/ory/dockertest/v3/docker"
@@ -21,6 +18,9 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
+
+	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
+	"github.com/authzed/grpcutil"
 
 	testdatastore "github.com/authzed/spicedb/internal/testserver/datastore"
 	"github.com/authzed/spicedb/pkg/datastore"
@@ -40,7 +40,6 @@ func TestServe(t *testing.T) {
 		false,
 	)
 	requireParent.NoError(err)
-	defer tester.cleanup()
 
 	for key, expectedWorks := range map[string]bool{
 		"":           false,
@@ -56,10 +55,12 @@ func TestServe(t *testing.T) {
 			if key != "" {
 				opts = append(opts, grpcutil.WithInsecureBearerToken(key))
 			}
-			conn, err := grpc.Dial(fmt.Sprintf("localhost:%s", tester.port), opts...)
+			conn, err := grpc.NewClient(fmt.Sprintf("localhost:%s", tester.port), opts...)
 
 			require.NoError(err)
-			defer conn.Close()
+			t.Cleanup(func() {
+				_ = conn.Close()
+			})
 
 			require.Eventually(func() bool {
 				resp, err := healthpb.NewHealthClient(conn).Check(context.Background(), &healthpb.HealthCheckRequest{Service: "authzed.api.v1.SchemaService"})
@@ -95,7 +96,7 @@ func gracefulShutdown(pool *dockertest.Pool, serveResource *dockertest.Resource)
 	closed := make(chan bool, 1)
 	go func() {
 		// Send SIGSTOP to have the container gracefully shutdown.
-		pool.Client.KillContainer(docker.KillContainerOptions{
+		_ = pool.Client.KillContainer(docker.KillContainerOptions{
 			ID:      serveResource.Container.ID,
 			Signal:  docker.SIGSTOP,
 			Context: context.Background(),
@@ -128,6 +129,9 @@ func TestGracefulShutdownInMemory(t *testing.T) {
 		}
 	})
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = pool.Purge(serveResource)
+	})
 
 	require.True(t, gracefulShutdown(pool, serveResource))
 }
@@ -167,7 +171,7 @@ func TestGracefulShutdown(t *testing.T) {
 			})
 			require.NoError(t, err)
 			t.Cleanup(func() {
-				pool.Client.RemoveNetwork(network.ID)
+				_ = pool.Client.RemoveNetwork(network.ID)
 			})
 
 			engine := testdatastore.RunDatastoreEngineWithBridge(t, driverName, bridgeNetworkName)
@@ -191,12 +195,12 @@ func TestGracefulShutdown(t *testing.T) {
 				}
 			})
 			require.NoError(t, err)
-
-			waitCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
+			t.Cleanup(func() {
+				_ = pool.Purge(migrateResource)
+			})
 
 			// Ensure the command completed successfully.
-			status, err := pool.Client.WaitContainerWithContext(migrateResource.Container.ID, waitCtx)
+			status, err := pool.Client.WaitContainerWithContext(migrateResource.Container.ID, t.Context())
 			require.NoError(t, err)
 			require.Equal(t, 0, status)
 

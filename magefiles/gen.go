@@ -14,7 +14,7 @@ type Gen mg.Namespace
 
 // All Run all generators in parallel
 func (g Gen) All() error {
-	mg.Deps(g.Go, g.Proto)
+	mg.Deps(g.Go, g.Proto, g.Docs)
 	return nil
 }
 
@@ -48,4 +48,20 @@ func (Gen) Completions() error {
 		}
 	}
 	return nil
+}
+
+// Manpages Generate man pages
+func (Gen) Manpages() error {
+	if err := RunSh("mkdir", WithDir("."))("-p", "./manpages"); err != nil {
+		return err
+	}
+
+	f, err := os.Create("./manpages/spicedb.1")
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fmt.Println("generating man page")
+	return RunSh("go", WithDir("."), WithStdout(f))("run", "./cmd/spicedb/main.go", "man")
 }

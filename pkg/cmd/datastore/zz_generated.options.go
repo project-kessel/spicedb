@@ -65,6 +65,7 @@ func (c *Config) ToOption() ConfigOption {
 		to.OverlapStrategy = c.OverlapStrategy
 		to.EnableConnectionBalancing = c.EnableConnectionBalancing
 		to.ConnectRate = c.ConnectRate
+		to.WriteAcquisitionTimeout = c.WriteAcquisitionTimeout
 		to.GCInterval = c.GCInterval
 		to.GCMaxOperationTime = c.GCMaxOperationTime
 		to.RelaxedIsolationLevel = c.RelaxedIsolationLevel
@@ -85,7 +86,6 @@ func (c *Config) ToOption() ConfigOption {
 		to.MigrationPhase = c.MigrationPhase
 		to.AllowedMigrations = c.AllowedMigrations
 		to.ExperimentalColumnOptimization = c.ExperimentalColumnOptimization
-		to.EnableExperimentalRelationshipExpiration = c.EnableExperimentalRelationshipExpiration
 		to.EnableRevisionHeartbeat = c.EnableRevisionHeartbeat
 	}
 }
@@ -123,6 +123,7 @@ func (c Config) DebugMap() map[string]any {
 	debugMap["OverlapStrategy"] = helpers.DebugValue(c.OverlapStrategy, false)
 	debugMap["EnableConnectionBalancing"] = helpers.DebugValue(c.EnableConnectionBalancing, false)
 	debugMap["ConnectRate"] = helpers.DebugValue(c.ConnectRate, false)
+	debugMap["WriteAcquisitionTimeout"] = helpers.DebugValue(c.WriteAcquisitionTimeout, false)
 	debugMap["GCInterval"] = helpers.DebugValue(c.GCInterval, false)
 	debugMap["GCMaxOperationTime"] = helpers.DebugValue(c.GCMaxOperationTime, false)
 	debugMap["RelaxedIsolationLevel"] = helpers.DebugValue(c.RelaxedIsolationLevel, false)
@@ -142,7 +143,6 @@ func (c Config) DebugMap() map[string]any {
 	debugMap["MigrationPhase"] = helpers.DebugValue(c.MigrationPhase, false)
 	debugMap["AllowedMigrations"] = helpers.DebugValue(c.AllowedMigrations, false)
 	debugMap["ExperimentalColumnOptimization"] = helpers.DebugValue(c.ExperimentalColumnOptimization, false)
-	debugMap["EnableExperimentalRelationshipExpiration"] = helpers.DebugValue(c.EnableExperimentalRelationshipExpiration, false)
 	debugMap["EnableRevisionHeartbeat"] = helpers.DebugValue(c.EnableRevisionHeartbeat, false)
 	return debugMap
 }
@@ -415,6 +415,13 @@ func WithConnectRate(connectRate time.Duration) ConfigOption {
 	}
 }
 
+// WithWriteAcquisitionTimeout returns an option that can set WriteAcquisitionTimeout on a Config
+func WithWriteAcquisitionTimeout(writeAcquisitionTimeout time.Duration) ConfigOption {
+	return func(c *Config) {
+		c.WriteAcquisitionTimeout = writeAcquisitionTimeout
+	}
+}
+
 // WithGCInterval returns an option that can set GCInterval on a Config
 func WithGCInterval(gCInterval time.Duration) ConfigOption {
 	return func(c *Config) {
@@ -573,13 +580,6 @@ func SetAllowedMigrations(allowedMigrations []string) ConfigOption {
 func WithExperimentalColumnOptimization(experimentalColumnOptimization bool) ConfigOption {
 	return func(c *Config) {
 		c.ExperimentalColumnOptimization = experimentalColumnOptimization
-	}
-}
-
-// WithEnableExperimentalRelationshipExpiration returns an option that can set EnableExperimentalRelationshipExpiration on a Config
-func WithEnableExperimentalRelationshipExpiration(enableExperimentalRelationshipExpiration bool) ConfigOption {
-	return func(c *Config) {
-		c.EnableExperimentalRelationshipExpiration = enableExperimentalRelationshipExpiration
 	}
 }
 

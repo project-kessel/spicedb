@@ -3,7 +3,7 @@ package proxy_test
 import (
 	"context"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	"github.com/stretchr/testify/mock"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
@@ -16,6 +16,16 @@ import (
 
 type MockDatastore struct {
 	mock.Mock
+
+	CurrentUniqueID string
+}
+
+func (dm *MockDatastore) UniqueID(_ context.Context) (string, error) {
+	if dm.CurrentUniqueID == "" {
+		return "mockds", nil
+	}
+
+	return dm.CurrentUniqueID, nil
 }
 
 func (dm *MockDatastore) SnapshotReader(rev datastore.Revision) datastore.Reader {
@@ -284,11 +294,12 @@ func (dm *MockReadWriteTransaction) WriteNamespaces(_ context.Context, newConfig
 	return args.Error(0)
 }
 
-func (dm *MockReadWriteTransaction) DeleteNamespaces(_ context.Context, nsNames ...string) error {
-	xs := make([]any, 0, len(nsNames))
+func (dm *MockReadWriteTransaction) DeleteNamespaces(_ context.Context, nsNames []string, delOption datastore.DeleteNamespacesRelationshipsOption) error {
+	xs := make([]any, 0, len(nsNames)+1)
 	for _, nsName := range nsNames {
 		xs = append(xs, nsName)
 	}
+	xs = append(xs, delOption)
 
 	args := dm.Called(xs...)
 	return args.Error(0)
@@ -297,7 +308,10 @@ func (dm *MockReadWriteTransaction) DeleteNamespaces(_ context.Context, nsNames 
 func (dm *MockReadWriteTransaction) BulkLoad(_ context.Context, iter datastore.BulkWriteRelationshipSource) (uint64, error) {
 	args := dm.Called(iter)
 	// We're assuming this is non-negative.
-	uintArg, _ := safecast.ToUint64(args.Int(0))
+	uintArg, err := safecast.Convert[uint64](args.Int(0))
+	if err != nil {
+		uintArg = 0
+	}
 	return uintArg, args.Error(1)
 }
 

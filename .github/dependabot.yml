@@ -2,7 +2,11 @@
 version: 2
 updates:
   - package-ecosystem: "gomod"
-    directory: "/"
+    directories:
+      - "/"
+      - "/magefiles"
+      - "/e2e"
+      - "/tools/analyzers"
     schedule:
       interval: "daily"
     labels:

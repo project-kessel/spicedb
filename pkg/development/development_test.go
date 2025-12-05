@@ -10,12 +10,13 @@ import (
 
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	devinterface "github.com/authzed/spicedb/pkg/proto/developer/v1"
+	"github.com/authzed/spicedb/pkg/testutil"
 	"github.com/authzed/spicedb/pkg/tuple"
 	"github.com/authzed/spicedb/pkg/validationfile/blocks"
 )
 
 func TestDevelopment(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreTopFunction("github.com/golang/glog.(*loggingT).flushDaemon"), goleak.IgnoreCurrent())
+	defer goleak.VerifyNone(t, append(testutil.GoLeakIgnores(), goleak.IgnoreCurrent())...)
 
 	devCtx, devErrs, err := NewDevContext(t.Context(), &devinterface.RequestContext{
 		Schema: `definition user {}
@@ -29,7 +30,7 @@ definition document {
 		},
 	})
 
-	require.Nil(t, err)
+	require.NoError(t, err)
 	require.Nil(t, devErrs)
 
 	assertions := &blocks.Assertions{
@@ -47,7 +48,7 @@ definition document {
 }
 
 func TestDevelopmentInvalidRelationship(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreTopFunction("github.com/golang/glog.(*loggingT).flushDaemon"), goleak.IgnoreCurrent())
+	defer goleak.VerifyNone(t, append(testutil.GoLeakIgnores(), goleak.IgnoreCurrent())...)
 
 	_, _, err := NewDevContext(t.Context(), &devinterface.RequestContext{
 		Schema: `definition user {}
@@ -77,7 +78,7 @@ definition document {
 }
 
 func TestDevelopmentCaveatedExpectedRels(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreTopFunction("github.com/golang/glog.(*loggingT).flushDaemon"), goleak.IgnoreCurrent())
+	defer goleak.VerifyNone(t, append(testutil.GoLeakIgnores(), goleak.IgnoreCurrent())...)
 
 	devCtx, devErrs, err := NewDevContext(t.Context(), &devinterface.RequestContext{
 		Schema: `definition user {}
@@ -95,7 +96,7 @@ definition document {
 		},
 	})
 
-	require.Nil(t, err)
+	require.NoError(t, err)
 	require.Nil(t, devErrs)
 
 	validation, devErr := ParseExpectedRelationsYAML(`document:somedoc#viewer: []`)
@@ -103,16 +104,16 @@ definition document {
 	require.NotNil(t, validation)
 
 	ms, _, err := RunValidation(devCtx, validation)
-	require.Nil(t, err)
+	require.NoError(t, err)
 
 	generated, err := GenerateValidation(ms)
-	require.Nil(t, err)
+	require.NoError(t, err)
 
 	require.Equal(t, "document:somedoc#viewer:\n- '[user:someuser[...]] is <document:somedoc#viewer>'\n", generated)
 }
 
 func TestDevContextV1Service(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreTopFunction("github.com/golang/glog.(*loggingT).flushDaemon"), goleak.IgnoreCurrent())
+	defer goleak.VerifyNone(t, append(testutil.GoLeakIgnores(), goleak.IgnoreCurrent())...)
 
 	devCtx, devErrs, err := NewDevContext(t.Context(), &devinterface.RequestContext{
 		Schema: `definition user {}
@@ -126,16 +127,16 @@ definition document {
 		},
 	})
 
-	require.Nil(t, err)
+	require.NoError(t, err)
 	require.Nil(t, devErrs)
 
 	conn, shutdown, err := devCtx.RunV1InMemoryService()
-	require.Nil(t, err)
+	require.NoError(t, err)
 	t.Cleanup(shutdown)
 
 	client := v1.NewSchemaServiceClient(conn)
 	resp, err := client.ReadSchema(t.Context(), &v1.ReadSchemaRequest{})
-	require.Nil(t, err)
+	require.NoError(t, err)
 	require.Contains(t, resp.SchemaText, "definition document")
 
 	shutdown()

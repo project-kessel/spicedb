@@ -2,7 +2,6 @@ package test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"testing"
@@ -78,7 +77,7 @@ func WatchTest(t *testing.T, tester DatastoreTester) {
 				WatchBufferWriteTimeout: tc.bufferTimeout,
 			}
 			changes, errchan := ds.Watch(ctx, lowestRevision, opts)
-			require.Zero(len(errchan))
+			require.Empty(errchan)
 
 			var testUpdates [][]tuple.RelationshipUpdate
 			var bulkDeletes []tuple.RelationshipUpdate
@@ -153,7 +152,7 @@ func VerifyUpdates(
 				errWait := time.NewTimer(waitForChangesTimeout)
 				select {
 				case err := <-errchan:
-					require.True(errors.As(err, &datastore.WatchDisconnectedError{}))
+					require.ErrorAs(err, &datastore.WatchDisconnectedError{})
 					return
 				case <-errWait.C:
 					require.Fail("Timed out waiting for WatchDisconnectedError")
@@ -195,7 +194,7 @@ func VerifyUpdatesWithMetadata(
 				errWait := time.NewTimer(waitForChangesTimeout)
 				select {
 				case err := <-errchan:
-					require.True(errors.As(err, &datastore.WatchDisconnectedError{}))
+					require.ErrorAs(err, &datastore.WatchDisconnectedError{})
 					return
 				case <-errWait.C:
 					require.Fail("Timed out waiting for WatchDisconnectedError")
@@ -212,7 +211,12 @@ func VerifyUpdatesWithMetadata(
 			require.True(missingExpected.IsEmpty(), "expected changes missing: %s", missingExpected)
 			require.True(unexpected.IsEmpty(), "unexpected changes: %s", unexpected)
 
-			require.Equal(expected.metadata, change.Metadata.AsMap(), "metadata mismatch")
+			if len(expected.metadata) == 0 {
+				require.Empty(change.Metadatas, "expected no metadata, but found some: %v", change.Metadatas)
+			} else {
+				require.NotNil(change.Metadatas, "expected metadata, but found none")
+				require.Len(change.Metadatas, 1, "expected single metadata entry, but found: %v", change.Metadatas)
+			}
 
 			time.Sleep(1 * time.Millisecond)
 		case <-changeWait.C:
@@ -243,7 +247,7 @@ func WatchCancelTest(t *testing.T, tester DatastoreTester) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	changes, errchan := ds.Watch(ctx, startWatchRevision, datastore.WatchJustRelationships())
-	require.Zero(len(errchan))
+	require.Empty(errchan)
 
 	_, err = common.WriteRelationships(ctx, ds, tuple.UpdateOperationCreate, makeTestRel("test", "test"))
 	require.NoError(err)
@@ -266,7 +270,7 @@ func WatchCancelTest(t *testing.T, tester DatastoreTester) {
 				require.Zero(created)
 				select {
 				case err := <-errchan:
-					require.True(errors.As(err, &datastore.WatchCanceledError{}))
+					require.ErrorAs(err, &datastore.WatchCanceledError{})
 					return
 				case <-errWait.C:
 					require.Fail("Timed out waiting for WatchCanceledError")
@@ -295,7 +299,7 @@ func WatchWithTouchTest(t *testing.T, tester DatastoreTester) {
 
 	// TOUCH a relationship and ensure watch sees it.
 	changes, errchan := ds.Watch(ctx, lowestRevision, datastore.WatchJustRelationships())
-	require.Zero(len(errchan))
+	require.Empty(errchan)
 
 	afterTouchRevision, err := common.WriteRelationships(ctx, ds, tuple.UpdateOperationTouch,
 		tuple.MustParse("document:firstdoc#viewer@user:tom"),
@@ -324,7 +328,7 @@ func WatchWithTouchTest(t *testing.T, tester DatastoreTester) {
 
 	// TOUCH the relationship again with no changes and ensure it does *not* appear in the watch.
 	changes, errchan = ds.Watch(ctx, afterTouchRevision, datastore.WatchJustRelationships())
-	require.Zero(len(errchan))
+	require.Empty(errchan)
 
 	_, err = common.WriteRelationships(ctx, ds, tuple.UpdateOperationTouch, tuple.MustParse("document:firstdoc#viewer@user:tom"))
 	require.NoError(err)
@@ -343,7 +347,7 @@ func WatchWithTouchTest(t *testing.T, tester DatastoreTester) {
 
 	// TOUCH the relationship again with a caveat name change and ensure it does appear in the watch.
 	changes, errchan = ds.Watch(ctx, afterTouchRevision, datastore.WatchJustRelationships())
-	require.Zero(len(errchan))
+	require.Empty(errchan)
 
 	afterNameChange, err := common.WriteRelationships(ctx, ds, tuple.UpdateOperationTouch, tuple.MustParse("document:firstdoc#viewer@user:tom[somecaveat]"))
 	require.NoError(err)
@@ -364,7 +368,7 @@ func WatchWithTouchTest(t *testing.T, tester DatastoreTester) {
 
 	// TOUCH the relationship again with a caveat context change and ensure it does appear in the watch.
 	changes, errchan = ds.Watch(ctx, afterNameChange, datastore.WatchJustRelationships())
-	require.Zero(len(errchan))
+	require.Empty(errchan)
 
 	_, err = common.WriteRelationships(ctx, ds, tuple.UpdateOperationTouch, tuple.MustParse("document:firstdoc#viewer@user:tom[somecaveat:{\"somecondition\": 42}]"))
 	require.NoError(err)
@@ -399,7 +403,7 @@ func WatchWithExpirationTest(t *testing.T, tester DatastoreTester) {
 	require.NoError(err)
 
 	changes, errchan := ds.Watch(ctx, lowestRevision, datastore.WatchJustRelationships())
-	require.Zero(len(errchan))
+	require.Empty(errchan)
 
 	metadata, err := structpb.NewStruct(map[string]any{"somekey": "somevalue"})
 	require.NoError(err)
@@ -440,7 +444,7 @@ func WatchWithMetadataTest(t *testing.T, tester DatastoreTester) {
 	require.NoError(err)
 
 	changes, errchan := ds.Watch(ctx, lowestRevision, datastore.WatchJustRelationships())
-	require.Zero(len(errchan))
+	require.Empty(errchan)
 
 	metadata, err := structpb.NewStruct(map[string]any{"somekey": "somevalue"})
 	require.NoError(err)
@@ -480,7 +484,7 @@ func WatchWithDeleteTest(t *testing.T, tester DatastoreTester) {
 
 	// TOUCH a relationship and ensure watch sees it.
 	changes, errchan := ds.Watch(ctx, lowestRevision, datastore.WatchJustRelationships())
-	require.Zero(len(errchan))
+	require.Empty(errchan)
 
 	afterTouchRevision, err := common.WriteRelationships(ctx, ds, tuple.UpdateOperationTouch,
 		tuple.MustParse("document:firstdoc#viewer@user:tom"),
@@ -509,7 +513,7 @@ func WatchWithDeleteTest(t *testing.T, tester DatastoreTester) {
 
 	// DELETE the relationship
 	changes, errchan = ds.Watch(ctx, afterTouchRevision, datastore.WatchJustRelationships())
-	require.Zero(len(errchan))
+	require.Empty(errchan)
 
 	_, err = common.WriteRelationships(ctx, ds, tuple.UpdateOperationDelete, tuple.MustParse("document:firstdoc#viewer@user:tom"))
 	require.NoError(err)
@@ -542,7 +546,7 @@ func verifyNoUpdates(
 			errWait := time.NewTimer(waitForChangesTimeout)
 			select {
 			case err := <-errchan:
-				require.True(errors.As(err, &datastore.WatchDisconnectedError{}))
+				require.ErrorAs(err, &datastore.WatchDisconnectedError{})
 				return
 			case <-errWait.C:
 				require.Fail("Timed out waiting for WatchDisconnectedError")
@@ -550,7 +554,7 @@ func verifyNoUpdates(
 			return
 		}
 
-		require.Equal(0, len(changes.RelationshipChanges), "expected no changes")
+		require.Empty(changes.RelationshipChanges, "expected no changes")
 	case <-changeWait.C:
 		return
 	}
@@ -571,7 +575,7 @@ func WatchSchemaTest(t *testing.T, tester DatastoreTester) {
 	require.NoError(err)
 
 	changes, errchan := ds.Watch(ctx, lowestRevision, datastore.WatchJustSchema())
-	require.Zero(len(errchan))
+	require.Empty(errchan)
 
 	// Addition
 	// Write an updated schema and ensure the changes are returned.
@@ -631,7 +635,7 @@ func WatchSchemaTest(t *testing.T, tester DatastoreTester) {
 	// Removed
 	// Delete some namespaces and caveats.
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		err := rwt.DeleteNamespaces(ctx, "somenewnamespace")
+		err := rwt.DeleteNamespaces(ctx, []string{"somenewnamespace"}, datastore.DeleteNamespacesAndRelationships)
 		if err != nil {
 			return err
 		}
@@ -665,7 +669,7 @@ func WatchAllTest(t *testing.T, tester DatastoreTester) {
 	changes, errchan := ds.Watch(ctx, lowestRevision, datastore.WatchOptions{
 		Content: datastore.WatchRelationships | datastore.WatchSchema,
 	})
-	require.Zero(len(errchan))
+	require.Empty(errchan)
 
 	// Write an updated schema.
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
@@ -709,7 +713,7 @@ func WatchAllTest(t *testing.T, tester DatastoreTester) {
 
 	// Delete some namespaces and caveats.
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		err := rwt.DeleteNamespaces(ctx, "somenewnamespace")
+		err := rwt.DeleteNamespaces(ctx, []string{"somenewnamespace"}, datastore.DeleteNamespacesAndRelationships)
 		if err != nil {
 			return err
 		}
@@ -742,7 +746,7 @@ func verifyMixedUpdates(
 				errWait := time.NewTimer(waitForChangesTimeout)
 				select {
 				case err := <-errchan:
-					require.True(errors.As(err, &datastore.WatchDisconnectedError{}))
+					require.ErrorAs(err, &datastore.WatchDisconnectedError{})
 					return
 				case <-errWait.C:
 					require.Fail("Timed out waiting for WatchDisconnectedError")
@@ -798,7 +802,7 @@ func WatchCheckpointsTest(t *testing.T, tester DatastoreTester) {
 		Content:            datastore.WatchCheckpoints | datastore.WatchRelationships | datastore.WatchSchema,
 		CheckpointInterval: 100 * time.Millisecond,
 	})
-	require.Zero(len(errchan))
+	require.Empty(errchan)
 
 	afterTouchRevision, err := common.WriteRelationships(ctx, ds, tuple.UpdateOperationTouch,
 		tuple.MustParse("document:firstdoc#viewer@user:tom"),
@@ -840,12 +844,12 @@ func WatchEmissionStrategyTest(t *testing.T, tester DatastoreTester) {
 		EmissionStrategy:   datastore.EmitImmediatelyStrategy,
 	})
 	if expectsWatchError {
-		require.NotZero(len(errchan))
+		require.NotEmpty(errchan)
 		err := <-errchan
 		require.ErrorContains(err, "emit immediately strategy is unsupported")
 		return
 	}
-	require.Zero(len(errchan))
+	require.Empty(errchan)
 
 	// since changes are streamed immediately, we expect changes to be streamed as independent change events,
 	// whereas with the default emission strategy it would be accumulated and normalized. For examples, the default
@@ -879,8 +883,8 @@ func WatchEmissionStrategyTest(t *testing.T, tester DatastoreTester) {
 				continue // we expect each change to come in individual change event
 			}
 
-			if change.Metadata != nil {
-				require.Contains(change.Metadata.AsMap(), "foo")
+			if len(change.Metadatas) == 1 {
+				require.Contains(change.Metadatas[0].AsMap(), "foo")
 				metadataEmitted = true
 				changeCount++
 				require.True(targetRev.Equal(change.Revision))

@@ -1,5 +1,4 @@
 //go:build !skipintegrationtests
-// +build !skipintegrationtests
 
 package integrationtesting_test
 
@@ -75,7 +74,11 @@ func TestConsistency(t *testing.T) {
 }
 
 func runConsistencyTestSuiteForFile(t *testing.T, filePath string, useCachingDispatcher bool, chunkSize uint16) {
-	options := []server.ConfigOption{server.WithDispatchChunkSize(chunkSize)}
+	options := []server.ConfigOption{
+		server.WithDispatchChunkSize(chunkSize),
+		server.WithEnableExperimentalLookupResources(true),
+		server.WithExperimentalLookupResourcesVersion("lr3"),
+	}
 
 	cad := consistencytestutil.LoadDataAndCreateClusterForTesting(t, filePath, testTimedelta, options...)
 
@@ -424,7 +427,7 @@ func validateLookupResources(t *testing.T, vctx validationContext) {
 								require.Equal(t,
 									expectedPermissionship,
 									permissionship,
-									"Found Check failure for relation %s:%s#%s and subject %s in lookup resources; expected %v, found %v",
+									"Found Check failure for relation %s:%s#%s and subject %s in lookup resources; LR permission %v, Check Permission %v",
 									resourceRelation.ObjectType,
 									resolvedResource.ResourceObjectId,
 									resourceRelation.Relation,
@@ -713,7 +716,9 @@ func runAssertions(t *testing.T, vctx validationContext) {
 
 							case v1.CheckPermissionResponse_PERMISSIONSHIP_CONDITIONAL_PERMISSION:
 								require.Contains(t, resolvedDirectResourceIds, rel.Resource.ObjectID, "Missing object %s in lookup for assertion %s", rel.Resource, rel)
-								require.Equal(t, v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION, resolvedDirectResourcesMap[rel.Resource.ObjectID].Permissionship)
+								require.Equal(t, v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION, resolvedDirectResourcesMap[rel.Resource.ObjectID].Permissionship,
+									"Expected caveated permission in direct lookup for assertion %s", rel,
+								)
 							}
 
 							// Check the assertion was returned for an indirect (without context) lookup.
@@ -724,13 +729,18 @@ func runAssertions(t *testing.T, vctx validationContext) {
 							case v1.CheckPermissionResponse_PERMISSIONSHIP_NO_PERMISSION:
 								// If the caveat context given is empty, then the lookup result must not exist at all.
 								// Otherwise, it *could* be caveated or not exist, depending on the context given.
-								if len(assertion.CaveatContext) == 0 {
+								switch {
+								case len(assertion.CaveatContext) == 0:
 									require.NotContains(t, resolvedIndirectResourceIds, rel.Resource.ObjectID, "Found unexpected object %s in indirect lookup for assertion %s", rel.Resource, rel)
-								} else if accessibility == consistencytestutil.NotAccessible {
+								case accessibility == consistencytestutil.NotAccessible:
 									found, ok := resolvedIndirectResourcesMap[rel.Resource.ObjectID]
 									require.True(t, !ok || found.Permissionship != v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION) // LookupResources can be caveated, since we didn't rerun LookupResources with the context
-								} else if accessibility != consistencytestutil.NotAccessibleDueToPrespecifiedCaveat {
-									require.Equal(t, v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION, resolvedIndirectResourcesMap[rel.Resource.ObjectID].Permissionship)
+								case accessibility != consistencytestutil.NotAccessibleDueToPrespecifiedCaveat:
+									found, ok := resolvedIndirectResourcesMap[rel.Resource.ObjectID]
+									require.True(t, ok, "Missing expected object %s in indirect lookup for assertion %s", rel.Resource, rel)
+									require.Equal(t, v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION, found.Permissionship,
+										"Expected caveated permission in indirect lookup for assertion %s", rel,
+									)
 								}
 
 							case v1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION:
@@ -853,7 +863,7 @@ func validateDevelopmentAssertions(t *testing.T, devContext *development.DevCont
 
 	devErrs, err := development.RunAllAssertions(devContext, parsedAssertions)
 	require.NoError(t, err, "Got unexpected error from assertions")
-	require.Equal(t, 0, len(devErrs), "Got unexpected errors from validation: %v", devErrs)
+	require.Empty(t, devErrs, "Got unexpected errors from validation: %v", devErrs)
 }
 
 // validateDevelopmentExpectedRels validates that the generated expected relationships matches
@@ -903,7 +913,7 @@ func validateDevelopmentExpectedRels(t *testing.T, devContext *development.DevCo
 					// May be caveated or uncaveated, so check the uncomputed permissionship.
 					uncomputed, ok := vctx.accessibilitySet.UncomputedPermissionshipFor(resourceAndRelation, subjectWithExceptions.Subject.Subject)
 					require.True(t, ok, "missing expected subject in accessibility set")
-					require.True(t, subjectWithExceptions.Subject.IsCaveated == (uncomputed == dispatchv1.ResourceCheckResult_CAVEATED_MEMBER), "found mismatch in uncomputed permissionship")
+					require.Equal(t, subjectWithExceptions.Subject.IsCaveated, (uncomputed == dispatchv1.ResourceCheckResult_CAVEATED_MEMBER), "found mismatch in uncomputed permissionship")
 
 				case dispatchv1.ResourceCheckResult_CAVEATED_MEMBER:
 					require.True(t, subjectWithExceptions.Subject.IsCaveated, "found uncaveated expected subject for caveated subject")

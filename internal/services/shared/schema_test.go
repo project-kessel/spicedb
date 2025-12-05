@@ -88,7 +88,7 @@ func TestApplySchemaChanges(t *testing.T) {
 				}
 
 				definition document {}`,
-			expectedError: "cannot delete relation `viewer` in object definition `document`, as a relationship exists under it",
+			expectedError: "cannot delete relation `viewer` in object definition `document`, as at least one relationship exists under it: document:somedoc#viewer@user:alice",
 		},
 		{
 			name: "attempt to remove a relation with indirect relationships",
@@ -119,7 +119,7 @@ func TestApplySchemaChanges(t *testing.T) {
 				}
 
 				definition document {}`,
-			expectedError: "cannot delete relation `viewer` in object definition `document`, as a relationship exists under it",
+			expectedError: "cannot delete relation `viewer` in object definition `document`, as at least one relationship exists under it: document:somedoc#viewer@group:somegroup#member",
 		},
 		{
 			name: "attempt to remove a relation with other indirect relationships",
@@ -150,7 +150,7 @@ func TestApplySchemaChanges(t *testing.T) {
 				}
 
 				definition document {}`,
-			expectedError: "cannot delete relation `viewer` in object definition `document`, as a relationship exists under it",
+			expectedError: "cannot delete relation `viewer` in object definition `document`, as at least one relationship exists under it: document:somedoc#viewer@org:someorg#admin",
 		},
 		{
 			name: "attempt to remove a relation with wildcard",
@@ -165,7 +165,7 @@ func TestApplySchemaChanges(t *testing.T) {
 				definition user {}
 
 				definition document {}`,
-			expectedError: "cannot delete relation `viewer` in object definition `document`, as a relationship exists under it",
+			expectedError: "cannot delete relation `viewer` in object definition `document`, as at least one relationship exists under it: document:somedoc#viewer@user:*",
 		},
 		{
 			name: "attempt to remove a relation with only indirect relationships",
@@ -196,7 +196,7 @@ func TestApplySchemaChanges(t *testing.T) {
 				}
 
 				definition document {}`,
-			expectedError: "cannot delete relation `viewer` in object definition `document`, as a relationship exists under it",
+			expectedError: "cannot delete relation `viewer` in object definition `document`, as at least one relationship exists under it: document:somedoc#viewer@org:someorg#admin",
 		},
 		{
 			name: "remove a relation with no relationships",
@@ -287,7 +287,7 @@ func TestApplySchemaChanges(t *testing.T) {
 					permission view = viewer
 				}
 			`,
-			expectedError: "cannot remove allowed type `group#member` from relation `viewer` in object definition `document`, as a relationship exists with it",
+			expectedError: "cannot remove allowed type `group#member` from relation `viewer` in object definition `document`, as a relationship exists with it: document:somedoc#viewer@group:somegroup#member",
 		},
 		{
 			name: "attempt to remove non-caveated type when only caveated relationship exists",
@@ -361,7 +361,7 @@ func TestApplySchemaChanges(t *testing.T) {
 					permission view = nil
 				}
 			`,
-			expectedError: "cannot delete relation `reader` in object definition `document`, as a relationship exists under it",
+			expectedError: "cannot delete relation `reader` in object definition `document`, as at least one relationship exists under it: document:firstdoc#reader@user:tom",
 		},
 		{
 			name: "delete a subject type with relation but no data",
@@ -403,7 +403,7 @@ func TestApplySchemaChanges(t *testing.T) {
 					permission view = reader
 				}
 			`,
-			expectedError: "cannot remove allowed type `user` from relation `reader` in object definition `document`, as a relationship exists with it",
+			expectedError: "cannot remove allowed type `user` from relation `reader` in object definition `document`, as a relationship exists with it: document:firstdoc#reader@user:tom",
 		},
 		{
 			name: "delete a subject type while adding a replacement",
@@ -429,6 +429,163 @@ func TestApplySchemaChanges(t *testing.T) {
 				RemovedObjectDefNames: []string{"user"},
 				NewObjectDefNames:     []string{"user2"},
 			},
+		},
+		{
+			name: "delete a direct subject type while indirect remains",
+			startingSchema: `
+				definition user {
+					relation foo: user
+				}
+
+				definition document {
+					relation reader: user | user#foo
+					permission view = reader
+				}
+			`,
+			relationships: []string{"document:firstdoc#reader@user:tom#foo"},
+			endingSchema: `
+				definition user {
+					relation foo: user
+				}
+
+				definition document {
+					relation reader: user#foo
+					permission view = reader
+				}
+			`,
+			expectedAppliedSchemaChanges: AppliedSchemaChanges{
+				TotalOperationCount: 2,
+			},
+		},
+		{
+			name: "attempt to delete a direct subject type while indirect remains",
+			startingSchema: `
+				definition user {
+					relation foo: user
+				}
+
+				definition document {
+					relation reader: user | user#foo
+					permission view = reader
+				}
+			`,
+			relationships: []string{"document:firstdoc#reader@user:tom"},
+			endingSchema: `
+				definition user {
+					relation foo: user
+				}
+
+				definition document {
+					relation reader: user#foo
+					permission view = reader
+				}
+			`,
+			expectedError: "cannot remove allowed type `user` from relation `reader` in object definition `document`, as a relationship exists with it: document:firstdoc#reader@user:tom",
+		},
+		{
+			name: "attempt to delete an indirect subject type while direct remains",
+			startingSchema: `
+				definition user {
+					relation foo: user
+				}
+
+				definition document {
+					relation reader: user | user#foo
+					permission view = reader
+				}
+			`,
+			relationships: []string{"document:firstdoc#reader@user:tom#foo"},
+			endingSchema: `
+				definition user {
+					relation foo: user
+				}
+
+				definition document {
+					relation reader: user
+					permission view = reader
+				}
+			`,
+			expectedError: "cannot remove allowed type `user#foo` from relation `reader` in object definition `document`, as a relationship exists with it: document:firstdoc#reader@user:tom#foo",
+		},
+		{
+			name: "delete an indirect subject type while direct remains",
+			startingSchema: `
+				definition user {
+					relation foo: user
+				}
+
+				definition document {
+					relation reader: user | user#foo
+					permission view = reader
+				}
+			`,
+			relationships: []string{"document:firstdoc#reader@user:tom"},
+			endingSchema: `
+				definition user {
+					relation foo: user
+				}
+
+				definition document {
+					relation reader: user
+					permission view = reader
+				}
+			`,
+			expectedAppliedSchemaChanges: AppliedSchemaChanges{
+				TotalOperationCount: 2,
+			},
+		},
+		{
+			name: "delete a subject relation when another relationship references the resource type",
+			startingSchema: `use expiration
+
+  definition resource {
+    relation platform: platform
+    relation viewer: user | user:*
+  }
+  definition platform {
+    relation othersubject_thing_doer: othersubject
+    permission do_thing = othersubject_thing_doer
+  }
+  definition othersubject {}
+  definition user {}`,
+			relationships: []string{
+				"resource:oneresource#platform@platform:foo",
+				"resource:anotherresource#viewer@user:*",
+			},
+			endingSchema: `use expiration
+
+definition user {}
+definition platform {}
+definition resource {
+	relation platform: platform
+	relation viewer: user | user:*
+}`,
+			expectedAppliedSchemaChanges: AppliedSchemaChanges{
+				TotalOperationCount:   4,
+				RemovedObjectDefNames: []string{"othersubject"},
+			},
+		},
+		{
+			name: "attempt to delete a referenced subject relation",
+			startingSchema: `definition document {
+				relation viewer: user | user#foo
+			}
+
+			definition user {
+				relation foo: user
+				relation foo2: user
+			}`,
+			relationships: []string{
+				"document:firstdoc#viewer@user:tom#foo",
+			},
+			endingSchema: `definition document {
+				relation viewer: user
+			}
+			definition user {
+				relation foo2: user
+			}
+			`,
+			expectedError: "cannot remove allowed type `user#foo` from relation `viewer` in object definition `document`, as a relationship exists with it: document:firstdoc#viewer@user:tom#foo",
 		},
 	}
 

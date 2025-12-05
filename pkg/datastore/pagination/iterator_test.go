@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
@@ -33,6 +33,8 @@ func TestPaginatedIterator(t *testing.T) {
 		{options.ByResource, 100, 10},
 		{options.ByResource, 10, 1000},
 		{options.ByResource, 9, 20},
+		{options.ChooseEfficient, 10, 1000},
+		{options.ChooseEfficient, 10, 1000},
 	}
 
 	for _, tc := range testCases {
@@ -61,7 +63,7 @@ func TestPaginatedIterator(t *testing.T) {
 
 			ds := generateMock(t, rels, tc.pageSize, options.ByResource)
 
-			pageSize, err := safecast.ToUint64(tc.pageSize)
+			pageSize, err := safecast.Convert[uint64](tc.pageSize)
 			require.NoError(err)
 
 			ctx := t.Context()
@@ -91,7 +93,7 @@ func generateMock(t *testing.T, rels []tuple.Relationship, pageSize int, order o
 			pastLastIndex = relsLen
 		}
 
-		pageSize64, err := safecast.ToUint64(pageSize)
+		pageSize64, err := safecast.Convert[uint64](pageSize)
 		require.NoError(t, err)
 
 		iter := common.NewSliceRelationshipIterator(rels[i:pastLastIndex])

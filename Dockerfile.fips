@@ -12,14 +12,14 @@ COPY . .
 
 RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/go/pkg/mod go mod download && \
     go mod tidy && \
-    GOEXPERIMENT=strictfipsruntime,boringcrypto GOOS=linux GOARCH=${TARGETARCH} GOFLAGS="" go build -tags=fips_enabled -gcflags=all=-trimpath=/go -asmflags=all=-trimpath=/go ./cmd/...
+    GOEXPERIMENT=strictfipsruntime,boringcrypto GOOS=linux GOARCH=${TARGETARCH} GOFLAGS="" go build -tags=fips_enabled -gcflags=all=-trimpath=/go -asmflags=all=-trimpath=/go -o spicedb ./cmd/spicedb
 
 # Builder for health probe
 FROM base AS health-probe-builder
 WORKDIR /go/src/app
 RUN git clone https://github.com/authzed/grpc-health-probe.git
 WORKDIR /go/src/app/grpc-health-probe
-RUN git checkout 0269ef8dd3a89d40ea5ed0a27a3d421278c6c9e1
+RUN git checkout main
 RUN GOEXPERIMENT=strictfipsruntime,boringcrypto CGO_ENABLED=1 GOBIN=/go/bin go install -a -tags netgo -ldflags=-w
 
 # use clean base without build tools

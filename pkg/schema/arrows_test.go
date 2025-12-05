@@ -1,7 +1,6 @@
 package schema
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -34,6 +33,50 @@ func TestLookupTuplesetArrows(t *testing.T) {
 				relation org: organization
 				relation viewer: user
 				permission view = org->member + viewer
+			}
+		`,
+			expected: map[string][]string{
+				"organization#member": {},
+				"resource#viewer":     {},
+				"resource#org":        {"org->member"},
+				"resource#view":       {},
+			},
+		},
+		{
+			name: "functioned arrow any",
+			schemaText: `
+			definition user {}
+
+			definition organization {
+				relation member: user
+			}
+
+			definition resource {
+				relation org: organization
+				relation viewer: user
+				permission view = org.any(member) + viewer
+			}
+		`,
+			expected: map[string][]string{
+				"organization#member": {},
+				"resource#viewer":     {},
+				"resource#org":        {"org->member"},
+				"resource#view":       {},
+			},
+		},
+		{
+			name: "functioned arrow all",
+			schemaText: `
+			definition user {}
+
+			definition organization {
+				relation member: user
+			}
+
+			definition resource {
+				relation org: organization
+				relation viewer: user
+				permission view = org.all(member) + viewer
 			}
 		`,
 			expected: map[string][]string{
@@ -95,12 +138,12 @@ func TestLookupTuplesetArrows(t *testing.T) {
 
 					rel := resource.Name + "#" + relation.Name
 					expected, ok := tc.expected[rel]
-					require.True(t, ok, fmt.Sprintf("expected %v to be in %v", rel, tc.expected))
+					require.True(t, ok, "expected %v to be in %v", rel, tc.expected)
 					require.Len(t, arrows, len(expected), rel)
 
 					for _, arrow := range arrows {
 						key := arrow.Arrow.Tupleset.Relation + "->" + arrow.Arrow.ComputedUserset.Relation
-						require.Contains(t, expected, key, fmt.Sprintf("expected %v to be in %v", key, expected))
+						require.Contains(t, expected, key, "expected %v to be in %v", key, expected)
 					}
 				}
 			}
@@ -132,6 +175,46 @@ func TestAllReachableRelations(t *testing.T) {
 				relation org: organization
 				relation viewer: user
 				permission view = org->member + viewer
+			}
+		`,
+			expected: []string{
+				"organization#member",
+				"resource#org",
+			},
+		},
+		{
+			name: "functioned arrow any",
+			schemaText: `
+			definition user {}
+
+			definition organization {
+				relation member: user
+			}
+
+			definition resource {
+				relation org: organization
+				relation viewer: user
+				permission view = org.any(member) + viewer
+			}
+		`,
+			expected: []string{
+				"organization#member",
+				"resource#org",
+			},
+		},
+		{
+			name: "functioned arrow all",
+			schemaText: `
+			definition user {}
+
+			definition organization {
+				relation member: user
+			}
+
+			definition resource {
+				relation org: organization
+				relation viewer: user
+				permission view = org.all(member) + viewer
 			}
 		`,
 			expected: []string{

@@ -108,7 +108,7 @@ func TestInexactFloat64(t *testing.T) {
 			rev, err := HLCRevisionFromString(tc)
 			require.NoError(t, err)
 
-			require.Equal(t, floatValue, rev.InexactFloat64())
+			require.Equal(t, floatValue, rev.InexactFloat64()) //nolint:testifyrequire this is based on a parsed value, so we expect it to be exactly equal.
 		})
 	}
 }
@@ -294,115 +294,4 @@ func TestFailsIfLogicalClockExceedsMaxUin32(t *testing.T) {
 	require.PanicsWithValue(t, expectedError, func() {
 		_, _ = HLCRevisionFromString("0.9999999999")
 	})
-}
-
-func BenchmarkHLCParsing(b *testing.B) {
-	tcs := []string{
-		"1",
-		"2",
-		"42",
-		"1257894000000000000",
-		"-1",
-		"9223372036854775807.1000000025",
-		"1703283409994227985.0000000004",
-	}
-
-	for _, tc := range tcs {
-		b.Run(tc, func(b *testing.B) {
-			for i := 0; i < b.N; i++ {
-				_, err := HLCRevisionFromString(tc)
-				if err != nil {
-					b.Fatal(err)
-				}
-			}
-		})
-	}
-}
-
-func BenchmarkHLCLessThan(b *testing.B) {
-	tcs := []struct {
-		left  string
-		right string
-	}{
-		{
-			"1", "2",
-		},
-		{
-			"2", "1",
-		},
-		{
-			"2", "2",
-		},
-		{
-			"1703283409994227985.0000000004", "1703283409994227985.0000000005",
-		},
-		{
-			"1703283409994227985.0000000005", "1703283409994227985.0000000004",
-		},
-	}
-
-	for _, tc := range tcs {
-		b.Run(tc.left+"-"+tc.right, func(b *testing.B) {
-			left, err := HLCRevisionFromString(tc.left)
-			if err != nil {
-				b.Fatal(err)
-			}
-
-			right, err := HLCRevisionFromString(tc.right)
-			if err != nil {
-				b.Fatal(err)
-			}
-
-			b.ResetTimer()
-			left.LessThan(right)
-		})
-	}
-}
-
-func BenchmarkHLCLessThanFunc(b *testing.B) {
-	tcs := []struct {
-		left  string
-		right string
-	}{
-		{
-			"1", "2",
-		},
-		{
-			"2", "1",
-		},
-		{
-			"2", "2",
-		},
-		{
-			"1703283409994227985.0000000001", "1703283409994227985.0000000001",
-		},
-		{
-			"1703283409994227985.0000000004", "1703283409994227985.0000000005",
-		},
-		{
-			"1703283409994227985.0000000005", "1703283409994227985.0000000004",
-		},
-	}
-
-	for _, tc := range tcs {
-		b.Run(tc.left+"-"+tc.right, func(b *testing.B) {
-			left, err := HLCRevisionFromString(tc.left)
-			if err != nil {
-				b.Fatal(err)
-			}
-
-			right, err := HLCRevisionFromString(tc.right)
-			if err != nil {
-				b.Fatal(err)
-			}
-
-			b.ResetTimer()
-			lk := HLCKeyFunc(left)
-			rk := HLCKeyFunc(right)
-
-			for i := 0; i < b.N; i++ {
-				HLCKeyLessThanFunc(lk, rk)
-			}
-		})
-	}
 }

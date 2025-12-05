@@ -3,7 +3,6 @@ package test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 
@@ -38,7 +37,7 @@ func CaveatNotFoundTest(t *testing.T, tester DatastoreTester) {
 	require.NoError(err)
 
 	_, _, err = ds.SnapshotReader(startRevision).ReadCaveatByName(ctx, "unknown")
-	require.True(errors.As(err, &datastore.CaveatNameNotFoundError{}))
+	require.ErrorAs(err, &datastore.CaveatNameNotFoundError{})
 }
 
 func WriteReadDeleteCaveatTest(t *testing.T, tester DatastoreTester) {
@@ -76,7 +75,7 @@ func WriteReadDeleteCaveatTest(t *testing.T, tester DatastoreTester) {
 	// All caveats can be listed when no arg is provided
 	// Manually check the caveat's contents.
 	req.Equal(coreCaveat.Name, cv.Name)
-	req.Equal(2, len(cv.ParameterTypes))
+	req.Len(cv.ParameterTypes, 2)
 	req.Equal("int", cv.ParameterTypes["foo"].TypeName)
 	req.Equal("map", cv.ParameterTypes["bar"].TypeName)
 	req.Equal("bytes", cv.ParameterTypes["bar"].ChildTypes[0].TypeName)
@@ -107,12 +106,12 @@ func WriteReadDeleteCaveatTest(t *testing.T, tester DatastoreTester) {
 	// Empty lookup returns no values.
 	cvs, err = cr.LookupCaveatsWithNames(ctx, []string{})
 	req.NoError(err)
-	req.Len(cvs, 0)
+	req.Empty(cvs)
 
 	// nil lookup returns no values.
 	cvs, err = cr.LookupCaveatsWithNames(ctx, nil)
 	req.NoError(err)
-	req.Len(cvs, 0)
+	req.Empty(cvs)
 
 	// Delete Caveat
 	rev, err = ds.ReadWriteTx(ctx, func(ctx context.Context, tx datastore.ReadWriteTransaction) error {
@@ -351,7 +350,7 @@ func expectRelChange(t *testing.T, ds datastore.Datastore, revBeforeWrite datast
 	defer cancel()
 
 	chanRevisionChanges, chanErr := ds.Watch(ctx, revBeforeWrite, datastore.WatchJustRelationships())
-	require.Zero(t, len(chanErr))
+	require.Empty(t, chanErr)
 
 	changeWait := time.NewTimer(waitForChangesTimeout)
 	select {
@@ -396,7 +395,7 @@ func skipIfNotCaveatStorer(t *testing.T, ds datastore.Datastore) {
 		if !errors.As(err, &datastore.CaveatNameNotFoundError{}) {
 			t.Skip("datastore does not implement CaveatStorer interface")
 		}
-		return fmt.Errorf("force rollback of unnecesary tx")
+		return errors.New("force rollback of unnecesary tx")
 	})
 }
 

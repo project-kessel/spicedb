@@ -1,5 +1,4 @@
 //go:build ci && docker
-// +build ci,docker
 
 package postgres
 
@@ -32,6 +31,7 @@ import (
 	testdatastore "github.com/authzed/spicedb/internal/testserver/datastore"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/datastore/options"
+	"github.com/authzed/spicedb/pkg/datastore/queryshape"
 	"github.com/authzed/spicedb/pkg/datastore/test"
 	"github.com/authzed/spicedb/pkg/migrate"
 	"github.com/authzed/spicedb/pkg/namespace"
@@ -273,12 +273,21 @@ func testPostgresDatastore(t *testing.T, config postgresTestConfig) {
 				WatchBufferLength(50),
 				MigrationPhase(config.migrationPhase),
 			))
-
 		}
 
 		t.Run("OTelTracing", createDatastoreTest(
 			b,
 			OTelTracingTest,
+			RevisionQuantization(0),
+			GCWindow(1*time.Millisecond),
+			GCInterval(veryLargeGCInterval),
+			WatchBufferLength(1),
+			MigrationPhase(config.migrationPhase),
+		))
+
+		t.Run("ExceedInsertQuerySizeTest", createDatastoreTest(
+			b,
+			ExceedInsertQuerySizeTest,
 			RevisionQuantization(0),
 			GCWindow(1*time.Millisecond),
 			GCInterval(veryLargeGCInterval),
@@ -886,6 +895,7 @@ func QuantizedRevisionTest(t *testing.T, b testdatastore.RunningEngineForTest) {
 					GCWindow(24*time.Hour),
 					WatchBufferLength(1),
 					FollowerReadDelay(tc.followerReadDelay),
+					WithRevisionHeartbeat(false),
 				)
 				require.NoError(err)
 
@@ -894,7 +904,7 @@ func QuantizedRevisionTest(t *testing.T, b testdatastore.RunningEngineForTest) {
 			defer ds.Close()
 
 			// set a random time zone to ensure the queries are unaffected by tz
-			_, err := conn.Exec(ctx, fmt.Sprintf("SET TIME ZONE -%d", rand.Intn(8)+1))
+			_, err := conn.Exec(ctx, fmt.Sprintf("SET TIME ZONE -%d", rand.Intn(8)+1)) //nolint:gosec
 			require.NoError(err)
 
 			var dbNow time.Time
@@ -934,8 +944,8 @@ func OverlappingRevisionTest(t *testing.T, b testdatastore.RunningEngineForTest)
 			5 * time.Second,
 			0,
 			[]postgresRevision{
-				{optionalTxID: newXid8(3), snapshot: pgSnapshot{xmin: 1, xmax: 4, xipList: []uint64{2}}, optionalNanosTimestamp: uint64((time.Second * 1) * time.Nanosecond)},
-				{optionalTxID: newXid8(2), snapshot: pgSnapshot{xmin: 1, xmax: 4, xipList: []uint64{3}}, optionalNanosTimestamp: uint64((time.Second * 2) * time.Nanosecond)},
+				{optionalTxID: NewXid8(3), snapshot: pgSnapshot{xmin: 1, xmax: 4, xipList: []uint64{2}}, optionalNanosTimestamp: uint64((time.Second * 1) * time.Nanosecond)},
+				{optionalTxID: NewXid8(2), snapshot: pgSnapshot{xmin: 1, xmax: 4, xipList: []uint64{3}}, optionalNanosTimestamp: uint64((time.Second * 2) * time.Nanosecond)},
 			},
 			2, 0,
 		},
@@ -963,6 +973,7 @@ func OverlappingRevisionTest(t *testing.T, b testdatastore.RunningEngineForTest)
 					GCWindow(24*time.Hour),
 					WatchBufferLength(1),
 					FollowerReadDelay(tc.followerReadDelay),
+					WithRevisionHeartbeat(false),
 				)
 				require.NoError(err)
 
@@ -971,14 +982,14 @@ func OverlappingRevisionTest(t *testing.T, b testdatastore.RunningEngineForTest)
 			defer ds.Close()
 
 			// set a random time zone to ensure the queries are unaffected by tz
-			_, err := conn.Exec(ctx, fmt.Sprintf("SET TIME ZONE -%d", rand.Intn(8)+1))
+			_, err := conn.Exec(ctx, fmt.Sprintf("SET TIME ZONE -%d", rand.Intn(8)+1)) //nolint:gosec
 			require.NoError(err)
 
 			for _, rev := range tc.revisions {
 				stmt := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 				insertTxn := stmt.Insert(schema.TableTransaction).Columns(schema.ColXID, schema.ColSnapshot, schema.ColTimestamp)
 
-				ts := time.Unix(0, int64(rev.optionalNanosTimestamp))
+				ts := time.Unix(0, int64(rev.optionalNanosTimestamp)) //nolint:gosec
 				sql, args, err := insertTxn.Values(rev.optionalTxID, rev.snapshot, ts).ToSql()
 				require.NoError(err)
 
@@ -1204,7 +1215,7 @@ func ConcurrentRevisionWatchTest(t *testing.T, ds datastore.Datastore) {
 	require.Eventually(func() bool {
 		seenWatchRevisionsLock.Lock()
 		defer seenWatchRevisionsLock.Unlock()
-		return len(seenWatchRevisions) == 3 && seenWatchRevisions[len(seenWatchRevisions)-1].String() == afterRev.String()
+		return len(seenWatchRevisions) == 3 && seenWatchRevisions[len(seenWatchRevisions)-1].Equal(afterRev)
 	}, 2*time.Second, 5*time.Millisecond)
 }
 
@@ -1425,6 +1436,7 @@ func WatchNotEnabledTest(t *testing.T, _ testdatastore.RunningEngineForTest, pgV
 }
 
 func BenchmarkPostgresQuery(b *testing.B) {
+	b.StopTimer()
 	req := require.New(b)
 
 	ds := testdatastore.RunPostgresForTesting(b, "", migrate.Head, pgversion.MinimumSupportedPostgresVersion, false).NewDatastore(b, func(engine, uri string) datastore.Datastore {
@@ -1439,8 +1451,12 @@ func BenchmarkPostgresQuery(b *testing.B) {
 		require.NoError(b, err)
 		return ds
 	})
-	defer ds.Close()
 	ds, revision := testfixtures.StandardDatastoreWithData(ds, req)
+	b.Cleanup(func() {
+		_ = ds.Close()
+	})
+
+	b.StartTimer()
 
 	b.Run("benchmark checks", func(b *testing.B) {
 		require := require.New(b)
@@ -1448,7 +1464,7 @@ func BenchmarkPostgresQuery(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			iter, err := ds.SnapshotReader(revision).QueryRelationships(context.Background(), datastore.RelationshipsFilter{
 				OptionalResourceType: testfixtures.DocumentNS.Name,
-			})
+			}, options.WithQueryShape(queryshape.FindResourceOfType))
 			require.NoError(err)
 			for rel, err := range iter {
 				require.NoError(err)
@@ -1664,7 +1680,7 @@ func RepairTransactionsTest(t *testing.T, ds datastore.Datastore) {
 	// Break the datastore by adding a transaction entry with an XID greater the current one.
 	pds := ds.(*pgDatastore)
 
-	getVersionQuery := fmt.Sprintf("SELECT version()")
+	getVersionQuery := "SELECT version()"
 	var version string
 	err := pds.writePool.QueryRow(context.Background(), getVersionQuery).Scan(&version)
 	require.NoError(t, err)
@@ -1940,11 +1956,7 @@ func RevisionTimestampAndTransactionIDTest(t *testing.T, ds datastore.Datastore)
 
 	anHourAgo := time.Now().UTC().Add(-1 * time.Hour)
 	var checkedUpdate, checkedCheckpoint bool
-	for {
-		if checkedCheckpoint && checkedUpdate {
-			break
-		}
-
+	for !checkedCheckpoint || !checkedUpdate {
 		changeWait := time.NewTimer(waitForChangesTimeout)
 		select {
 		case change, ok := <-changes:
@@ -1964,18 +1976,16 @@ func RevisionTimestampAndTransactionIDTest(t *testing.T, ds datastore.Datastore)
 				rev := change.Revision.(postgresRevision)
 				timestamp, timestampPresent := rev.OptionalNanosTimestamp()
 				require.True(timestampPresent, "expected timestamp to be present in revision")
-				isCorrectAndUsesNanos := time.Unix(0, int64(timestamp)).After(anHourAgo)
+				isCorrectAndUsesNanos := time.Unix(0, int64(timestamp)).After(anHourAgo) //nolint:gosec
 				require.True(isCorrectAndUsesNanos, "timestamp is not correct")
 
 				_, transactionIDPresent := rev.OptionalTransactionID()
 				require.True(transactionIDPresent, "expected transactionID to be present in revision")
 
 				checkedUpdate = true
-			} else {
+			} else if checkedUpdate {
 				// we wait for a checkpoint right after the update. Checkpoints could happen at any time off band.
-				if checkedUpdate {
-					checkedCheckpoint = true
-				}
+				checkedCheckpoint = true
 			}
 
 			time.Sleep(1 * time.Millisecond)
@@ -2028,6 +2038,38 @@ func ContinuousCheckpointTest(t *testing.T, ds datastore.Datastore) {
 			require.Fail("timed out waiting for checkpoint for out of band change")
 		}
 	}
+}
+
+func ExceedInsertQuerySizeTest(t *testing.T, ds datastore.Datastore) {
+	require := require.New(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	_, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
+		updates := make([]tuple.RelationshipUpdate, 0, 20_000)
+		for i := range 20_000 {
+			tpl := tuple.MustParse(fmt.Sprintf("resource:resource-%d#reader%d@user%d:user-%d", i, i, i, i))
+			t := time.Now().Add(24 * time.Hour).Add(time.Duration(i) * time.Minute)
+			tpl.OptionalExpiration = &t
+			updates = append(updates, tuple.Touch(tpl))
+		}
+		return rwt.WriteRelationships(ctx, updates)
+	})
+	require.Error(err)
+	require.ErrorContains(err, "exceeds the maximum size supported by this datastore")
+
+	headRev, err := ds.HeadRevision(ctx)
+	require.NoError(err)
+	iter, err := ds.SnapshotReader(headRev).QueryRelationships(context.Background(), datastore.RelationshipsFilter{
+		OptionalResourceType: "resource",
+	})
+	require.NoError(err)
+	count := 0
+	for range iter {
+		count++
+	}
+	require.Equal(0, count, "expected to have 0 relationships, but found %d", count)
 }
 
 const waitForChangesTimeout = 10 * time.Second

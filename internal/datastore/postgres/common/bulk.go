@@ -3,7 +3,7 @@ package common
 import (
 	"context"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/authzed/spicedb/pkg/datastore"
@@ -77,7 +77,7 @@ func BulkLoad(
 		colNames:     colNames,
 	}
 	copied, err := tx.CopyFrom(ctx, pgx.Identifier{tupleTableName}, colNames, adapter)
-	uintCopied, castErr := safecast.ToUint64(copied)
+	uintCopied, castErr := safecast.Convert[uint64](copied)
 	if castErr != nil {
 		return 0, spiceerrors.MustBugf("number copied was negative: %v", castErr)
 	}

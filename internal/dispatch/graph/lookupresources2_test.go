@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -18,11 +18,11 @@ import (
 	"github.com/authzed/spicedb/internal/dispatch"
 	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/testfixtures"
-	caveattypes "github.com/authzed/spicedb/pkg/caveats/types"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/datastore/options"
 	"github.com/authzed/spicedb/pkg/genutil/mapz"
 	v1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
+	"github.com/authzed/spicedb/pkg/testutil"
 	"github.com/authzed/spicedb/pkg/tuple"
 )
 
@@ -101,7 +101,7 @@ func TestSimpleLookupResources2(t *testing.T) {
 
 		tc := tc
 		t.Run(name, func(t *testing.T) {
-			defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+			defer goleak.VerifyNone(t, append(testutil.GoLeakIgnores(), goleak.IgnoreCurrent())...)
 
 			require := require.New(t)
 			ctx, dispatcher, revision := newLocalDispatcher(t)
@@ -207,7 +207,7 @@ func TestSimpleLookupResourcesWithCursor2(t *testing.T) {
 
 			require.NoError(err)
 
-			require.Equal(1, len(stream.Results()))
+			require.Len(stream.Results(), 1)
 
 			found.Insert(stream.Results()[0].Resource.ResourceId)
 			require.Equal(tc.expectedFirst, found.AsSlice())
@@ -266,7 +266,7 @@ func TestLookupResourcesCursorStability2(t *testing.T) {
 	}, stream)
 
 	require.NoError(err)
-	require.Equal(2, len(stream.Results()))
+	require.Len(stream.Results(), 2)
 
 	cursor := stream.Results()[1].AfterResponseCursor
 	require.NotNil(cursor)
@@ -288,7 +288,7 @@ func TestLookupResourcesCursorStability2(t *testing.T) {
 	require.NoError(err)
 
 	require.NoError(err)
-	require.Equal(2, len(stream.Results()))
+	require.Len(stream.Results(), 2)
 
 	cursorAgain := stream.Results()[1].AfterResponseCursor
 	require.NotNil(cursor)
@@ -319,7 +319,8 @@ func TestMaxDepthLookup2(t *testing.T) {
 
 	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require)
 
-	dispatcher := NewLocalOnlyDispatcher(caveattypes.Default.TypeSet, 10, 100)
+	dispatcher, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
+	require.NoError(err)
 	defer dispatcher.Close()
 
 	ctx := datastoremw.ContextWithHandle(t.Context())
@@ -756,7 +757,8 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 					t.Parallel()
 					require := require.New(t)
 
-					dispatcher := NewLocalOnlyDispatcher(caveattypes.Default.TypeSet, 10, 100)
+					dispatcher, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
+					require.NoError(err)
 
 					ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
 					require.NoError(err)
@@ -772,7 +774,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 					for {
 						stream := dispatch.NewCollectingDispatchStream[*v1.DispatchLookupResources2Response](ctx)
 
-						uintPageSize, err := safecast.ToUint32(pageSize)
+						uintPageSize, err := safecast.Convert[uint32](pageSize)
 						require.NoError(err)
 
 						var caveatContext *structpb.Struct
@@ -814,7 +816,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 					}
 
 					for _, chunk := range foundChunks[0 : len(foundChunks)-1] {
-						require.Equal(pageSize, len(chunk))
+						require.Len(chunk, pageSize)
 					}
 
 					foundResourceIDsSlice := foundResourceIDs.AsSlice()
@@ -839,7 +841,8 @@ func TestLookupResources2ImmediateTimeout(t *testing.T) {
 
 	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require)
 
-	dispatcher := NewLocalOnlyDispatcher(caveattypes.Default.TypeSet, 10, 100)
+	dispatcher, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
+	require.NoError(err)
 	defer dispatcher.Close()
 
 	ctx := datastoremw.ContextWithHandle(t.Context())
@@ -874,7 +877,8 @@ func TestLookupResources2WithError(t *testing.T) {
 
 	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require)
 
-	dispatcher := NewLocalOnlyDispatcher(caveattypes.Default.TypeSet, 10, 100)
+	dispatcher, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
+	require.NoError(err)
 	defer dispatcher.Close()
 
 	ctx := datastoremw.ContextWithHandle(t.Context())
@@ -1354,7 +1358,8 @@ func TestLookupResources2EnsureCheckHints(t *testing.T) {
 
 			checkingDS := disallowedWrapper{ds, tc.disallowedQueries}
 
-			dispatcher := NewLocalOnlyDispatcher(caveattypes.Default.TypeSet, 10, 100)
+			dispatcher, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
+			require.NoError(err)
 			defer dispatcher.Close()
 
 			ctx := datastoremw.ContextWithHandle(t.Context())

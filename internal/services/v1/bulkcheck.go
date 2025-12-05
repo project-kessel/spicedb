@@ -46,7 +46,7 @@ type bulkChecker struct {
 const maxBulkCheckCount = 10000
 
 func (bc *bulkChecker) checkBulkPermissions(ctx context.Context, req *v1.CheckBulkPermissionsRequest) (*v1.CheckBulkPermissionsResponse, error) {
-	telemetry.RecordLogicalChecks(uint64(len(req.Items)))
+	telemetry.LogicalChecks.Add(float64(len(req.Items)))
 
 	atRevision, checkedAt, err := consistency.RevisionFromContext(ctx)
 	if err != nil {
@@ -87,7 +87,7 @@ func (bc *bulkChecker) checkBulkPermissions(ctx context.Context, req *v1.CheckBu
 
 	bulkResponseMutex := sync.Mutex{}
 
-	spiceerrors.DebugAssert(func() bool {
+	spiceerrors.DebugAssertf(func() bool {
 		return bc.maxConcurrency > 0
 	}, "max concurrency must be greater than 0 in bulk check")
 

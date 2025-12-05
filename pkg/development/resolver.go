@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ccoveille/go-safecast"
+	"github.com/ccoveille/go-safecast/v2"
 
 	log "github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/pkg/caveats"
@@ -88,11 +88,11 @@ func (r *Resolver) ReferenceAtPosition(source input.Source, position input.Posit
 
 	relationReference := func(relation *core.Relation, def *schema.Definition) (*SchemaReference, error) {
 		// NOTE: zeroes are fine here to mean "unknown"
-		lineNumber, err := safecast.ToInt(relation.SourcePosition.ZeroIndexedLineNumber)
+		lineNumber, err := safecast.Convert[int](relation.SourcePosition.ZeroIndexedLineNumber)
 		if err != nil {
 			log.Err(err).Msg("could not cast lineNumber to uint32")
 		}
-		columnPosition, err := safecast.ToInt(relation.SourcePosition.ZeroIndexedColumnPosition)
+		columnPosition, err := safecast.Convert[int](relation.SourcePosition.ZeroIndexedColumnPosition)
 		if err != nil {
 			log.Err(err).Msg("could not cast columnPosition to uint32")
 		}
@@ -113,7 +113,7 @@ func (r *Resolver) ReferenceAtPosition(source input.Source, position input.Posit
 				Text:     relation.Name,
 
 				ReferenceType:     ReferenceTypePermission,
-				ReferenceMarkdown: fmt.Sprintf("permission %s", relation.Name),
+				ReferenceMarkdown: "permission " + relation.Name,
 
 				TargetSource:             &source,
 				TargetPosition:           &relationPosition,
@@ -128,7 +128,7 @@ func (r *Resolver) ReferenceAtPosition(source input.Source, position input.Posit
 			Text:     relation.Name,
 
 			ReferenceType:     ReferenceTypeRelation,
-			ReferenceMarkdown: fmt.Sprintf("relation %s", relation.Name),
+			ReferenceMarkdown: "relation " + relation.Name,
 
 			TargetSource:             &source,
 			TargetPosition:           &relationPosition,
@@ -146,11 +146,11 @@ func (r *Resolver) ReferenceAtPosition(source input.Source, position input.Posit
 		def := ts.Namespace()
 
 		// NOTE: zeroes are fine here to mean "unknown"
-		lineNumber, err := safecast.ToInt(def.SourcePosition.ZeroIndexedLineNumber)
+		lineNumber, err := safecast.Convert[int](def.SourcePosition.ZeroIndexedLineNumber)
 		if err != nil {
 			log.Err(err).Msg("could not cast lineNumber to uint32")
 		}
-		columnPosition, err := safecast.ToInt(def.SourcePosition.ZeroIndexedColumnPosition)
+		columnPosition, err := safecast.Convert[int](def.SourcePosition.ZeroIndexedColumnPosition)
 		if err != nil {
 			log.Err(err).Msg("could not cast columnPosition to uint32")
 		}
@@ -177,7 +177,7 @@ func (r *Resolver) ReferenceAtPosition(source input.Source, position input.Posit
 			Text:     def.Name,
 
 			ReferenceType:     ReferenceTypeDefinition,
-			ReferenceMarkdown: fmt.Sprintf("definition %s", def.Name),
+			ReferenceMarkdown: "definition " + def.Name,
 
 			TargetSource:             &source,
 			TargetPosition:           &defPosition,
@@ -189,11 +189,11 @@ func (r *Resolver) ReferenceAtPosition(source input.Source, position input.Posit
 	// Caveat Type reference.
 	if caveatDef, ok := r.caveatTypeReferenceChain(nodeChain); ok {
 		// NOTE: zeroes are fine here to mean "unknown"
-		lineNumber, err := safecast.ToInt(caveatDef.SourcePosition.ZeroIndexedLineNumber)
+		lineNumber, err := safecast.Convert[int](caveatDef.SourcePosition.ZeroIndexedLineNumber)
 		if err != nil {
 			log.Err(err).Msg("could not cast lineNumber to uint32")
 		}
-		columnPosition, err := safecast.ToInt(caveatDef.SourcePosition.ZeroIndexedColumnPosition)
+		columnPosition, err := safecast.Convert[int](caveatDef.SourcePosition.ZeroIndexedColumnPosition)
 		if err != nil {
 			log.Err(err).Msg("could not cast columnPosition to uint32")
 		}
@@ -222,7 +222,7 @@ func (r *Resolver) ReferenceAtPosition(source input.Source, position input.Posit
 			Text:     caveatDef.Name,
 
 			ReferenceType:     ReferenceTypeCaveat,
-			ReferenceMarkdown: fmt.Sprintf("caveat %s", caveatDef.Name),
+			ReferenceMarkdown: "caveat " + caveatDef.Name,
 
 			TargetSource:             &source,
 			TargetPosition:           &defPosition,

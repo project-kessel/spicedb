@@ -31,6 +31,7 @@ import (
 	"github.com/authzed/spicedb/internal/datastore/postgres/schema"
 	"github.com/authzed/spicedb/internal/datastore/revisions"
 	log "github.com/authzed/spicedb/internal/logging"
+	"github.com/authzed/spicedb/internal/sharederrors"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/datastore/options"
 	"github.com/authzed/spicedb/pkg/spiceerrors"
@@ -80,7 +81,7 @@ var (
 	getRevisionForGC = psql.
 				Select(schema.ColXID, schema.ColSnapshot).
 				From(schema.TableTransaction).
-				OrderByClause(fmt.Sprintf("%s DESC", schema.ColXID)).
+				OrderByClause(schema.ColXID + " DESC").
 				Limit(1)
 
 	createTxn = psql.Insert(schema.TableTransaction).Columns(schema.ColMetadata)
@@ -239,31 +240,9 @@ func newPostgresDatastore(
 		}
 	}
 
-	if config.enablePrometheusStats {
-		replicaIndexStr := strconv.Itoa(replicaIndex)
-		dbname := "spicedb"
-		if replicaIndex != primaryInstanceID {
-			dbname = fmt.Sprintf("spicedb_replica_%s", replicaIndexStr)
-		}
-
-		if err := prometheus.Register(pgxpoolprometheus.NewCollector(readPool, map[string]string{
-			"db_name":    dbname,
-			"pool_usage": "read",
-		})); err != nil {
-			return nil, err
-		}
-
-		if isPrimary {
-			if err := prometheus.Register(pgxpoolprometheus.NewCollector(writePool, map[string]string{
-				"db_name":    "spicedb",
-				"pool_usage": "write",
-			})); err != nil {
-				return nil, err
-			}
-			if err := common.RegisterGCMetrics(); err != nil {
-				return nil, err
-			}
-		}
+	collectors, err := registerAndReturnPrometheusCollectors(replicaIndex, isPrimary, readPool, writePool, config.enablePrometheusStats)
+	if err != nil {
+		return nil, err
 	}
 
 	headMigration, err := migrations.DatabaseMigrations.HeadRevision()
@@ -330,6 +309,7 @@ func newPostgresDatastore(
 		dburl:                   pgURL,
 		readPool:                pgxcommon.MustNewInterceptorPooler(readPool, config.queryInterceptor),
 		writePool:               nil, /* disabled by default */
+		collectors:              collectors,
 		watchBufferLength:       config.watchBufferLength,
 		watchBufferWriteTimeout: config.watchBufferWriteTimeout,
 		optimizedRevisionQuery:  revisionQuery,
@@ -348,7 +328,7 @@ func newPostgresDatastore(
 		isPrimary:               isPrimary,
 		inStrictReadMode:        config.readStrictMode,
 		filterMaximumIDCount:    config.filterMaximumIDCount,
-		schema:                  *schema.Schema(config.columnOptimizationOption, config.expirationDisabled),
+		schema:                  *schema.Schema(config.columnOptimizationOption, false),
 		quantizationPeriodNanos: quantizationPeriodNanos,
 		isolationLevel:          isolationLevel,
 	}
@@ -363,7 +343,7 @@ func newPostgresDatastore(
 
 	datastore.SetOptimizedRevisionFunc(datastore.optimizedRevisionFunc)
 
-	// Start a goroutine for garbage collection.
+	// Start a goroutine for garbage collection and the revision heartbeat.
 	if isPrimary {
 		datastore.workerGroup, datastore.workerCtx = errgroup.WithContext(datastore.workerCtx)
 		if config.revisionHeartbeatEnabled {
@@ -396,6 +376,7 @@ type pgDatastore struct {
 
 	dburl                          string
 	readPool, writePool            pgxcommon.ConnPooler
+	collectors                     []prometheus.Collector
 	watchBufferLength              uint16
 	watchBufferWriteTimeout        time.Duration
 	optimizedRevisionQuery         string
@@ -414,6 +395,7 @@ type pgDatastore struct {
 	includeQueryParametersInTraces bool
 
 	credentialsProvider datastore.CredentialsProvider
+	uniqueID            atomic.Pointer[string]
 
 	workerGroup             *errgroup.Group
 	workerCtx               context.Context
@@ -532,7 +514,7 @@ func (pgd *pgDatastore) Repair(ctx context.Context, operationName string, output
 		return pgd.repairTransactionIDs(ctx, outputProgress)
 
 	default:
-		return fmt.Errorf("unknown operation")
+		return errors.New("unknown operation")
 	}
 }
 
@@ -660,7 +642,9 @@ func (pgd *pgDatastore) Close() error {
 	if pgd.writePool != nil {
 		pgd.writePool.Close()
 	}
-
+	for _, collector := range pgd.collectors {
+		prometheus.Unregister(collector)
+	}
 	return nil
 }
 
@@ -697,10 +681,11 @@ func (pgd *pgDatastore) ReadyState(ctx context.Context) (datastore.ReadyState, e
 	if !state.IsReady {
 		return state, nil
 	}
+
 	// Ensure a datastore ID is present. This ensures the tables have not been truncated.
-	uniqueID, err := pgd.datastoreUniqueID(ctx)
+	uniqueID, err := pgd.UniqueID(ctx)
 	if err != nil {
-		return datastore.ReadyState{}, fmt.Errorf("database validation failed: %w; if you have previously run `TRUNCATE`, this database is no longer valid and must be remigrated. See: https://spicedb.dev/d/truncate-unsupported", err)
+		return datastore.ReadyState{}, fmt.Errorf("database validation failed: %w; if you have previously run `TRUNCATE`, this database is no longer valid and must be remigrated. See "+sharederrors.TruncateUnsupportedErrorLink, err)
 	}
 	log.Trace().Str("unique_id", uniqueID).Msg("postgres datastore unique ID")
 	return state, nil
@@ -820,3 +805,45 @@ func currentlyLivingObjects(original sq.SelectBuilder) sq.SelectBuilder {
 }
 
 var _ datastore.Datastore = &pgDatastore{}
+
+func registerAndReturnPrometheusCollectors(replicaIndex int, isPrimary bool, readPool, writePool *pgxpool.Pool, enablePrometheusStats bool) ([]prometheus.Collector, error) {
+	collectors := []prometheus.Collector{}
+	if !enablePrometheusStats {
+		return collectors, nil
+	}
+
+	replicaIndexStr := strconv.Itoa(replicaIndex)
+	dbname := "spicedb"
+	if replicaIndex != primaryInstanceID {
+		dbname = "spicedb_replica_" + replicaIndexStr
+	}
+
+	readCollector := pgxpoolprometheus.NewCollector(readPool, map[string]string{
+		"db_name":    dbname,
+		"pool_usage": "read",
+	})
+	if err := prometheus.Register(readCollector); err != nil {
+		return collectors, err
+	}
+	collectors = append(collectors, readCollector)
+
+	if isPrimary {
+		writeCollector := pgxpoolprometheus.NewCollector(writePool, map[string]string{
+			"db_name":    "spicedb",
+			"pool_usage": "write",
+		})
+
+		if err := prometheus.Register(writeCollector); err != nil {
+			return collectors, nil
+		}
+		collectors = append(collectors, writeCollector)
+
+		gcCollectors, err := common.RegisterGCMetrics()
+		if err != nil {
+			return collectors, err
+		}
+		collectors = append(collectors, gcCollectors...)
+	}
+
+	return collectors, nil
+}
