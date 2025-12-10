@@ -52,7 +52,7 @@ require (
 	github.com/dustin/go-humanize v1.0.1
 	github.com/ecordell/optgen v0.1.0
 	github.com/emirpasic/gods v1.18.1
-	github.com/envoyproxy/protoc-gen-validate v1.2.1
+	github.com/envoyproxy/protoc-gen-validate v1.3.0
 	github.com/ettle/strcase v0.2.0
 	github.com/exaring/otelpgx v0.9.3
 	github.com/fatih/color v1.18.0
