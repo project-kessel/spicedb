@@ -1,6 +1,6 @@
 # vim: syntax=dockerfile
 # use `docker buildx imagetools inspect <image>` to get the multi-platform sha256
-ARG BASE=cgr.dev/chainguard/static@sha256:b2e1c3d3627093e54f6805823e73edd17ab93d6c7202e672988080c863e0412b
+ARG BASE=cgr.dev/chainguard/static@sha256:a301031ffd4ed67f35ca7fa6cf3dad9937b5fa47d7493955a18d9b4ca5412d1a
 FROM golang:1.25.4-alpine@sha256:d3f0cf7723f3429e3f9ed846243970b20a2de7bae6a5b66fc5914e228d831bbb AS health-probe-builder
 WORKDIR /go/src/app
 RUN apk update && apk add --no-cache git
