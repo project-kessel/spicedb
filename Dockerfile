@@ -15,7 +15,7 @@ RUN git checkout main
 RUN CGO_ENABLED=0 go install -a -tags netgo -ldflags=-w
 
 # use `crane digest <image>` to get the multi-platform sha256
-FROM cgr.dev/chainguard/static@sha256:b2e1c3d3627093e54f6805823e73edd17ab93d6c7202e672988080c863e0412b
+FROM cgr.dev/chainguard/static@sha256:a301031ffd4ed67f35ca7fa6cf3dad9937b5fa47d7493955a18d9b4ca5412d1a
 COPY --from=health-probe-builder /go/bin/grpc-health-probe /bin/grpc_health_probe
 COPY --from=spicedb-builder /go/src/app/spicedb /usr/local/bin/spicedb
 ENV PATH="$PATH:/usr/local/bin"
