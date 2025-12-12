@@ -127,7 +127,7 @@ require (
 	k8s.io/utils v0.0.0-20250604170112-4c0f3b243397
 	pgregory.net/rapid v1.2.0
 	resenje.org/singleflight v0.4.3
-	sigs.k8s.io/controller-runtime v0.22.3
+	sigs.k8s.io/controller-runtime v0.22.4
 )
 
 // Most tools are managed in the magefiles module. These tools are just
