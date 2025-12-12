@@ -12,12 +12,12 @@ The table below captures high level changes to our fork from upstream and the re
 |------|------|
 |Dependabot intervals changed to daily |This better aligns with other Kessel Services|
 |All active workflows defined by Authzed updated use the `ubuntu-latest` image for the runner|Authzed uses a custom self-hosted runner in their workflows which we don't have access to|
-|Non-critical workflows disabled or removed|Workflows that do not impact code functionality or Red Hat builds are disabled. This includes: benchmark, analyzer unit, WASM, and Steelthread tests, binary and image builds (using upstream Dockerfile), datastore integration/consistency tests for mysql, spanner, and cockaroach DB, documentation generation, lint checks, license checks, release pipelines, CodeQL and Trivy scanning, and WASM builds|
+|Non-critical workflows disabled or removed|Workflows that do not impact code functionality or Red Hat builds are disabled.<br><br> This includes:<br> * Benchmark, analyzer unit, WASM, and Steelthread tests<br> * Binary and image builds (using upstream Dockerfile)<br> * Datastore integration & consistency tests for MySQL, Spanner, and CockroachDB<br> * Documentation generation<br> * Lint checks<br> * License checks<br> * Release pipelines<br> * CodeQL and Trivy scanning<br> * WASM builds|
 |Removed old versions of Postgres from Datastore integration/consistency workflows| Tests are isolated to version we currently use (16/17)|
 |Added the security scanning workflow|Required ConsoleDot platform security workflow to check for CVE's in code and images|
 |Added push/pull tekton pipelines|Used for Konflux PR and merge builds|
 |Added Dockerfile.fips|Dockerfile used by Konflux for building images, to comply with requirements of using UBI as the base image, and to ensure FIPS-compliant builds using Go Toolset|
-|Updated integration and unit test timeout values|Integration and unit tests were failing due short timeouts, likely related to using smaller runners than Authzed may be using. These code changes can be found in the `magefiles/test.go` file|
+|Updated integration and unit test timeout values|Integration and unit tests were failing due to short timeouts, likely related to using smaller runners than Authzed may be using. These code changes can be found in the `magefiles/test.go` file|
 
 &nbsp;
 
@@ -30,7 +30,7 @@ To comply with [Red Hat Software Certification policies](https://docs.redhat.com
 
 **Go Toolset**
 
-To ensure FIPS compliant binaries for running in FedRAMP environments, we leverage Go Toolset vs upstream Go for all builds. While upstream Go is currently [working on FIP 140-3 certification](https://go.dev/blog/fips140), these modules are still in process and under review and therefore are not validated nor shipped with any RHEL products including UBI based images.
+To ensure FIPS compliant binaries for running in FedRAMP environments, we leverage Go Toolset vs upstream Go for all builds. While upstream Go is currently [working on FIPS 140-3 certification](https://go.dev/blog/fips140), these modules are still in process and under review and therefore are not validated nor shipped with any RHEL products including UBI based images.
 
 Go Toolset leverages a fork of Go which is based on the upstream work to enable Go to link against the C library Boring Crypto. This fork uses OpenSSL instead of BoringSSL which is already FIPS validated on RHEL systems (hence the reliance on specific versions of UBI such as 9.x). When upstream Go has finished FIPS validation, it is expected that Go Toolset will converge to using upstream Go and will remain our install target long term on UBI images.
 
