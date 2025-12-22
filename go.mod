@@ -152,7 +152,7 @@ require (
 	buf.build/gen/go/gogo/protobuf/protocolbuffers/go v1.36.10-20240617172848-e1dbca2775a7.1 // indirect
 	cel.dev/expr v0.24.0 // indirect
 	cloud.google.com/go v0.122.0 // indirect
-	cloud.google.com/go/auth v0.17.0 // indirect
+	cloud.google.com/go/auth v0.18.0 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/iam v1.5.2 // indirect
@@ -283,7 +283,7 @@ require (
 	github.com/google/pprof v0.0.0-20250607225305-033d6d78b36a // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
-	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect
+	github.com/googleapis/enterprise-certificate-proxy v0.3.7 // indirect
 	github.com/googleapis/gax-go/v2 v2.15.0 // indirect
 	github.com/gordonklaus/ineffassign v0.2.0 // indirect
 	github.com/gosimple/unidecode v1.0.1 // indirect
