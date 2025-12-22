@@ -101,7 +101,7 @@ require (
 	github.com/shopspring/decimal v1.4.0
 	github.com/sourcegraph/go-lsp v0.0.0-20240223163137-f80c5dd31dfd
 	github.com/sourcegraph/jsonrpc2 v0.2.1
-	github.com/spf13/cobra v1.10.1
+	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/testify v1.11.1
 	go.opencensus.io v0.24.0
