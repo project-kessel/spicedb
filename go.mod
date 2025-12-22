@@ -78,7 +78,7 @@ require (
 	github.com/lithammer/fuzzysearch v1.1.8
 	github.com/lthibault/jitterbug v2.0.0+incompatible
 	github.com/mattn/go-isatty v0.0.20
-	github.com/maypok86/otter/v2 v2.2.1
+	github.com/maypok86/otter/v2 v2.3.0
 	github.com/mostynb/go-grpc-compression v1.2.3
 	github.com/muesli/mango-cobra v1.3.0
 	github.com/muesli/roff v0.1.0
