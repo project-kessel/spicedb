@@ -14,7 +14,7 @@ import (
 	"github.com/jzelinskie/stringz"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/structpb"
-	yamlv2 "gopkg.in/yaml.v2"
+	yamlv2 "gopkg.in/yaml.v3"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 
