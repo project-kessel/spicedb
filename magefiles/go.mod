@@ -8,7 +8,7 @@ require (
 	github.com/ecordell/optgen v0.1.1
 	github.com/envoyproxy/protoc-gen-validate v1.2.1
 	github.com/magefile/mage v1.15.0
-	github.com/planetscale/vtprotobuf v0.6.1-0.20240917153116-6f2963f01587
+	github.com/planetscale/vtprotobuf v0.6.1-0.20250313105119-ba97887b0a25
 	go.uber.org/mock v0.6.0
 	golang.org/x/sync v0.18.0
 	golang.org/x/tools v0.38.0
