@@ -54,7 +54,7 @@ require (
 	github.com/emirpasic/gods v1.18.1
 	github.com/envoyproxy/protoc-gen-validate v1.2.1
 	github.com/ettle/strcase v0.2.0
-	github.com/exaring/otelpgx v0.9.3
+	github.com/exaring/otelpgx v0.10.0
 	github.com/fatih/color v1.18.0
 	github.com/felixge/fgprof v0.9.5
 	github.com/go-errors/errors v1.5.1
