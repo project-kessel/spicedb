@@ -45,6 +45,19 @@ For more info on Go Toolset and FIPS certifications at Red Hat:
 
 &nbsp;
 
+### Keeping SYNC.md Up to Date
+
+The [SYNC.md](SYNC.md) file tracks the current upstream [authzed/spicedb](https://github.com/authzed/spicedb/) version that has been merged into this fork. This file must be updated whenever a new upstream sync is performed.
+
+**When to Update**
+
+Update `SYNC.md` as part of any PR that merges changes from the upstream [authzed/spicedb](https://github.com/authzed/spicedb/) repository.
+
+**How to Update**
+
+1. Set `TAG` to the upstream release tag being synced (eg. `v1.47.1`)
+2. Set `COMMIT_SHA` to the full commit SHA of the upstream commit being merged
+
 ### Updating this File
 
 If changes are made to our fork that diverge from upstream that are not captured in this README, make sure to update this file with any relevant changes. Be sure to capture the change and reason in the table above.
