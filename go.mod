@@ -18,7 +18,7 @@ replace github.com/envoyproxy/go-control-plane => github.com/envoyproxy/go-contr
 replace github.com/influxdata/tdigest => github.com/hdrodz/tdigest v0.0.0-20230422191729-3d4528d8cfec
 
 // FIXME undo this
-replace github.com/ecordell/optgen => github.com/ecordell/optgen v0.0.10-0.20230609182709-018141bf9698
+replace github.com/ecordell/optgen => github.com/ecordell/optgen v0.2.3
 
 // See https://github.com/ory/dockertest/issues/614 and https://pkg.go.dev/vuln/GO-2025-3829
 replace github.com/docker/docker => github.com/docker/docker v28.0.0+incompatible
@@ -50,7 +50,7 @@ require (
 	github.com/dalzilio/rudd v1.1.1-0.20230806153452-9e08a6ea8170
 	github.com/dlmiddlecote/sqlstats v1.0.2
 	github.com/dustin/go-humanize v1.0.1
-	github.com/ecordell/optgen v0.1.0
+	github.com/ecordell/optgen v0.2.3
 	github.com/emirpasic/gods v1.18.1
 	github.com/envoyproxy/protoc-gen-validate v1.2.1
 	github.com/ettle/strcase v0.2.0
