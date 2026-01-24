@@ -21,7 +21,7 @@ replace github.com/influxdata/tdigest => github.com/hdrodz/tdigest v0.0.0-202304
 replace github.com/ecordell/optgen => github.com/ecordell/optgen v0.0.10-0.20230609182709-018141bf9698
 
 // See https://github.com/ory/dockertest/issues/614 and https://pkg.go.dev/vuln/GO-2025-3829
-replace github.com/docker/docker => github.com/docker/docker v28.0.0+incompatible
+replace github.com/docker/docker => github.com/docker/docker v28.5.2+incompatible
 
 require (
 	buf.build/gen/go/prometheus/prometheus/protocolbuffers/go v1.36.10-20251020175938-0eada6ecf0b9.1
@@ -232,7 +232,7 @@ require (
 	github.com/denis-tingaikin/go-header v0.5.0 // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/docker/cli v27.4.1+incompatible // indirect
-	github.com/docker/docker v27.1.1+incompatible // indirect
+	github.com/docker/docker v28.5.2+incompatible // indirect
 	github.com/docker/go-connections v0.5.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/emicklei/go-restful/v3 v3.12.2 // indirect
