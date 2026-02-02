@@ -6,7 +6,7 @@ This document captures all changes made by Red Hat that diverge from the upstrea
 
 ### Drift Tracking
 
-The table below captures high level changes to our fork from upstream and the reason for these changes.
+The table below captures high-level changes to our fork from upstream and the reason for these changes.
 
 |Change|Reason|
 |------|------|
