@@ -6,7 +6,7 @@ require (
 	github.com/agnivade/wasmbrowsertest v0.11.0
 	github.com/bufbuild/buf v1.59.0
 	github.com/ecordell/optgen v0.1.1
-	github.com/envoyproxy/protoc-gen-validate v1.2.1
+	github.com/envoyproxy/protoc-gen-validate v1.3.0
 	github.com/magefile/mage v1.15.0
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240917153116-6f2963f01587
 	go.uber.org/mock v0.6.0
