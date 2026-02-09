@@ -3,7 +3,7 @@ module github.com/authzed/spicedb/e2e
 go 1.25.3
 
 // See: https://github.com/envoyproxy/go-control-plane/issues/1074
-replace github.com/envoyproxy/go-control-plane => github.com/envoyproxy/go-control-plane v0.13.2
+replace github.com/envoyproxy/go-control-plane => github.com/envoyproxy/go-control-plane v0.14.0
 
 replace github.com/authzed/spicedb => ../
 
