@@ -10,7 +10,7 @@ replace github.com/authzed/spicedb => ../
 require (
 	github.com/authzed/authzed-go v1.6.0
 	github.com/authzed/grpcutil v0.0.0-20240123194739-2ea1e3d2d98b
-	github.com/authzed/spicedb v1.29.5
+	github.com/authzed/spicedb v1.49.1
 	github.com/brianvoe/gofakeit/v6 v6.28.0
 	github.com/ecordell/optgen v0.1.1
 	github.com/jackc/pgx/v5 v5.7.6
