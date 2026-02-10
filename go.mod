@@ -34,7 +34,7 @@ require (
 	github.com/Yiling-J/theine-go v0.6.2
 	github.com/authzed/authzed-go v1.6.0
 	github.com/authzed/consistent v0.2.0
-	github.com/authzed/ctxkey v0.0.0-20250226155515-d49f99185584
+	github.com/authzed/ctxkey v0.0.0-20260210154927-ca132876f62c
 	github.com/authzed/grpcutil v0.0.0-20240123194739-2ea1e3d2d98b
 	github.com/aws/aws-sdk-go-v2 v1.39.5
 	github.com/aws/aws-sdk-go-v2/config v1.31.16
