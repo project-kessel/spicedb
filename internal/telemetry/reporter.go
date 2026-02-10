@@ -14,7 +14,7 @@ import (
 	"time"
 
 	prompb "buf.build/gen/go/prometheus/prometheus/protocolbuffers/go"
-	"github.com/cenkalti/backoff/v4"
+	"github.com/cenkalti/backoff/v5"
 	"github.com/golang/snappy"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/expfmt"
