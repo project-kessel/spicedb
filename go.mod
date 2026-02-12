@@ -449,7 +449,7 @@ require (
 	google.golang.org/genproto v0.0.0-20250908214217-97024824d090 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
-	gopkg.in/ini.v1 v1.67.0 // indirect
+	gopkg.in/ini.v1 v1.67.1 // indirect
 	honnef.co/go/tools v0.6.1 // indirect
 	k8s.io/api v0.34.1 // indirect
 	k8s.io/apimachinery v0.34.1 // indirect
