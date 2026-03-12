@@ -124,7 +124,7 @@ require (
 	google.golang.org/protobuf v1.36.10
 	gopkg.in/yaml.v2 v2.4.0
 	gopkg.in/yaml.v3 v3.0.1
-	k8s.io/utils v0.0.0-20250604170112-4c0f3b243397
+	k8s.io/utils v0.0.0-20260210185600-b8788abfbbc2
 	pgregory.net/rapid v1.2.0
 	resenje.org/singleflight v0.4.3
 	sigs.k8s.io/controller-runtime v0.22.3
