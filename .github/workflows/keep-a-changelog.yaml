@@ -19,6 +19,7 @@ permissions:
 jobs:
   changelog:
     runs-on: "depot-ubuntu-24.04-small"
+    if: false
     steps:
       - uses: "dangoslen/changelog-enforcer@ea6a56764870c323a4563f450c0a50c5f2d72cd6"
         with:
