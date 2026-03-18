@@ -14,9 +14,9 @@ import (
 	"github.com/authzed/spicedb/internal/dispatch"
 	"github.com/authzed/spicedb/internal/graph/hints"
 	log "github.com/authzed/spicedb/internal/logging"
-	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/namespace"
 	"github.com/authzed/spicedb/internal/taskrunner"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/datastore/options"
 	"github.com/authzed/spicedb/pkg/datastore/queryshape"
@@ -333,7 +333,7 @@ func (cc *ConcurrentChecker) checkDirect(ctx context.Context, crc currentRequest
 		}
 	}()
 	log.Ctx(ctx).Trace().Object("direct", crc.parentReq).Send()
-	ds := datastoremw.MustFromContext(ctx).SnapshotReader(crc.parentReq.Revision)
+	dl := datalayer.MustFromContext(ctx).SnapshotReader(crc.parentReq.Revision)
 
 	directSubjectsAndWildcardsWithoutCaveats := 0
 	directSubjectsAndWildcardsWithoutExpiration := 0
@@ -421,7 +421,7 @@ func (cc *ConcurrentChecker) checkDirect(ctx context.Context, crc currentRequest
 			OptionalSubjectsSelectors: subjectSelectors,
 		}
 
-		it, err := ds.QueryRelationships(ctx, filter,
+		it, err := dl.QueryRelationships(ctx, filter,
 			options.WithSkipCaveats(!directSubjectOrWildcardCanHaveCaveats),
 			options.WithSkipExpiration(!directSubjectOrWildcardCanHaveExpiration),
 			options.WithQueryShape(queryshape.CheckPermissionSelectDirectSubjects),
@@ -474,7 +474,7 @@ func (cc *ConcurrentChecker) checkDirect(ctx context.Context, crc currentRequest
 		},
 	}
 
-	it, err := ds.QueryRelationships(ctx, filter,
+	it, err := dl.QueryRelationships(ctx, filter,
 		options.WithSkipCaveats(!nonTerminalsCanHaveCaveats),
 		options.WithSkipExpiration(!nonTerminalsCanHaveExpiration),
 		options.WithQueryShape(queryshape.CheckPermissionSelectIndirectSubjects),
@@ -603,9 +603,36 @@ func (cc *ConcurrentChecker) runSetOperation(ctx context.Context, crc currentReq
 
 	case *core.SetOperation_Child_XNil:
 		return noMembers()
+	case *core.SetOperation_Child_XSelf:
+		return cc.checkSelf(ctx, crc)
 	default:
 		return checkResultError(spiceerrors.MustBugf("unknown set operation child `%T` in check", child), emptyMetadata)
 	}
+}
+
+func (cc *ConcurrentChecker) checkSelf(ctx context.Context, crc currentRequestContext) CheckResult {
+	log.Ctx(ctx).Trace().Object("self", crc.parentReq).Send()
+
+	// `self` only represents the resource itself, not any child relation.
+	if crc.parentReq.Subject.Relation != tuple.Ellipsis {
+		return noMembers()
+	}
+
+	req := crc.parentReq
+
+	if req.ResourceRelation.Namespace != req.Subject.Namespace {
+		return noMembers()
+	}
+
+	for _, resourceID := range req.ResourceIds {
+		if req.Subject.ObjectId == resourceID {
+			membershipSet := NewMembershipSet()
+			membershipSet.AddDirectMember(resourceID, nil)
+			return checkResultsForMembership(membershipSet, emptyMetadata)
+		}
+	}
+
+	return noMembers()
 }
 
 func (cc *ConcurrentChecker) checkComputedUserset(ctx context.Context, crc currentRequestContext, cu *core.ComputedUserset, rr *tuple.RelationReference, resourceIds []string) CheckResult {
@@ -646,8 +673,12 @@ func (cc *ConcurrentChecker) checkComputedUserset(ctx context.Context, crc curre
 	// for TTU-based computed usersets, as directly computed ones reference relations within
 	// the same namespace as the caller, and thus must be fully typed checked.
 	if cu.Object == core.ComputedUserset_TUPLE_USERSET_OBJECT {
-		ds := datastoremw.MustFromContext(ctx).SnapshotReader(crc.parentReq.Revision)
-		err := namespace.CheckNamespaceAndRelation(ctx, targetRR.Namespace, targetRR.Relation, true, ds)
+		dl := datalayer.MustFromContext(ctx).SnapshotReader(crc.parentReq.Revision)
+		sr, err := dl.ReadSchema()
+		if err != nil {
+			return checkResultError(err, emptyMetadata)
+		}
+		err = namespace.CheckNamespaceAndRelation(ctx, targetRR.Namespace, targetRR.Relation, true, sr)
 		if err != nil {
 			if errors.As(err, &namespace.RelationNotFoundError{}) {
 				return noMembers()
@@ -680,12 +711,20 @@ type Traits struct {
 
 // TraitsForArrowRelation returns traits such as HasCaveats and HasExpiration if *any* of the subject
 // types of the given relation support caveats or expiration.
-func TraitsForArrowRelation(ctx context.Context, reader datastore.Reader, namespaceName string, relationName string) (Traits, error) {
+func TraitsForArrowRelation(ctx context.Context, reader datalayer.RevisionedReader, namespaceName string, relationName string) (Traits, error) {
 	// TODO(jschorr): Change to use the type system once we wire it through Check dispatch.
-	nsDef, _, err := reader.ReadNamespaceByName(ctx, namespaceName)
+	schemaReader, err := reader.ReadSchema()
 	if err != nil {
 		return Traits{}, err
 	}
+	revDef, found, err := schemaReader.LookupTypeDefByName(ctx, namespaceName)
+	if err != nil {
+		return Traits{}, err
+	}
+	if !found {
+		return Traits{}, datastore.NewNamespaceNotFoundErr(namespaceName)
+	}
+	nsDef := revDef.Definition
 
 	var relation *core.Relation
 	for _, rel := range nsDef.Relation {
@@ -718,11 +757,11 @@ func TraitsForArrowRelation(ctx context.Context, reader datastore.Reader, namesp
 	}, nil
 }
 
-func queryOptionsForArrowRelation(ctx context.Context, ds datastore.Reader, namespaceName string, relationName string) ([]options.QueryOptionsOption, error) {
+func queryOptionsForArrowRelation(ctx context.Context, reader datalayer.RevisionedReader, namespaceName string, relationName string) ([]options.QueryOptionsOption, error) {
 	opts := make([]options.QueryOptionsOption, 0, 3)
 	opts = append(opts, options.WithQueryShape(queryshape.AllSubjectsForResources))
 
-	traits, err := TraitsForArrowRelation(ctx, ds, namespaceName, relationName)
+	traits, err := TraitsForArrowRelation(ctx, reader, namespaceName, relationName)
 	if err != nil {
 		return nil, err
 	}
@@ -787,13 +826,13 @@ func checkIntersectionTupleToUserset(
 
 	// Query for the subjects over which to walk the TTU.
 	log.Ctx(ctx).Trace().Object("intersectionttu", crc.parentReq).Send()
-	ds := datastoremw.MustFromContext(ctx).SnapshotReader(crc.parentReq.Revision)
-	queryOpts, err := queryOptionsForArrowRelation(ctx, ds, crc.parentReq.ResourceRelation.Namespace, ttu.GetTupleset().GetRelation())
+	dl := datalayer.MustFromContext(ctx).SnapshotReader(crc.parentReq.Revision)
+	queryOpts, err := queryOptionsForArrowRelation(ctx, dl, crc.parentReq.ResourceRelation.Namespace, ttu.GetTupleset().GetRelation())
 	if err != nil {
 		return checkResultError(NewCheckFailureErr(err), emptyMetadata)
 	}
 
-	it, err := ds.QueryRelationships(ctx, datastore.RelationshipsFilter{
+	it, err := dl.QueryRelationships(ctx, datastore.RelationshipsFilter{
 		OptionalResourceType:     crc.parentReq.ResourceRelation.Namespace,
 		OptionalResourceIds:      crc.filteredResourceIDs,
 		OptionalResourceRelation: ttu.GetTupleset().GetRelation(),
@@ -953,14 +992,14 @@ func checkTupleToUserset[T relation](
 	defer span.End()
 
 	log.Ctx(ctx).Trace().Object("ttu", crc.parentReq).Send()
-	ds := datastoremw.MustFromContext(ctx).SnapshotReader(crc.parentReq.Revision)
+	dl := datalayer.MustFromContext(ctx).SnapshotReader(crc.parentReq.Revision)
 
-	queryOpts, err := queryOptionsForArrowRelation(ctx, ds, crc.parentReq.ResourceRelation.Namespace, ttu.GetTupleset().GetRelation())
+	queryOpts, err := queryOptionsForArrowRelation(ctx, dl, crc.parentReq.ResourceRelation.Namespace, ttu.GetTupleset().GetRelation())
 	if err != nil {
 		return checkResultError(NewCheckFailureErr(err), emptyMetadata)
 	}
 
-	it, err := ds.QueryRelationships(ctx, datastore.RelationshipsFilter{
+	it, err := dl.QueryRelationships(ctx, datastore.RelationshipsFilter{
 		OptionalResourceType:     crc.parentReq.ResourceRelation.Namespace,
 		OptionalResourceIds:      filteredResourceIDs,
 		OptionalResourceRelation: ttu.GetTupleset().GetRelation(),
@@ -1031,7 +1070,7 @@ func run[T any, R withError](
 	defer cancelFn()
 
 	results := make([]R, 0, len(children))
-	for i := 0; i < len(children); i++ {
+	for range children {
 		select {
 		case result := <-resultChan:
 			results = append(results, result)
@@ -1069,7 +1108,7 @@ func union[T any](
 	responseMetadata := emptyMetadata
 	membershipSet := NewMembershipSet()
 
-	for i := 0; i < len(children); i++ {
+	for range children {
 		select {
 		case result := <-resultChan:
 			log.Ctx(ctx).Trace().Object("anyResult", result.Resp).Send()
@@ -1121,7 +1160,7 @@ func all[T any](
 	defer cancelFn()
 
 	var membershipSet *MembershipSet
-	for i := 0; i < len(children); i++ {
+	for range children {
 		select {
 		case result := <-resultChan:
 			responseMetadata = combineResponseMetadata(ctx, responseMetadata, result.Resp.Metadata)
@@ -1243,7 +1282,6 @@ func dispatchAllAsync[T any, R withError](
 ) {
 	tr := taskrunner.NewPreloadedTaskRunner(ctx, concurrencyLimit, len(children))
 	for _, currentChild := range children {
-		currentChild := currentChild
 		tr.Add(func(ctx context.Context) error {
 			result := handler(ctx, crc, currentChild)
 			resultChan <- result

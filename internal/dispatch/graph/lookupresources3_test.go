@@ -16,8 +16,8 @@ import (
 	"github.com/authzed/spicedb/internal/datastore/dsfortesting"
 	"github.com/authzed/spicedb/internal/datastore/memdb"
 	"github.com/authzed/spicedb/internal/dispatch"
-	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/testfixtures"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/genutil/mapz"
 	v1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
 	"github.com/authzed/spicedb/pkg/testutil"
@@ -174,7 +174,6 @@ func TestSimpleLookupResourcesWithCursor3(t *testing.T) {
 			expectedSecond: []string{"companyplan", "masterplan"},
 		},
 	} {
-		tc := tc
 		t.Run(tc.subject, func(t *testing.T) {
 			t.Parallel()
 
@@ -199,7 +198,7 @@ func TestSimpleLookupResourcesWithCursor3(t *testing.T) {
 
 			require.NoError(err)
 
-			require.Equal(1, len(stream.Results()))
+			require.Len(stream.Results(), 1)
 
 			found.Insert(stream.Results()[0].Items[0].ResourceId)
 			require.Equal(tc.expectedFirst, found.AsSlice())
@@ -238,7 +237,7 @@ func TestSimpleLookupResourcesWithCursor3(t *testing.T) {
 }
 
 func processResults3(stream *dispatch.CloningCollectingDispatchStream[*v1.DispatchLookupResources3Response]) []*v1.PossibleResource {
-	foundResources := []*v1.PossibleResource{}
+	foundResources := []*v1.PossibleResource{} //nolint: prealloc  // we can't easily know the length of foundResources
 	for _, result := range stream.Results() {
 		for _, item := range result.Items {
 			foundResources = append(foundResources, &v1.PossibleResource{
@@ -255,7 +254,7 @@ func TestMaxDepthLookup3(t *testing.T) {
 	t.Parallel()
 	require := require.New(t)
 
-	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
 
 	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require)
@@ -264,8 +263,8 @@ func TestMaxDepthLookup3(t *testing.T) {
 	require.NoError(err)
 	defer dispatcher.Close()
 
-	ctx := datastoremw.ContextWithHandle(t.Context())
-	require.NoError(datastoremw.SetInContext(ctx, ds))
+	ctx := datalayer.ContextWithHandle(t.Context())
+	require.NoError(datalayer.SetInContext(ctx, datalayer.NewDataLayer(ds)))
 	stream := dispatch.NewCollectingDispatchStream[*v1.DispatchLookupResources3Response](ctx)
 
 	err = dispatcher.DispatchLookupResources3(&v1.DispatchLookupResources3Request{
@@ -689,25 +688,26 @@ func TestLookupResources3OverSchemaWithCursors(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			for _, pageSize := range []int{0, 104, 1023} {
-				pageSize := pageSize
 				t.Run(fmt.Sprintf("ps-%d_", pageSize), func(t *testing.T) {
 					t.Parallel()
 					require := require.New(t)
 
 					dispatcher, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
 					require.NoError(err)
+					t.Cleanup(func() {
+						dispatcher.Close()
+					})
 
-					ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+					ds, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 					require.NoError(err)
 
 					ds, revision := testfixtures.DatastoreFromSchemaAndTestRelationships(ds, tc.schema, tc.relationships, require)
 
-					ctx := datastoremw.ContextWithHandle(t.Context())
-					require.NoError(datastoremw.SetInContext(ctx, ds))
+					ctx := datalayer.ContextWithHandle(t.Context())
+					require.NoError(datalayer.SetInContext(ctx, datalayer.NewDataLayer(ds)))
 
 					var currentCursor []string
 					foundResourceIDs := mapz.NewSet[string]()
@@ -785,7 +785,7 @@ func TestLookupResources3WithError(t *testing.T) {
 
 	require := require.New(t)
 
-	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
 
 	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require)
@@ -794,11 +794,11 @@ func TestLookupResources3WithError(t *testing.T) {
 	require.NoError(err)
 	defer dispatcher.Close()
 
-	ctx := datastoremw.ContextWithHandle(t.Context())
+	ctx := datalayer.ContextWithHandle(t.Context())
 	cctx, cancel := context.WithCancel(ctx)
 	cancel()
 
-	require.NoError(datastoremw.SetInContext(cctx, ds))
+	require.NoError(datalayer.SetInContext(cctx, datalayer.NewDataLayer(ds)))
 	stream := dispatch.NewCloningCollectingDispatchStream[*v1.DispatchLookupResources3Response](cctx)
 
 	err = dispatcher.DispatchLookupResources3(&v1.DispatchLookupResources3Request{
@@ -1256,13 +1256,12 @@ func TestLookupResources3EnsureCheckHints(t *testing.T) {
 	}
 
 	for _, tc := range tcs {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
 			require := require.New(t)
 
-			rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+			rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 			require.NoError(err)
 
 			ds, revision := testfixtures.DatastoreFromSchemaAndTestRelationships(rawDS, tc.schema, tc.relationships, require)
@@ -1273,11 +1272,11 @@ func TestLookupResources3EnsureCheckHints(t *testing.T) {
 			require.NoError(err)
 			defer dispatcher.Close()
 
-			ctx := datastoremw.ContextWithHandle(t.Context())
+			ctx := datalayer.ContextWithHandle(t.Context())
 			cctx, cancel := context.WithTimeout(ctx, 1*time.Minute)
 			defer cancel()
 
-			require.NoError(datastoremw.SetInContext(cctx, checkingDS))
+			require.NoError(datalayer.SetInContext(cctx, datalayer.NewDataLayer(checkingDS)))
 			stream := dispatch.NewCloningCollectingDispatchStream[*v1.DispatchLookupResources3Response](cctx)
 
 			err = dispatcher.DispatchLookupResources3(&v1.DispatchLookupResources3Request{

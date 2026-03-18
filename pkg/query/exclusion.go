@@ -2,20 +2,20 @@ package query
 
 import (
 	"github.com/authzed/spicedb/internal/caveats"
-	"github.com/authzed/spicedb/pkg/spiceerrors"
 )
 
-// Exclusion represents the set of relations that are in the mainSet but not in the excluded set.
+// ExclusionIterator represents the set of relations that are in the mainSet but not in the excluded set.
 // This is equivalent to `permission foo = bar - baz`
-type Exclusion struct {
-	mainSet  Iterator
-	excluded Iterator
+type ExclusionIterator struct {
+	mainSet      Iterator
+	excluded     Iterator
+	canonicalKey CanonicalKey
 }
 
-var _ Iterator = &Exclusion{}
+var _ Iterator = &ExclusionIterator{}
 
-func NewExclusion(mainSet, excluded Iterator) *Exclusion {
-	return &Exclusion{
+func NewExclusionIterator(mainSet, excluded Iterator) *ExclusionIterator {
+	return &ExclusionIterator{
 		mainSet:  mainSet,
 		excluded: excluded,
 	}
@@ -64,28 +64,8 @@ func combineExclusionCaveats(mainPath, excludedPath Path) (Path, bool) {
 	return mainPath, true
 }
 
-func (e *Exclusion) CheckImpl(ctx *Context, resources []Object, subject ObjectAndRelation) (PathSeq, error) {
-	// Get all paths from the main set
-	ctx.TraceStep(e, "getting paths from main set")
-	mainSeq, err := ctx.Check(e.mainSet, resources, subject)
-	if err != nil {
-		return nil, err
-	}
-
-	mainPaths, err := CollectAll(mainSeq)
-	if err != nil {
-		return nil, err
-	}
-
-	ctx.TraceStep(e, "main set returned %d paths", len(mainPaths))
-
-	// If main set is empty, return empty result
-	if len(mainPaths) == 0 {
-		ctx.TraceStep(e, "main set empty, returning empty")
-		return EmptyPathSeq(), nil
-	}
-
-	// Get all paths from the excluded set
+func (e *ExclusionIterator) CheckImpl(ctx *Context, resources []Object, subject ObjectAndRelation) (PathSeq, error) {
+	// Get all paths from the excluded set first and build a lookup map
 	ctx.TraceStep(e, "getting paths from excluded set")
 	excludedSeq, err := ctx.Check(e.excluded, resources, subject)
 	if err != nil {
@@ -99,56 +79,204 @@ func (e *Exclusion) CheckImpl(ctx *Context, resources []Object, subject ObjectAn
 
 	ctx.TraceStep(e, "excluded set returned %d paths", len(excludedPaths))
 
-	// Filter main set by excluding paths that are in the excluded set
-	var finalPaths []Path
-	for _, mainPath := range mainPaths {
-		resultPath := mainPath
-		shouldInclude := true
-
-		// Check if this path exists in the excluded set
-		for _, excludedPath := range excludedPaths {
-			if mainPath.Resource.Equals(excludedPath.Resource) &&
-				GetObject(mainPath.Subject).Equals(GetObject(excludedPath.Subject)) {
-				// Found matching path in excluded set - combine caveats
-				ctx.TraceStep(e, "found matching excluded path, combining caveats")
-				resultPath, shouldInclude = combineExclusionCaveats(mainPath, excludedPath)
-				break
-			}
-		}
-
-		// Only include if path is not completely excluded
-		if shouldInclude {
-			finalPaths = append(finalPaths, resultPath)
-		} else {
-			ctx.TraceStep(e, "path completely excluded")
-		}
+	// Build a map for O(1) lookup: key is "resourceKey:subjectKey"
+	excludedMap := make(map[string]Path, len(excludedPaths))
+	for _, excludedPath := range excludedPaths {
+		key := excludedPath.Resource.Key() + ":" + GetObject(excludedPath.Subject).Key()
+		excludedMap[key] = excludedPath
 	}
 
+	// Get the main sequence (this catches immediate errors from main set's CheckImpl)
+	ctx.TraceStep(e, "getting sequence from main set")
+	mainSeq, err := ctx.Check(e.mainSet, resources, subject)
+	if err != nil {
+		return nil, err
+	}
+
+	// Stream the main set and yield non-excluded paths immediately
 	return func(yield func(Path, error) bool) {
-		for _, path := range finalPaths {
-			if !yield(path, nil) {
+		ctx.TraceStep(e, "streaming paths from main set")
+		mainCount := 0
+		yieldedCount := 0
+		for mainPath, err := range mainSeq {
+			if err != nil {
+				yield(Path{}, err)
 				return
 			}
+			mainCount++
+
+			// Check if this path exists in the excluded set
+			key := mainPath.Resource.Key() + ":" + GetObject(mainPath.Subject).Key()
+			if excludedPath, found := excludedMap[key]; found {
+				// Found matching path in excluded set - combine caveats
+				ctx.TraceStep(e, "found matching excluded path, combining caveats")
+				resultPath, shouldInclude := combineExclusionCaveats(mainPath, excludedPath)
+				if shouldInclude {
+					yieldedCount++
+					if !yield(resultPath, nil) {
+						return
+					}
+				} else {
+					ctx.TraceStep(e, "path completely excluded")
+				}
+			} else {
+				// No exclusion, yield as-is
+				yieldedCount++
+				if !yield(mainPath, nil) {
+					return
+				}
+			}
 		}
+
+		ctx.TraceStep(e, "exclusion completed: %d main paths, %d yielded", mainCount, yieldedCount)
 	}, nil
 }
 
-func (e *Exclusion) IterSubjectsImpl(ctx *Context, resource Object) (PathSeq, error) {
-	return nil, spiceerrors.MustBugf("unimplemented")
+func (e *ExclusionIterator) IterSubjectsImpl(ctx *Context, resource Object, filterSubjectType ObjectType) (PathSeq, error) {
+	// Get all subjects from the excluded set first and build a lookup map
+	ctx.TraceStep(e, "getting subjects from excluded set for resource %s:%s", resource.ObjectType, resource.ObjectID)
+	excludedSeq, err := ctx.IterSubjects(e.excluded, resource, filterSubjectType)
+	if err != nil {
+		return nil, err
+	}
+
+	excludedPaths, err := CollectAll(excludedSeq)
+	if err != nil {
+		return nil, err
+	}
+
+	ctx.TraceStep(e, "excluded set returned %d paths", len(excludedPaths))
+
+	// Build a map for O(1) lookup: key is subject key
+	excludedMap := make(map[string]Path, len(excludedPaths))
+	for _, excludedPath := range excludedPaths {
+		key := ObjectAndRelationKey(excludedPath.Subject)
+		excludedMap[key] = excludedPath
+	}
+
+	// Get the main sequence (this catches immediate errors from main set's IterSubjectsImpl)
+	ctx.TraceStep(e, "getting sequence from main set")
+	mainSeq, err := ctx.IterSubjects(e.mainSet, resource, filterSubjectType)
+	if err != nil {
+		return nil, err
+	}
+
+	// Stream the main set and yield non-excluded subjects immediately
+	return func(yield func(Path, error) bool) {
+		ctx.TraceStep(e, "streaming subjects from main set")
+		mainCount := 0
+		yieldedCount := 0
+		for mainPath, err := range mainSeq {
+			if err != nil {
+				yield(Path{}, err)
+				return
+			}
+			mainCount++
+
+			// Check if this subject exists in the excluded set
+			key := ObjectAndRelationKey(mainPath.Subject)
+			if excludedPath, found := excludedMap[key]; found {
+				// Found matching subject in excluded set - combine caveats
+				ctx.TraceStep(e, "found matching excluded subject, combining caveats")
+				resultPath, shouldInclude := combineExclusionCaveats(mainPath, excludedPath)
+				if shouldInclude {
+					yieldedCount++
+					if !yield(resultPath, nil) {
+						return
+					}
+				} else {
+					ctx.TraceStep(e, "subject completely excluded")
+				}
+			} else {
+				// No exclusion, yield as-is
+				yieldedCount++
+				if !yield(mainPath, nil) {
+					return
+				}
+			}
+		}
+
+		ctx.TraceStep(e, "exclusion completed: %d main subjects, %d yielded", mainCount, yieldedCount)
+	}, nil
 }
 
-func (e *Exclusion) IterResourcesImpl(ctx *Context, subject ObjectAndRelation) (PathSeq, error) {
-	return nil, spiceerrors.MustBugf("unimplemented")
+func (e *ExclusionIterator) IterResourcesImpl(ctx *Context, subject ObjectAndRelation, filterResourceType ObjectType) (PathSeq, error) {
+	// Get all resources from the excluded set first and build a lookup map
+	ctx.TraceStep(e, "getting resources from excluded set for subject %s:%s", subject.ObjectType, subject.ObjectID)
+	excludedSeq, err := ctx.IterResources(e.excluded, subject, filterResourceType)
+	if err != nil {
+		return nil, err
+	}
+
+	excludedPaths, err := CollectAll(excludedSeq)
+	if err != nil {
+		return nil, err
+	}
+
+	ctx.TraceStep(e, "excluded set returned %d paths", len(excludedPaths))
+
+	// Build a map for O(1) lookup: key is resource key
+	excludedMap := make(map[string]Path, len(excludedPaths))
+	for _, excludedPath := range excludedPaths {
+		key := excludedPath.Resource.Key()
+		excludedMap[key] = excludedPath
+	}
+
+	// Get the main sequence (this catches immediate errors from main set's IterResourcesImpl)
+	ctx.TraceStep(e, "getting sequence from main set")
+	mainSeq, err := ctx.IterResources(e.mainSet, subject, filterResourceType)
+	if err != nil {
+		return nil, err
+	}
+
+	// Stream the main set and yield non-excluded subjects immediately
+	return func(yield func(Path, error) bool) {
+		ctx.TraceStep(e, "streaming resources from main set")
+		mainCount := 0
+		yieldedCount := 0
+		for mainPath, err := range mainSeq {
+			if err != nil {
+				yield(Path{}, err)
+				return
+			}
+			mainCount++
+
+			// Check if this resource exists in the excluded set
+			key := mainPath.Resource.Key()
+			if excludedPath, found := excludedMap[key]; found {
+				// Found matching resource in excluded set - combine caveats
+				ctx.TraceStep(e, "found matching excluded resource, combining caveats")
+				resultPath, shouldInclude := combineExclusionCaveats(mainPath, excludedPath)
+				if shouldInclude {
+					yieldedCount++
+					if !yield(resultPath, nil) {
+						return
+					}
+				} else {
+					ctx.TraceStep(e, "resource completely excluded")
+				}
+			} else {
+				// No exclusion, yield as-is
+				yieldedCount++
+				if !yield(mainPath, nil) {
+					return
+				}
+			}
+		}
+
+		ctx.TraceStep(e, "exclusion completed: %d main resources, %d yielded", mainCount, yieldedCount)
+	}, nil
 }
 
-func (e *Exclusion) Clone() Iterator {
-	return &Exclusion{
-		mainSet:  e.mainSet.Clone(),
-		excluded: e.excluded.Clone(),
+func (e *ExclusionIterator) Clone() Iterator {
+	return &ExclusionIterator{
+		canonicalKey: e.canonicalKey,
+		mainSet:      e.mainSet.Clone(),
+		excluded:     e.excluded.Clone(),
 	}
 }
 
-func (e *Exclusion) Explain() Explain {
+func (e *ExclusionIterator) Explain() Explain {
 	return Explain{
 		Name: "Exclusion",
 		Info: "Exclusion",
@@ -159,10 +287,25 @@ func (e *Exclusion) Explain() Explain {
 	}
 }
 
-func (e *Exclusion) Subiterators() []Iterator {
+func (e *ExclusionIterator) Subiterators() []Iterator {
 	return []Iterator{e.mainSet, e.excluded}
 }
 
-func (e *Exclusion) ReplaceSubiterators(newSubs []Iterator) (Iterator, error) {
-	return &Exclusion{mainSet: newSubs[0], excluded: newSubs[1]}, nil
+func (e *ExclusionIterator) ReplaceSubiterators(newSubs []Iterator) (Iterator, error) {
+	return &ExclusionIterator{canonicalKey: e.canonicalKey, mainSet: newSubs[0], excluded: newSubs[1]}, nil
+}
+
+func (e *ExclusionIterator) CanonicalKey() CanonicalKey {
+	return e.canonicalKey
+}
+
+func (e *ExclusionIterator) ResourceType() ([]ObjectType, error) {
+	// Exclusion's resources come from the main set
+	return e.mainSet.ResourceType()
+}
+
+func (e *ExclusionIterator) SubjectTypes() ([]ObjectType, error) {
+	// Exclusion's subjects come from the main set only
+	// (excluded set is subtracted, doesn't add new types)
+	return e.mainSet.SubjectTypes()
 }

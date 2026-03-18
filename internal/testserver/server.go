@@ -9,11 +9,11 @@ import (
 
 	"github.com/authzed/spicedb/internal/datastore/memdb"
 	"github.com/authzed/spicedb/internal/dispatch/graph"
-	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/middleware/servicespecific"
 	caveattypes "github.com/authzed/spicedb/pkg/caveats/types"
 	"github.com/authzed/spicedb/pkg/cmd/server"
 	"github.com/authzed/spicedb/pkg/cmd/util"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/middleware/consistency"
 	"github.com/authzed/spicedb/pkg/middleware/logging"
@@ -121,7 +121,7 @@ func NewTestServerWithConfigAndDatastore(require *require.Assertions,
 					},
 					{
 						Name:       "datastore",
-						Middleware: datastoremw.UnaryServerInterceptor(ds),
+						Middleware: datalayer.UnaryServerInterceptor(datalayer.NewDataLayer(ds)),
 					},
 					{
 						Name:       "consistency",
@@ -144,7 +144,7 @@ func NewTestServerWithConfigAndDatastore(require *require.Assertions,
 					},
 					{
 						Name:       "datastore",
-						Middleware: datastoremw.StreamServerInterceptor(ds),
+						Middleware: datalayer.StreamServerInterceptor(datalayer.NewDataLayer(ds)),
 					},
 					{
 						Name:       "consistency",

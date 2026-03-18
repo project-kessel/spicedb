@@ -18,10 +18,10 @@ import (
 	"github.com/authzed/spicedb/internal/dispatch"
 	"github.com/authzed/spicedb/internal/graph/computed"
 	"github.com/authzed/spicedb/internal/graph/hints"
-	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/telemetry/otelconv"
 	"github.com/authzed/spicedb/pkg/cache"
 	caveattypes "github.com/authzed/spicedb/pkg/caveats/types"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/datastore/options"
 	"github.com/authzed/spicedb/pkg/datastore/queryshape"
@@ -91,6 +91,12 @@ type CursoredLookupResources3 struct {
 type ValidatedLookupResources3Request struct {
 	*v1.DispatchLookupResources3Request
 	Revision datastore.Revision
+}
+
+func (crr *CursoredLookupResources3) Close() {
+	if crr.relationshipsChunkCache != nil {
+		crr.relationshipsChunkCache.Close()
+	}
 }
 
 // LookupResources3 implements the LookupResources operation, which finds all resources of a given
@@ -260,9 +266,13 @@ func (crr *CursoredLookupResources3) LookupResources3(req ValidatedLookupResourc
 
 	// Build refs for the lookup resources operation. The lr3refs holds references to shared
 	// interfaces used by various suboperations of the lookup resources operation.
-	ds := datastoremw.MustFromContext(stream.Context())
-	reader := ds.SnapshotReader(req.Revision)
-	ts := schema.NewTypeSystem(schema.ResolverForDatastoreReader(reader))
+	dl := datalayer.MustFromContext(stream.Context())
+	reader := dl.SnapshotReader(req.Revision)
+	sr, err := reader.ReadSchema()
+	if err != nil {
+		return err
+	}
+	ts := schema.NewTypeSystem(schema.ResolverFor(sr))
 	caveatRunner := caveats.NewCaveatRunner(crr.caveatTypeSet)
 
 	refs := lr3refs{
@@ -347,7 +357,7 @@ type lr3refs struct {
 	req ValidatedLookupResources3Request
 
 	// reader is the datastore reader used to perform the lookup resources operation.
-	reader datastore.Reader
+	reader datalayer.RevisionedReader
 
 	// ts is the type system used to resolve types and relations for the lookup resources operation.
 	ts *schema.TypeSystem
@@ -469,7 +479,7 @@ func (crr *CursoredLookupResources3) loadEntrypoints(ctx context.Context, refs l
 		return nil, err
 	}
 
-	rg := vdef.Reachability()
+	rg := vdef.Reachability(refs.ts)
 	return rg.FirstEntrypointsForSubjectToResource(ctx, &core.RelationReference{
 		Namespace: refs.req.SubjectRelation.Namespace,
 		Relation:  refs.req.SubjectRelation.Relation,
@@ -482,6 +492,18 @@ func (crr *CursoredLookupResources3) loadEntrypoints(ctx context.Context, refs l
 func (crr *CursoredLookupResources3) entrypointIter(refs lr3refs, entrypoint schema.ReachabilityEntrypoint) cter.Next[possibleResource] {
 	return func(ctx context.Context, currentCursor cter.Cursor) iter.Seq2[result, error] {
 		switch entrypoint.EntrypointKind() {
+		case core.ReachabilityEntrypoint_SELF_ENTRYPOINT:
+			// Self refers to the resource itself as a subject with relation `...`
+			// The subject IDs directly correspond to resource IDs of the containing relation.
+			containingRelation := entrypoint.ContainingRelationOrPermission()
+
+			// Create a synthetic relationships chunk that maps the subject IDs to resources
+			// of the containing relation type.
+			rm := subjectIDsToRelationshipsChunk(refs.req.SubjectRelation, refs.req.SubjectIds, containingRelation)
+
+			// Dispatch to continue finding resources up the tree.
+			return crr.checkedDispatchIter(ctx, refs, currentCursor, rm, containingRelation, entrypoint)
+
 		// If the entrypoint is a relation entrypoint, we need to iterate over the relation's relationships
 		// for the given subject IDs and yield results for dispatching for each. For example, given a relation
 		// of `relation viewer: user`, we would lookup all relationships for the current user(s) and find
@@ -791,6 +813,12 @@ func (crr *CursoredLookupResources3) relationshipsIter(
 
 					// Start the new relationships chunk that we will fill as we iterate over the results.
 					// It starts at the given dbCursor, which may be nil/empty if this is the first chunk.
+					caveatSR, err := refs.reader.ReadSchema()
+					if err != nil {
+						yieldError(err)
+						return
+					}
+
 					rm := newRelationshipsChunk(int(crr.dispatchChunkSize), dbCursor)
 					for rel, err := range it {
 						if err != nil {
@@ -802,7 +830,7 @@ func (crr *CursoredLookupResources3) relationshipsIter(
 						var missingContextParameters []string
 						if rel.OptionalCaveat != nil && rel.OptionalCaveat.CaveatName != "" {
 							caveatExpr := caveats.CaveatAsExpr(rel.OptionalCaveat)
-							runResult, err := refs.caveatRunner.RunCaveatExpression(ctx, caveatExpr, refs.req.Context.AsMap(), refs.reader, caveats.RunCaveatExpressionNoDebugging)
+							runResult, err := refs.caveatRunner.RunCaveatExpression(ctx, caveatExpr, refs.req.Context.AsMap(), caveatSR, caveats.RunCaveatExpressionNoDebugging)
 							if err != nil {
 								yieldError(err)
 								return
@@ -1307,6 +1335,12 @@ func subjectIDsToRelationshipsChunk(
 
 type relationshipsChunkCache struct {
 	cache cache.Cache[cache.StringKey, any]
+}
+
+func (crc *relationshipsChunkCache) Close() {
+	if crc.cache != nil {
+		crc.cache.Close()
+	}
 }
 
 func (crc *relationshipsChunkCache) storeRelationshipsChunk(rm *relationshipsChunk) {

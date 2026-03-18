@@ -66,7 +66,6 @@ caveat somecaveat(someParam int) {
 	}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			require := require.New(t)
 			source, ok, err := GenerateCaveatSource(test.input, caveattypes.Default.TypeSet)
@@ -130,6 +129,26 @@ func TestGenerateNamespace(t *testing.T) {
 			),
 			`definition foos/test {
 	permission someperm = (rela - relb - rely->relz) + relc
+}`,
+			true,
+		},
+		{
+			"complex permission with self",
+			namespace.Namespace("foos/test",
+				namespace.MustRelation("someperm", namespace.Union(
+					namespace.Rewrite(
+						namespace.Exclusion(
+							namespace.ComputedUserset("rela"),
+							namespace.ComputedUserset("relb"),
+							namespace.TupleToUserset("rely", "relz"),
+							namespace.Self(),
+						),
+					),
+					namespace.ComputedUserset("relc"),
+				)),
+			),
+			`definition foos/test {
+	permission someperm = (rela - relb - rely->relz - self) + relc
 }`,
 			true,
 		},
@@ -213,7 +232,6 @@ definition foos/document {
 	}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			require := require.New(t)
 			source, ok, err := GenerateSource(test.input, caveattypes.Default.TypeSet)
@@ -224,6 +242,7 @@ definition foos/document {
 	}
 }
 
+// TestFormatting asserts that the input schema gets turned into the output schema
 func TestFormatting(t *testing.T) {
 	type formattingTest struct {
 		name     string
@@ -395,10 +414,37 @@ definition document {
 	relation viewer: user
 }`,
 		},
+		{
+			"use self happy path",
+			`use self
+
+			definition user {
+				relation viewer: user
+				permission view = viewer + self
+			}`,
+			`use self
+
+definition user {
+	relation viewer: user
+	permission view = viewer + self
+}`,
+		},
+		{
+			"use self unused",
+			`use self
+
+			definition user {
+				relation viewer: user
+				permission view = viewer
+			}`,
+			`definition user {
+	relation viewer: user
+	permission view = viewer
+}`,
+		},
 	}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			require := require.New(t)
 			compiled, err := compiler.Compile(compiler.InputSchema{

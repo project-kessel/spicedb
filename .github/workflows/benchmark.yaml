@@ -1,12 +1,14 @@
 ---
 name: "Main"
 on: # yamllint disable-line rule:truthy
+  # NOTE! Do NOT add any other "on", because this workflow has permission to write to the repo!
   push:
     branches:
       - "main"
 
 permissions:
-  contents: "read"
+  # permission to update benchmark contents in gh-pages branch
+  contents: "write"
 
 jobs:
   benchmarks:
@@ -15,11 +17,11 @@ jobs:
     if: false
     timeout-minutes: 15
     steps:
-      - uses: "actions/checkout@v5.0.0"
+      - uses: "actions/checkout@v6"
         with:
           fetch-depth: 0
 
-      - uses: "actions/setup-go@v6.0.0"
+      - uses: "authzed/actions/setup-go@main"
         with:
           go-version-file: "./go.mod"
           cache-dependency-path: "./go.sum"
@@ -44,14 +46,21 @@ jobs:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
           comment-on-alert: true
 
-      - name: "Get CPU information"
-        uses: "kenchan0130/actions-system-info@master"
-        id: "system-info"
+      - name: "Publish to gh-pages. See https://authzed.github.io/spicedb/dev/bench/"
+        uses: "benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b" # v1.20.7
+        with:
+          # What benchmark tool the output.txt came from
+          tool: "go"
+          # Where the output from the benchmark tool is stored
+          output-file-path: "bench_output.txt"
+          gh-pages-branch: "gh-pages"
+          auto-push: "true"
+          # auto-push requires token
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
 
       - name: "Save benchmark JSON"
-        uses: "actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830" # v4.3.0
+        uses: "actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306" # v5.0.3
         with:
           path: "./cache/benchmark-data.json"
           # Save with commit hash to avoid "cache already exists"
-          # Save with OS & CPU info to prevent comparing against results from different CPUs
-          key: "${{ github.sha }}-${{ runner.os }}-${{ steps.system-info.outputs.cpu-model }}-go-benchmark"
+          key: "${{ github.sha }}-${{ runner.os }}-go-benchmark"

@@ -17,8 +17,8 @@ import (
 	"github.com/authzed/spicedb/internal/graph"
 	"github.com/authzed/spicedb/internal/graph/hints"
 	log "github.com/authzed/spicedb/internal/logging"
-	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/testfixtures"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/genutil/mapz"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
@@ -157,21 +157,24 @@ func TestMaxDepth(t *testing.T) {
 	t.Parallel()
 	require := require.New(t)
 
-	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
 
 	ds, _ := testfixtures.StandardDatastoreWithSchema(rawDS, require)
 
 	mutation := tuple.Create(tuple.MustParse("folder:oops#parent@folder:oops"))
 
-	ctx := log.Logger.WithContext(datastoremw.ContextWithHandle(t.Context()))
-	require.NoError(datastoremw.SetInContext(ctx, ds))
+	ctx := log.Logger.WithContext(datalayer.ContextWithHandle(t.Context()))
+	require.NoError(datalayer.SetInContext(ctx, datalayer.NewDataLayer(ds)))
 
 	revision, err := common.UpdateRelationshipsInDatastore(ctx, ds, mutation)
 	require.NoError(err)
 
 	dispatch, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
 	require.NoError(err)
+	t.Cleanup(func() {
+		dispatch.Close()
+	})
 
 	_, err = dispatch.DispatchCheck(ctx, &v1.DispatchCheckRequest{
 		ResourceRelation: RR("folder", "view").ToCoreRR(),
@@ -1413,7 +1416,6 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -1421,14 +1423,17 @@ func TestCheckPermissionOverSchema(t *testing.T) {
 
 			dispatcher, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
 			require.NoError(err)
+			t.Cleanup(func() {
+				dispatcher.Close()
+			})
 
-			ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+			ds, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 			require.NoError(err)
 
 			ds, revision := testfixtures.DatastoreFromSchemaAndTestRelationships(ds, tc.schema, tc.relationships, require)
 
-			ctx := datastoremw.ContextWithHandle(t.Context())
-			require.NoError(datastoremw.SetInContext(ctx, ds))
+			ctx := datalayer.ContextWithHandle(t.Context())
+			require.NoError(datalayer.SetInContext(ctx, datalayer.NewDataLayer(ds)))
 
 			resp, err := dispatcher.DispatchCheck(ctx, &v1.DispatchCheckRequest{
 				ResourceRelation: RR(tc.resource.ObjectType, tc.resource.Relation).ToCoreRR(),
@@ -1919,7 +1924,6 @@ func TestCheckWithHints(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -1927,14 +1931,17 @@ func TestCheckWithHints(t *testing.T) {
 
 			dispatcher, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
 			require.NoError(err)
+			t.Cleanup(func() {
+				dispatcher.Close()
+			})
 
-			ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+			ds, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 			require.NoError(err)
 
 			ds, revision := testfixtures.DatastoreFromSchemaAndTestRelationships(ds, tc.schema, tc.relationships, require)
 
-			ctx := datastoremw.ContextWithHandle(t.Context())
-			require.NoError(datastoremw.SetInContext(ctx, ds))
+			ctx := datalayer.ContextWithHandle(t.Context())
+			require.NoError(datalayer.SetInContext(ctx, datalayer.NewDataLayer(ds)))
 
 			resp, err := dispatcher.DispatchCheck(ctx, &v1.DispatchCheckRequest{
 				ResourceRelation: RR(tc.resource.ObjectType, tc.resource.Relation).ToCoreRR(),
@@ -1966,8 +1973,11 @@ func TestCheckHintsPartialApplication(t *testing.T) {
 
 	dispatcher, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
 	require.NoError(err)
+	t.Cleanup(func() {
+		dispatcher.Close()
+	})
 
-	ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+	ds, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
 
 	ds, revision := testfixtures.DatastoreFromSchemaAndTestRelationships(ds, `
@@ -1982,8 +1992,8 @@ func TestCheckHintsPartialApplication(t *testing.T) {
 		tuple.MustParse("document:somedoc#viewer@user:tom"),
 	}, require)
 
-	ctx := datastoremw.ContextWithHandle(t.Context())
-	require.NoError(datastoremw.SetInContext(ctx, ds))
+	ctx := datalayer.ContextWithHandle(t.Context())
+	require.NoError(datalayer.SetInContext(ctx, datalayer.NewDataLayer(ds)))
 
 	resp, err := dispatcher.DispatchCheck(ctx, &v1.DispatchCheckRequest{
 		ResourceRelation: RR("document", "view").ToCoreRR(),
@@ -2013,8 +2023,11 @@ func TestCheckHintsPartialApplicationOverArrow(t *testing.T) {
 
 	dispatcher, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
 	require.NoError(err)
+	t.Cleanup(func() {
+		dispatcher.Close()
+	})
 
-	ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+	ds, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
 
 	ds, revision := testfixtures.DatastoreFromSchemaAndTestRelationships(ds, `
@@ -2034,8 +2047,8 @@ func TestCheckHintsPartialApplicationOverArrow(t *testing.T) {
 		tuple.MustParse("organization:someorg#member@user:tom"),
 	}, require)
 
-	ctx := datastoremw.ContextWithHandle(t.Context())
-	require.NoError(datastoremw.SetInContext(ctx, ds))
+	ctx := datalayer.ContextWithHandle(t.Context())
+	require.NoError(datalayer.SetInContext(ctx, datalayer.NewDataLayer(ds)))
 
 	resp, err := dispatcher.DispatchCheck(ctx, &v1.DispatchCheckRequest{
 		ResourceRelation: RR("document", "view").ToCoreRR(),
@@ -2060,20 +2073,26 @@ func TestCheckHintsPartialApplicationOverArrow(t *testing.T) {
 }
 
 func newLocalDispatcherWithConcurrencyLimit(t testing.TB, concurrencyLimit uint16) (context.Context, dispatch.Dispatcher, datastore.Revision) {
-	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(t, err)
 
 	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require.New(t))
 
 	dispatch, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = dispatch.Close()
+	})
 
 	cachingDispatcher, err := caching.NewCachingDispatcher(caching.DispatchTestCache(t), false, "", &keys.CanonicalKeyHandler{})
 	require.NoError(t, err)
 	cachingDispatcher.SetDelegate(dispatch)
+	t.Cleanup(func() {
+		cachingDispatcher.Close()
+	})
 
-	ctx := log.Logger.WithContext(datastoremw.ContextWithHandle(t.Context()))
-	require.NoError(t, datastoremw.SetInContext(ctx, ds))
+	ctx := log.Logger.WithContext(datalayer.ContextWithHandle(t.Context()))
+	require.NoError(t, datalayer.SetInContext(ctx, datalayer.NewDataLayer(ds)))
 
 	return ctx, cachingDispatcher, revision
 }
@@ -2083,20 +2102,26 @@ func newLocalDispatcher(t testing.TB) (context.Context, dispatch.Dispatcher, dat
 }
 
 func newLocalDispatcherWithSchemaAndRels(t testing.TB, schema string, rels []tuple.Relationship) (context.Context, dispatch.Dispatcher, datastore.Revision) {
-	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(t, err)
 
 	ds, revision := testfixtures.DatastoreFromSchemaAndTestRelationships(rawDS, schema, rels, require.New(t))
 
 	dispatch, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		dispatch.Close()
+	})
 
 	cachingDispatcher, err := caching.NewCachingDispatcher(caching.DispatchTestCache(t), false, "", &keys.CanonicalKeyHandler{})
 	require.NoError(t, err)
 	cachingDispatcher.SetDelegate(dispatch)
+	t.Cleanup(func() {
+		cachingDispatcher.Close()
+	})
 
-	ctx := log.Logger.WithContext(datastoremw.ContextWithHandle(t.Context()))
-	require.NoError(t, datastoremw.SetInContext(ctx, ds))
+	ctx := log.Logger.WithContext(datalayer.ContextWithHandle(t.Context()))
+	require.NoError(t, datalayer.SetInContext(ctx, datalayer.NewDataLayer(ds)))
 
 	return ctx, cachingDispatcher, revision
 }

@@ -43,7 +43,7 @@ func TestDigestMap_CDF(t *testing.T) {
 	// Test CDF at various points
 	cdf0, ok := dm.CDF("test-key", 0)
 	require.True(t, ok)
-	require.Equal(t, float64(0), cdf0)
+	require.Equal(t, float64(0), cdf0) // nolint:testifylint // these values aren't being operated on
 
 	cdf5, ok := dm.CDF("test-key", 5)
 	require.True(t, ok)
@@ -51,7 +51,7 @@ func TestDigestMap_CDF(t *testing.T) {
 
 	cdf100, ok := dm.CDF("test-key", 100)
 	require.True(t, ok)
-	require.Equal(t, float64(1), cdf100)
+	require.Equal(t, float64(1), cdf100) //nolint:testifylint // this value isn't being operated on
 }
 
 func TestDigestMap_MultipleKeys(t *testing.T) {
@@ -79,39 +79,36 @@ func TestDigestMap_MultipleKeys(t *testing.T) {
 
 func TestDigestMap_ConcurrentAccess(t *testing.T) {
 	dm := NewDigestMap()
-	numGoroutines := 10
-	numOperations := 100
+	numGoroutines := int32(10)
+	numOperations := int32(100)
 
 	var wg sync.WaitGroup
-	wg.Add(numGoroutines * 2) // writers and readers
 
 	// Concurrent writers
-	for i := 0; i < numGoroutines; i++ {
-		go func(id int) {
-			defer wg.Done()
-			key := "key-" + string(rune('0'+id))
-			for j := 0; j < numOperations; j++ {
+	for i := range numGoroutines {
+		wg.Go(func() {
+			key := "key-" + string('0'+i)
+			for j := range numOperations {
 				dm.Add(key, float64(j))
 			}
-		}(i)
+		})
 	}
 
 	// Concurrent readers
-	for i := 0; i < numGoroutines; i++ {
-		go func(id int) {
-			defer wg.Done()
-			key := "key-" + string(rune('0'+id))
-			for j := 0; j < numOperations; j++ {
+	for i := range numGoroutines {
+		wg.Go(func() {
+			key := "key-" + string('0'+i)
+			for range numOperations {
 				dm.CDF(key, 50.0)
 			}
-		}(i)
+		})
 	}
 
 	wg.Wait()
 
 	// Verify all keys have data
-	for i := 0; i < numGoroutines; i++ {
-		key := "key-" + string(rune('0'+i))
+	for i := range numGoroutines {
+		key := "key-" + string('0'+i)
 		cdf, ok := dm.CDF(key, 50.0)
 		require.True(t, ok)
 		require.True(t, cdf >= 0 && cdf <= 1)
@@ -131,7 +128,7 @@ func TestDigestMap_EmptyKey(t *testing.T) {
 	// Should now work
 	cdf, ok := dm.CDF("", 42.0)
 	require.True(t, ok)
-	require.Equal(t, float64(1), cdf)
+	require.Equal(t, float64(1), cdf) //nolint:testifylint // this value isn't being operated on
 }
 
 func TestDigestMap_SingleValue(t *testing.T) {
@@ -141,15 +138,15 @@ func TestDigestMap_SingleValue(t *testing.T) {
 
 	cdf41, ok := dm.CDF("single", 41)
 	require.True(t, ok)
-	require.Equal(t, float64(0), cdf41)
+	require.Equal(t, float64(0), cdf41) //nolint:testifylint // this value isn't being operated on
 
 	cdf42, ok := dm.CDF("single", 42)
 	require.True(t, ok)
-	require.Equal(t, float64(1), cdf42)
+	require.Equal(t, float64(1), cdf42) //nolint:testifylint // this value isn't being operated on
 
 	cdf43, ok := dm.CDF("single", 43)
 	require.True(t, ok)
-	require.Equal(t, float64(1), cdf43)
+	require.Equal(t, float64(1), cdf43) //nolint:testifylint // this value isn't being operated on
 }
 
 func TestDigestMap_LargeDataset(t *testing.T) {

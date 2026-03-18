@@ -4,7 +4,6 @@ package postgres
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/sdk/trace"
@@ -82,7 +82,7 @@ func testPostgresDatastore(t *testing.T, config postgresTestConfig) {
 		ctx := context.Background()
 
 		// NOTE: gc tests take exclusive locks, so they are run under non-parallel.
-		test.OnlyGCTests(t, test.DatastoreTesterFunc(func(revisionQuantization, gcInterval, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
+		test.OnlyGCTests(t, test.DatastoreTesterFunc(func(_ testing.TB, revisionQuantization, gcInterval, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
 			ds := b.NewDatastore(t, func(engine, uri string) datastore.Datastore {
 				ds, err := newPostgresDatastore(ctx, uri, primaryInstanceID,
 					RevisionQuantization(revisionQuantization),
@@ -119,7 +119,7 @@ func testPostgresDatastore(t *testing.T, config postgresTestConfig) {
 		b := testdatastore.RunPostgresForTesting(t, "", config.targetMigration, config.pgVersion, config.pgbouncer)
 		ctx := context.Background()
 
-		test.AllWithExceptions(t, test.DatastoreTesterFunc(func(revisionQuantization, _, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
+		test.AllWithExceptions(t, test.DatastoreTesterFunc(func(_ testing.TB, revisionQuantization, _, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
 			ds := b.NewDatastore(t, func(engine, uri string) datastore.Datastore {
 				ds, err := newPostgresDatastore(ctx, uri, primaryInstanceID,
 					RevisionQuantization(revisionQuantization),
@@ -254,6 +254,16 @@ func testPostgresDatastore(t *testing.T, config postgresTestConfig) {
 				MigrationPhase(config.migrationPhase),
 			))
 
+			t.Run("ReadWriteTxReturnsOptionalRevisionFields", createDatastoreTest(
+				b,
+				ReadWriteTxReturnsOptionalRevisionFields,
+				RevisionQuantization(0),
+				GCWindow(1*time.Millisecond),
+				GCInterval(veryLargeGCInterval),
+				WatchBufferLength(50),
+				MigrationPhase(config.migrationPhase),
+			))
+
 			t.Run("TestStrictReadMode", createReplicaDatastoreTest(
 				b,
 				StrictReadModeTest,
@@ -308,7 +318,7 @@ func testPostgresDatastoreWithoutCommitTimestamps(t *testing.T, config postgresT
 
 		// NOTE: watch API requires the commit timestamps, so we skip those tests here.
 		// NOTE: gc tests take exclusive locks, so they are run under non-parallel.
-		test.AllWithExceptions(t, test.DatastoreTesterFunc(func(revisionQuantization, _, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
+		test.AllWithExceptions(t, test.DatastoreTesterFunc(func(_ testing.TB, revisionQuantization, _, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
 			ds := b.NewDatastore(t, func(engine, uri string) datastore.Datastore {
 				ds, err := newPostgresDatastore(ctx, uri, primaryInstanceID,
 					RevisionQuantization(revisionQuantization),
@@ -328,7 +338,7 @@ func testPostgresDatastoreWithoutCommitTimestamps(t *testing.T, config postgresT
 	t.Run(fmt.Sprintf("postgres-%s-gc", pgVersion), func(t *testing.T) {
 		ctx := context.Background()
 		b := testdatastore.RunPostgresForTestingWithCommitTimestamps(t, "", "head", false, pgVersion, enablePgbouncer)
-		test.OnlyGCTests(t, test.DatastoreTesterFunc(func(revisionQuantization, gcInterval, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
+		test.OnlyGCTests(t, test.DatastoreTesterFunc(func(_ testing.TB, revisionQuantization, gcInterval, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
 			ds := b.NewDatastore(t, func(engine, uri string) datastore.Datastore {
 				ds, err := newPostgresDatastore(ctx, uri, primaryInstanceID,
 					RevisionQuantization(revisionQuantization),
@@ -427,6 +437,28 @@ func SerializationErrorTest(t *testing.T, ds datastore.Datastore) {
 	require.Contains(err.Error(), "unable to write relationships due to a serialization error")
 }
 
+func ReadWriteTxReturnsOptionalRevisionFields(t *testing.T, ds datastore.Datastore) {
+	require := require.New(t)
+
+	ctx := context.Background()
+	r, err := ds.ReadyState(ctx)
+	require.NoError(err)
+	require.True(r.IsReady)
+
+	rev, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
+		updates := []tuple.RelationshipUpdate{
+			tuple.Create(tuple.MustParse("resource:resource#reader@user:user#...")),
+		}
+		return rwt.WriteRelationships(ctx, updates)
+	}, options.WithDisableRetries(true) /* ensures the error is returned immediately */)
+
+	require.NoError(err)
+	pgRev, ok := rev.(postgresRevision)
+	require.True(ok)
+	require.Positive(pgRev.optionalInexactNanosTimestamp, "revision timestamp should be set")
+	require.True(pgRev.optionalTxID.Valid, "revision txid be set")
+}
+
 type txWithSerializationError struct {
 	pgx.Tx
 }
@@ -447,7 +479,7 @@ func GarbageCollectionTest(t *testing.T, ds datastore.Datastore) {
 	require.True(r.IsReady)
 	firstWrite, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
 		// Write basic namespaces.
-		return rwt.WriteNamespaces(ctx, namespace.Namespace(
+		return rwt.LegacyWriteNamespaces(ctx, namespace.Namespace(
 			"resource",
 			namespace.MustRelation("reader", nil),
 		), namespace.Namespace("user"))
@@ -469,7 +501,7 @@ func GarbageCollectionTest(t *testing.T, ds datastore.Datastore) {
 
 	// Replace the namespace with a new one.
 	updateTwoNamespaces, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		return rwt.WriteNamespaces(
+		return rwt.LegacyWriteNamespaces(
 			ctx,
 			namespace.Namespace(
 				"resource",
@@ -616,21 +648,22 @@ func TransactionTimestampsTest(t *testing.T, ds datastore.Datastore) {
 	tx, err := pgd.writePool.Begin(ctx)
 	require.NoError(err)
 
-	txXID, _, err := createNewTransaction(ctx, tx, nil)
+	txXID, _, newTS, err := createNewTransaction(ctx, tx, nil)
 	require.NoError(err)
 
 	err = tx.Commit(ctx)
 	require.NoError(err)
 
-	var ts time.Time
+	var readTS time.Time
 	sql, args, err := psql.Select("timestamp").From(schema.TableTransaction).Where(sq.Eq{"xid": txXID}).ToSql()
 	require.NoError(err)
-	err = pgd.readPool.QueryRow(ctx, sql, args...).Scan(&ts)
+	err = pgd.readPool.QueryRow(ctx, sql, args...).Scan(&readTS)
 	require.NoError(err)
 
 	// Transaction timestamp will be before the reference time if it was stored
 	// in the default time zone and reinterpreted
-	require.True(startTimeUTC.Before(ts))
+	require.True(startTimeUTC.Before(readTS))
+	require.Equal(readTS, newTS)
 }
 
 func GarbageCollectionByTimeTest(t *testing.T, ds datastore.Datastore) {
@@ -642,7 +675,7 @@ func GarbageCollectionByTimeTest(t *testing.T, ds datastore.Datastore) {
 	require.True(r.IsReady)
 	// Write basic namespaces.
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		return rwt.WriteNamespaces(ctx, namespace.Namespace(
+		return rwt.LegacyWriteNamespaces(ctx, namespace.Namespace(
 			"resource",
 			namespace.MustRelation("reader", nil),
 		), namespace.Namespace("user"))
@@ -673,7 +706,7 @@ func GarbageCollectionByTimeTest(t *testing.T, ds datastore.Datastore) {
 	removed, err := pgg.DeleteBeforeTx(ctx, afterWriteTx)
 	require.NoError(err)
 	require.Zero(removed.Relationships)
-	require.True(removed.Transactions > 0)
+	require.Positive(removed.Transactions)
 	require.Zero(removed.Namespaces)
 
 	// Ensure the relationship is still present.
@@ -721,7 +754,7 @@ func ChunkedGarbageCollectionTest(t *testing.T, ds datastore.Datastore) {
 	require.True(r.IsReady)
 	// Write basic namespaces.
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		return rwt.WriteNamespaces(ctx, namespace.Namespace(
+		return rwt.LegacyWriteNamespaces(ctx, namespace.Namespace(
 			"resource",
 			namespace.MustRelation("reader", nil),
 		), namespace.Namespace("user"))
@@ -761,7 +794,7 @@ func ChunkedGarbageCollectionTest(t *testing.T, ds datastore.Datastore) {
 	removed, err := pgg.DeleteBeforeTx(ctx, afterWriteTx)
 	require.NoError(err)
 	require.Zero(removed.Relationships)
-	require.True(removed.Transactions > 0)
+	require.Positive(removed.Transactions)
 	require.Zero(removed.Namespaces)
 
 	// Sleep to ensure the relationships will GC.
@@ -944,8 +977,8 @@ func OverlappingRevisionTest(t *testing.T, b testdatastore.RunningEngineForTest)
 			5 * time.Second,
 			0,
 			[]postgresRevision{
-				{optionalTxID: NewXid8(3), snapshot: pgSnapshot{xmin: 1, xmax: 4, xipList: []uint64{2}}, optionalNanosTimestamp: uint64((time.Second * 1) * time.Nanosecond)},
-				{optionalTxID: NewXid8(2), snapshot: pgSnapshot{xmin: 1, xmax: 4, xipList: []uint64{3}}, optionalNanosTimestamp: uint64((time.Second * 2) * time.Nanosecond)},
+				{optionalTxID: NewXid8(3), snapshot: pgSnapshot{xmin: 1, xmax: 4, xipList: []uint64{2}}, optionalInexactNanosTimestamp: uint64((time.Second * 1) * time.Nanosecond)},
+				{optionalTxID: NewXid8(2), snapshot: pgSnapshot{xmin: 1, xmax: 4, xipList: []uint64{3}}, optionalInexactNanosTimestamp: uint64((time.Second * 2) * time.Nanosecond)},
 			},
 			2, 0,
 		},
@@ -989,7 +1022,7 @@ func OverlappingRevisionTest(t *testing.T, b testdatastore.RunningEngineForTest)
 				stmt := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 				insertTxn := stmt.Insert(schema.TableTransaction).Columns(schema.ColXID, schema.ColSnapshot, schema.ColTimestamp)
 
-				ts := time.Unix(0, int64(rev.optionalNanosTimestamp)) //nolint:gosec
+				ts := time.Unix(0, int64(rev.optionalInexactNanosTimestamp)) //nolint:gosec
 				sql, args, err := insertTxn.Values(rev.optionalTxID, rev.snapshot, ts).ToSql()
 				require.NoError(err)
 
@@ -1045,7 +1078,7 @@ func ConcurrentRevisionHeadTest(t *testing.T, ds datastore.Datastore) {
 	require.True(r.IsReady)
 	// Write basic namespaces.
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		return rwt.WriteNamespaces(ctx, namespace.Namespace(
+		return rwt.LegacyWriteNamespaces(ctx, namespace.Namespace(
 			"resource",
 			namespace.MustRelation("reader", nil),
 		), namespace.Namespace("user"))
@@ -1101,7 +1134,7 @@ func ConcurrentRevisionHeadTest(t *testing.T, ds datastore.Datastore) {
 
 	found, err := datastore.IteratorToSlice(it)
 	require.NoError(err)
-	require.Equal(2, len(found), "missing relationships in %v", found)
+	require.Len(found, 2, "missing relationships in %v", found)
 }
 
 // ConcurrentRevisionWatchTest uses goroutines and channels to intentionally set up a pair of
@@ -1120,7 +1153,7 @@ func ConcurrentRevisionWatchTest(t *testing.T, ds datastore.Datastore) {
 
 	// Write basic namespaces.
 	rev, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		return rwt.WriteNamespaces(ctx, namespace.Namespace(
+		return rwt.LegacyWriteNamespaces(ctx, namespace.Namespace(
 			"resource",
 			namespace.MustRelation("reader", nil),
 		), namespace.Namespace("user"))
@@ -1198,9 +1231,9 @@ func ConcurrentRevisionWatchTest(t *testing.T, ds datastore.Datastore) {
 	require.NoError(g.Wait())
 
 	// Ensure the revisions do not compare.
-	require.False(commitFirstRev.GreaterThan(commitLastRev), "found %v and %v", commitFirstRev, commitLastRev)
-	require.False(commitLastRev.GreaterThan(commitFirstRev), "found %v and %v", commitLastRev, commitFirstRev)
-	require.False(commitFirstRev.Equal(commitLastRev), "found %v and %v", commitFirstRev, commitLastRev)
+	assert.False(t, commitFirstRev.GreaterThan(commitLastRev), "revisions should not be comparable, but first rev %v compared as greater than last rev %v", commitFirstRev, commitLastRev)
+	assert.False(t, commitLastRev.GreaterThan(commitFirstRev), "revisions should not be comparable, but last rev %v compared as greater than first rev %v", commitLastRev, commitFirstRev)
+	assert.False(t, commitFirstRev.Equal(commitLastRev), "revisions should not be comparable, but first rev %v compared as equal to last rev %v", commitFirstRev, commitLastRev)
 
 	// Write another revision.
 	afterRev, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
@@ -1334,7 +1367,7 @@ func RevisionInversionTest(t *testing.T, ds datastore.Datastore) {
 	require.True(r.IsReady)
 	// Write basic namespaces.
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		return rwt.WriteNamespaces(ctx, namespace.Namespace(
+		return rwt.LegacyWriteNamespaces(ctx, namespace.Namespace(
 			"resource",
 			namespace.MustRelation("reader", nil),
 		), namespace.Namespace("user"))
@@ -1393,7 +1426,7 @@ func OTelTracingTest(t *testing.T, ds datastore.Datastore) {
 
 	// Perform basic operation
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		return rwt.WriteNamespaces(ctx, namespace.Namespace("resource"))
+		return rwt.LegacyWriteNamespaces(ctx, namespace.Namespace("resource"))
 	})
 	require.NoError(err)
 
@@ -1431,7 +1464,7 @@ func WatchNotEnabledTest(t *testing.T, _ testdatastore.RunningEngineForTest, pgV
 		datastore.WatchJustRelationships(),
 	)
 	err := <-errChan
-	require.NotNil(err)
+	require.Error(err)
 	require.Contains(err.Error(), "track_commit_timestamp=on")
 }
 
@@ -1500,7 +1533,7 @@ func datastoreWithInterceptorAndTestData(t *testing.T, interceptor pgcommon.Quer
 	ctx := context.Background()
 	for i := 0; i < 1000; i++ {
 		_, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-			err := rwt.WriteNamespaces(ctx, namespace.Namespace(
+			err := rwt.LegacyWriteNamespaces(ctx, namespace.Namespace(
 				fmt.Sprintf("resource%d", i),
 				namespace.MustRelation("reader", nil)))
 			if err != nil {
@@ -1806,7 +1839,7 @@ func StrictReadModeFallbackTest(t *testing.T, primaryDS datastore.Datastore, unw
 
 	found2, err := datastore.IteratorToSlice(it)
 	require.NoError(err)
-	require.Equal(len(found), len(found2))
+	require.Len(found2, len(found))
 }
 
 func StrictReadModeTest(t *testing.T, primaryDS datastore.Datastore, replicaDS datastore.Datastore) {
@@ -1871,7 +1904,7 @@ func NullCaveatWatchTest(t *testing.T, ds datastore.Datastore) {
 
 	// Run the watch API.
 	changes, errchan := ds.Watch(ctx, lowestRevision, datastore.WatchJustRelationships())
-	require.Zero(len(errchan))
+	require.Empty(errchan)
 
 	// Manually insert a relationship with a NULL caveat. This is allowed, but can only happen due to
 	// bulk import (normal write rels will make it empty instead)
@@ -1904,7 +1937,7 @@ func NullCaveatWatchTest(t *testing.T, ds datastore.Datastore) {
 	require.NoError(err)
 
 	// Verify the relationship create was tracked by the watch.
-	test.VerifyUpdates(require, [][]tuple.RelationshipUpdate{
+	test.VerifyUpdates(t, require, [][]tuple.RelationshipUpdate{
 		{
 			tuple.Touch(tuple.MustParse("resource:someresourceid#somerelation@subject:somesubject")),
 		},
@@ -1920,7 +1953,7 @@ func NullCaveatWatchTest(t *testing.T, ds datastore.Datastore) {
 	require.NoError(err)
 
 	// Verify the delete.
-	test.VerifyUpdates(require, [][]tuple.RelationshipUpdate{
+	test.VerifyUpdates(t, require, [][]tuple.RelationshipUpdate{
 		{
 			tuple.Delete(tuple.MustParse("resource:someresourceid#somerelation@subject:somesubject")),
 		},
@@ -1944,7 +1977,7 @@ func RevisionTimestampAndTransactionIDTest(t *testing.T, ds datastore.Datastore)
 	changes, errchan := ds.Watch(ctx, lowestRevision, datastore.WatchOptions{
 		Content: datastore.WatchRelationships | datastore.WatchSchema | datastore.WatchCheckpoints,
 	})
-	require.Zero(len(errchan))
+	require.Empty(errchan)
 
 	pds := ds.(*pgDatastore)
 	_, err = pds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
@@ -1964,7 +1997,7 @@ func RevisionTimestampAndTransactionIDTest(t *testing.T, ds datastore.Datastore)
 				errWait := time.NewTimer(waitForChangesTimeout)
 				select {
 				case err := <-errchan:
-					require.True(errors.As(err, &datastore.WatchDisconnectedError{}))
+					require.ErrorAs(err, &datastore.WatchDisconnectedError{})
 					return
 				case <-errWait.C:
 					require.Fail("Timed out waiting for WatchDisconnectedError")
@@ -2009,7 +2042,7 @@ func ContinuousCheckpointTest(t *testing.T, ds datastore.Datastore) {
 		Content:            datastore.WatchCheckpoints,
 		CheckpointInterval: 100 * time.Millisecond,
 	})
-	require.Zero(len(errchan))
+	require.Empty(errchan)
 
 	var checkpointCount int
 	for {

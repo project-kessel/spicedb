@@ -9,10 +9,17 @@ import (
 )
 
 func convertDefinition(def *corev1.NamespaceDefinition) (*Definition, error) {
+	// Parse metadata
+	metadata, err := parseMetadata(def.GetMetadata())
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse definition metadata: %w", err)
+	}
+
 	out := &Definition{
 		name:        def.GetName(),
 		relations:   make(map[string]*Relation),
 		permissions: make(map[string]*Permission),
+		metadata:    metadata,
 	}
 	for _, r := range def.GetRelation() {
 		if userset := r.GetUsersetRewrite(); userset != nil {
@@ -22,7 +29,7 @@ func convertDefinition(def *corev1.NamespaceDefinition) (*Definition, error) {
 			}
 			perm.parent = out
 			perm.name = r.GetName()
-			out.permissions[r.GetName()] = &perm
+			out.permissions[r.GetName()] = perm
 		} else if typeinfo := r.GetTypeInformation(); typeinfo != nil {
 			rel, err := convertTypeInformation(typeinfo)
 			if err != nil {
@@ -30,6 +37,14 @@ func convertDefinition(def *corev1.NamespaceDefinition) (*Definition, error) {
 			}
 			rel.parent = out
 			rel.name = r.GetName()
+
+			// Parse relation metadata
+			relMetadata, err := parseMetadata(r.GetMetadata())
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse relation metadata: %w", err)
+			}
+			rel.metadata = relMetadata
+
 			out.relations[r.GetName()] = rel
 		}
 	}
@@ -37,10 +52,17 @@ func convertDefinition(def *corev1.NamespaceDefinition) (*Definition, error) {
 }
 
 func convertCaveat(def *corev1.CaveatDefinition) (*Caveat, error) {
+	// Parse metadata
+	metadata, err := parseMetadata(def.GetMetadata())
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse caveat metadata: %w", err)
+	}
+
 	out := &Caveat{
 		name:       def.GetName(),
 		expression: string(def.GetSerializedExpression()),
 		parameters: make([]CaveatParameter, 0, len(def.GetParameterTypes())),
+		metadata:   metadata,
 	}
 
 	for paramName, paramType := range def.GetParameterTypes() {
@@ -53,9 +75,9 @@ func convertCaveat(def *corev1.CaveatDefinition) (*Caveat, error) {
 	return out, nil
 }
 
-func convertUserset(userset *corev1.UsersetRewrite) (Permission, error) {
+func convertUserset(userset *corev1.UsersetRewrite) (*Permission, error) {
 	if userset == nil {
-		return Permission{}, errors.New("userset rewrite is nil")
+		return nil, errors.New("userset rewrite is nil")
 	}
 
 	var operation Operation
@@ -65,25 +87,27 @@ func convertUserset(userset *corev1.UsersetRewrite) (Permission, error) {
 	case *corev1.UsersetRewrite_Union:
 		operation, err = convertSetOperation(rewrite.Union)
 		if err != nil {
-			return Permission{}, err
+			return nil, err
 		}
 	case *corev1.UsersetRewrite_Intersection:
 		operation, err = convertSetOperationAsIntersection(rewrite.Intersection)
 		if err != nil {
-			return Permission{}, err
+			return nil, err
 		}
 	case *corev1.UsersetRewrite_Exclusion:
 		operation, err = convertSetOperationAsExclusion(rewrite.Exclusion)
 		if err != nil {
-			return Permission{}, err
+			return nil, err
 		}
 	default:
-		return Permission{}, errors.New("unknown userset rewrite operation type")
+		return nil, errors.New("unknown userset rewrite operation type")
 	}
 
-	return Permission{
+	perm := &Permission{
 		operation: operation,
-	}, nil
+	}
+	operation.setParent(perm)
+	return perm, nil
 }
 
 func convertTypeInformation(typeinfo *corev1.TypeInformation) (*Relation, error) {
@@ -154,9 +178,11 @@ func convertSetOperation(setOp *corev1.SetOperation) (Operation, error) {
 		return children[0], nil
 	}
 
-	return &UnionOperation{
+	union := &UnionOperation{
 		children: children,
-	}, nil
+	}
+	setChildrenParent(children, union)
+	return union, nil
 }
 
 func convertSetOperationAsIntersection(setOp *corev1.SetOperation) (Operation, error) {
@@ -178,9 +204,11 @@ func convertSetOperationAsIntersection(setOp *corev1.SetOperation) (Operation, e
 		return children[0], nil
 	}
 
-	return &IntersectionOperation{
+	intersection := &IntersectionOperation{
 		children: children,
-	}, nil
+	}
+	setChildrenParent(children, intersection)
+	return intersection, nil
 }
 
 func convertSetOperationAsExclusion(setOp *corev1.SetOperation) (Operation, error) {
@@ -201,10 +229,13 @@ func convertSetOperationAsExclusion(setOp *corev1.SetOperation) (Operation, erro
 		return nil, fmt.Errorf("exclusion operation requires exactly 2 children, got %d", len(children))
 	}
 
-	return &ExclusionOperation{
+	exclusion := &ExclusionOperation{
 		left:  children[0],
 		right: children[1],
-	}, nil
+	}
+	children[0].setParent(exclusion)
+	children[1].setParent(exclusion)
+	return exclusion, nil
 }
 
 func convertChild(child *corev1.SetOperation_Child) (Operation, error) {
@@ -217,6 +248,7 @@ func convertChild(child *corev1.SetOperation_Child) (Operation, error) {
 		return &RelationReference{
 			relationName: "_this",
 		}, nil
+
 	case *corev1.SetOperation_Child_ComputedUserset:
 		return &RelationReference{
 			relationName: childType.ComputedUserset.GetRelation(),
@@ -242,6 +274,8 @@ func convertChild(child *corev1.SetOperation_Child) (Operation, error) {
 			right:    childType.FunctionedTupleToUserset.GetComputedUserset().GetRelation(),
 			function: functionType,
 		}, nil
+	case *corev1.SetOperation_Child_XSelf:
+		return &SelfReference{}, nil
 	case *corev1.SetOperation_Child_XNil:
 		return &NilReference{}, nil
 	default:

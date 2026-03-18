@@ -181,6 +181,8 @@ func NewLargeFixedIterator() *FixedIterator {
 type FaultyIterator struct {
 	shouldFailOnCheck   bool
 	shouldFailOnCollect bool
+	resourceType        ObjectType
+	subjectTypes        []ObjectType
 }
 
 var _ Iterator = &FaultyIterator{}
@@ -199,7 +201,7 @@ func (f *FaultyIterator) CheckImpl(ctx *Context, resources []Object, subject Obj
 	return EmptyPathSeq(), nil
 }
 
-func (f *FaultyIterator) IterSubjectsImpl(ctx *Context, resource Object) (PathSeq, error) {
+func (f *FaultyIterator) IterSubjectsImpl(ctx *Context, resource Object, filterSubjectType ObjectType) (PathSeq, error) {
 	if f.shouldFailOnCheck {
 		return nil, errors.New("faulty iterator error")
 	}
@@ -213,7 +215,7 @@ func (f *FaultyIterator) IterSubjectsImpl(ctx *Context, resource Object) (PathSe
 	return EmptyPathSeq(), nil
 }
 
-func (f *FaultyIterator) IterResourcesImpl(ctx *Context, subject ObjectAndRelation) (PathSeq, error) {
+func (f *FaultyIterator) IterResourcesImpl(ctx *Context, subject ObjectAndRelation, filterResourceType ObjectType) (PathSeq, error) {
 	if f.shouldFailOnCheck {
 		return nil, errors.New("faulty iterator error")
 	}
@@ -228,14 +230,19 @@ func (f *FaultyIterator) IterResourcesImpl(ctx *Context, subject ObjectAndRelati
 }
 
 func (f *FaultyIterator) Clone() Iterator {
+	clonedSubjectTypes := make([]ObjectType, len(f.subjectTypes))
+	copy(clonedSubjectTypes, f.subjectTypes)
+
 	return &FaultyIterator{
 		shouldFailOnCheck:   f.shouldFailOnCheck,
 		shouldFailOnCollect: f.shouldFailOnCollect,
+		resourceType:        f.resourceType,
+		subjectTypes:        clonedSubjectTypes,
 	}
 }
 
 func (f *FaultyIterator) Explain() Explain {
-	return Explain{Info: "FaultyIterator"}
+	return Explain{Info: "Faulty"}
 }
 
 func (f *FaultyIterator) Subiterators() []Iterator {
@@ -246,10 +253,27 @@ func (f *FaultyIterator) ReplaceSubiterators(newSubs []Iterator) (Iterator, erro
 	return nil, spiceerrors.MustBugf("Trying to replace a leaf FaultyIterator's subiterators")
 }
 
+func (f *FaultyIterator) CanonicalKey() CanonicalKey {
+	return "" // FaultyIterator is test-only and has no canonical key
+}
+
+func (f *FaultyIterator) ResourceType() ([]ObjectType, error) {
+	if f.resourceType.Type == "" {
+		return []ObjectType{}, nil
+	}
+	return []ObjectType{f.resourceType}, nil
+}
+
+func (f *FaultyIterator) SubjectTypes() ([]ObjectType, error) {
+	return f.subjectTypes, nil
+}
+
 // NewFaultyIterator creates a new FaultyIterator for testing error conditions
-func NewFaultyIterator(shouldFailOnCheck, shouldFailOnCollect bool) *FaultyIterator {
+func NewFaultyIterator(shouldFailOnCheck, shouldFailOnCollect bool, resourceType ObjectType, subjectTypes []ObjectType) *FaultyIterator {
 	return &FaultyIterator{
 		shouldFailOnCheck:   shouldFailOnCheck,
 		shouldFailOnCollect: shouldFailOnCollect,
+		resourceType:        resourceType,
+		subjectTypes:        subjectTypes,
 	}
 }

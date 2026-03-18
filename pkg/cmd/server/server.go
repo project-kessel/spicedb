@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/cespare/xxhash/v2"
-	"github.com/ecordell/optgen/helpers"
 	grpc_auth "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/auth"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/cors"
@@ -22,7 +21,6 @@ import (
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	_ "google.golang.org/grpc/encoding/gzip" // enable gzip compression on all derivative servers
-	"google.golang.org/grpc/stats"
 
 	"github.com/authzed/consistent"
 	"github.com/authzed/grpcutil"
@@ -37,6 +35,7 @@ import (
 	"github.com/authzed/spicedb/internal/dispatch/keys"
 	"github.com/authzed/spicedb/internal/gateway"
 	log "github.com/authzed/spicedb/internal/logging"
+	"github.com/authzed/spicedb/internal/middleware/memoryprotection"
 	"github.com/authzed/spicedb/internal/services"
 	dispatchSvc "github.com/authzed/spicedb/internal/services/dispatch"
 	"github.com/authzed/spicedb/internal/services/health"
@@ -54,6 +53,8 @@ import (
 // ConsistentHashringBuilder is a balancer Builder that uses xxhash as the
 // underlying hash for the ConsistentHashringBalancers it creates.
 var ConsistentHashringBuilder = consistent.NewBuilder(xxhash.Sum64)
+
+var DefaultMemoryUsageProvider memoryprotection.MemoryUsageProvider
 
 //go:generate go run github.com/ecordell/optgen -output zz_generated.options.go . Config
 type Config struct {
@@ -141,6 +142,9 @@ type Config struct {
 	UnaryMiddlewareModification     []MiddlewareModification[grpc.UnaryServerInterceptor]  `debugmap:"hidden"`
 	StreamingMiddlewareModification []MiddlewareModification[grpc.StreamServerInterceptor] `debugmap:"hidden"`
 
+	// Middleware for Memory Protection
+	EnableMemoryProtectionMiddleware bool `debugmap:"visible" default:"true"`
+
 	// Middleware for internal dispatch API
 	DispatchUnaryMiddleware     []grpc.UnaryServerInterceptor  `debugmap:"hidden"`
 	DispatchStreamingMiddleware []grpc.StreamServerInterceptor `debugmap:"hidden"`
@@ -159,50 +163,11 @@ type Config struct {
 	DisableGRPCLatencyHistogram bool `debugmap:"visible"`
 }
 
-type closeableStack struct {
-	closers []func() error
-}
-
-func (c *closeableStack) AddWithError(closer func() error) {
-	c.closers = append(c.closers, closer)
-}
-
-func (c *closeableStack) AddCloser(closer io.Closer) {
-	if closer != nil {
-		c.closers = append(c.closers, closer.Close)
-	}
-}
-
-func (c *closeableStack) AddWithoutError(closer func()) {
-	c.closers = append(c.closers, func() error {
-		closer()
-		return nil
-	})
-}
-
-func (c *closeableStack) Close() error {
-	var err error
-	// closer in reverse order how it's expected in deferred funcs
-	for i := len(c.closers) - 1; i >= 0; i-- {
-		if closerErr := c.closers[i](); closerErr != nil {
-			err = errors.Join(err, closerErr)
-		}
-	}
-	return err
-}
-
-func (c *closeableStack) CloseIfError(err error) error {
-	if err != nil {
-		return c.Close()
-	}
-	return nil
-}
-
 // Complete validates the config and fills out defaults.
 // if there is no error, a completedServerConfig (with limited options for
 // mutation) is returned.
 func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
-	closeables := closeableStack{}
+	closeables := util.CloseableStack{}
 	var err error
 	defer func() {
 		// if an error happens during the execution of Complete, all resources are cleaned up
@@ -230,6 +195,12 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 		log.Ctx(ctx).Trace().Msg("using preconfigured auth function")
 	}
 
+	nscc, err := CompleteCache[cache.StringKey, schemacaching.CacheEntry](&c.NamespaceCacheConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create namespace cache: %w", err)
+	}
+	log.Ctx(ctx).Info().EmbedObject(nscc).Msg("configured namespace cache")
+
 	ds := c.Datastore
 	if ds == nil {
 		var err error
@@ -247,13 +218,6 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 				Error()
 		}
 	}
-	closeables.AddWithError(ds.Close)
-
-	nscc, err := CompleteCache[cache.StringKey, schemacaching.CacheEntry](&c.NamespaceCacheConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create namespace cache: %w", err)
-	}
-	log.Ctx(ctx).Info().EmbedObject(nscc).Msg("configured namespace cache")
 
 	cachingMode := schemacaching.JustInTimeCaching
 	if c.EnableExperimentalWatchableSchemaCache {
@@ -335,14 +299,6 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 	}
 	closeables.AddWithError(dispatcher.Close)
 
-	if len(c.DispatchUnaryMiddleware) == 0 && len(c.DispatchStreamingMiddleware) == 0 {
-		if c.GRPCAuthFunc == nil {
-			c.DispatchUnaryMiddleware, c.DispatchStreamingMiddleware = DefaultDispatchMiddleware(log.Logger, auth.MustRequirePresharedKey(c.PresharedSecureKey), ds, c.DisableGRPCLatencyHistogram)
-		} else {
-			c.DispatchUnaryMiddleware, c.DispatchStreamingMiddleware = DefaultDispatchMiddleware(log.Logger, c.GRPCAuthFunc, ds, c.DisableGRPCLatencyHistogram)
-		}
-	}
-
 	var cachingClusterDispatch dispatch.Dispatcher
 	if c.DispatchServer.Enabled {
 		cdcc, err := CompleteCache[keys.DispatchCacheKey, any](c.ClusterDispatchCacheConfig.WithRevisionParameters(
@@ -371,25 +327,6 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 		}
 		closeables.AddWithError(cachingClusterDispatch.Close)
 	}
-
-	// Build OTel stats handler options (shared by both gRPC servers)
-	// Always disable health check tracing to reduce trace volume
-	statsHandlerOpts := []otelgrpc.Option{
-		otelgrpc.WithFilter(filters.Not(filters.HealthCheck())),
-	}
-
-	dispatchGrpcServer, err := c.DispatchServer.Complete(zerolog.InfoLevel,
-		func(server *grpc.Server) {
-			dispatchSvc.RegisterGrpcServices(server, cachingClusterDispatch)
-		},
-		grpc.ChainUnaryInterceptor(c.DispatchUnaryMiddleware...),
-		grpc.ChainStreamInterceptor(c.DispatchStreamingMiddleware...),
-		grpc.StatsHandler(otelgrpc.NewServerHandler(statsHandlerOpts...)),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create dispatch gRPC server: %w", err)
-	}
-	closeables.AddWithoutError(dispatchGrpcServer.GracefulStop)
 
 	datastoreFeatures, err := ds.Features(ctx)
 	if err != nil {
@@ -432,20 +369,33 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 		return nil, fmt.Errorf("unknown mismatched zedtoken behavior: %s", c.MismatchZedTokenBehavior)
 	}
 
+	memoryUsageProvider := c.BuildMemoryUsageProvider()
+
 	opts := MiddlewareOption{
-		log.Logger,
-		c.GRPCAuthFunc,
-		!c.DisableVersionResponse,
-		dispatcher,
-		c.EnableRequestLogs,
-		c.EnableResponseLogs,
-		c.DisableGRPCLatencyHistogram,
-		serverName,
-		mismatchZedTokenOption,
-		nil,
-		nil,
+		Logger:                    log.Logger,
+		AuthFunc:                  c.GRPCAuthFunc,
+		EnableVersionResponse:     !c.DisableVersionResponse,
+		DispatcherForMiddleware:   dispatcher,
+		EnableRequestLog:          c.EnableRequestLogs,
+		EnableResponseLog:         c.EnableResponseLogs,
+		DisableGRPCHistogram:      c.DisableGRPCLatencyHistogram,
+		MiddlewareServiceLabel:    serverName,
+		MismatchingZedTokenOption: mismatchZedTokenOption,
+		MemoryUsageProvider:       memoryUsageProvider,
 	}
 	opts = opts.WithDatastore(ds)
+
+	// Build OTel stats handler options (shared by both gRPC servers)
+	// Always disable health check tracing to reduce trace volume
+	statsHandlerOpts := []otelgrpc.Option{
+		otelgrpc.WithFilter(filters.Not(filters.HealthCheck())),
+	}
+
+	dispatchGrpcServer, err := c.buildDispatchServer(memoryUsageProvider, ds, cachingClusterDispatch, statsHandlerOpts)
+	if err != nil {
+		return nil, err
+	}
+	closeables.AddCloserWithGracePeriod("dispatch server", c.ShutdownGracePeriod, dispatchGrpcServer.GracefulStop, dispatchGrpcServer.ForceStop)
 
 	defaultUnaryMiddlewareChain, err := DefaultUnaryMiddleware(opts)
 	if err != nil {
@@ -515,11 +465,14 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 				c.WatchHeartbeat,
 			)
 		},
+		grpc.ChainUnaryInterceptor(unaryMiddleware...),
+		grpc.ChainStreamInterceptor(streamingMiddleware...),
+		grpc.StatsHandler(otelgrpc.NewServerHandler(statsHandlerOpts...)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gRPC server: %w", err)
 	}
-	closeables.AddWithoutError(grpcServer.GracefulStop)
+	closeables.AddCloserWithGracePeriod("grpc", c.ShutdownGracePeriod, grpcServer.GracefulStop, grpcServer.ForceStop)
 
 	gatewayServer, gatewayCloser, err := c.initializeGateway(ctx)
 	if err != nil {
@@ -569,22 +522,55 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 	}
 	closeables.AddWithoutError(metricsServer.Close)
 
-	log.Ctx(ctx).Info().Fields(helpers.Flatten(c.DebugMap())).Msg("configuration")
+	log.Ctx(ctx).Info().Fields(c.FlatDebugMap()).Msg("configuration")
 
 	return &completedServerConfig{
-		ds:                  ds,
-		gRPCServer:          grpcServer,
-		dispatchGRPCServer:  dispatchGrpcServer,
-		gatewayServer:       gatewayServer,
-		metricsServer:       metricsServer,
-		unaryMiddleware:     unaryMiddleware,
-		streamingMiddleware: streamingMiddleware,
-		presharedKeys:       c.PresharedSecureKey,
-		telemetryReporter:   reporter,
-		healthManager:       healthManager,
-		statsHandler:        otelgrpc.NewServerHandler(statsHandlerOpts...),
-		closeFunc:           closeables.Close,
+		ds:                 ds,
+		gRPCServer:         grpcServer,
+		dispatchGRPCServer: dispatchGrpcServer,
+		gatewayServer:      gatewayServer,
+		metricsServer:      metricsServer,
+		presharedKeys:      c.PresharedSecureKey,
+		telemetryReporter:  reporter,
+		healthManager:      healthManager,
+		closeFunc:          closeables.Close,
 	}, nil
+}
+
+func (c *Config) BuildMemoryUsageProvider() memoryprotection.MemoryUsageProvider {
+	if c.EnableMemoryProtectionMiddleware {
+		if DefaultMemoryUsageProvider != nil {
+			return DefaultMemoryUsageProvider
+		}
+
+		log.Warn().Msg("memory protection is enabled, but no default is configured; falling back to using noop provider")
+		return memoryprotection.NewNoopMemoryUsageProvider()
+	}
+	return &memoryprotection.HarcodedMemoryUsageProvider{AcceptAllRequests: true}
+}
+
+func (c *Config) buildDispatchServer(memoryUsageProvider memoryprotection.MemoryUsageProvider, ds datastore.Datastore, cachingClusterDispatch dispatch.Dispatcher, otelOpts []otelgrpc.Option) (util.RunnableGRPCServer, error) {
+	if len(c.DispatchUnaryMiddleware) == 0 && len(c.DispatchStreamingMiddleware) == 0 {
+		if c.GRPCAuthFunc == nil {
+			c.DispatchUnaryMiddleware, c.DispatchStreamingMiddleware = DefaultDispatchMiddleware(log.Logger, auth.MustRequirePresharedKey(c.PresharedSecureKey), ds, c.DisableGRPCLatencyHistogram, memoryUsageProvider)
+		} else {
+			c.DispatchUnaryMiddleware, c.DispatchStreamingMiddleware = DefaultDispatchMiddleware(log.Logger, c.GRPCAuthFunc, ds, c.DisableGRPCLatencyHistogram, memoryUsageProvider)
+		}
+	}
+
+	dispatchGrpcServer, err := c.DispatchServer.Complete(zerolog.InfoLevel,
+		func(server *grpc.Server) {
+			dispatchSvc.RegisterGrpcServices(server, cachingClusterDispatch)
+		},
+		grpc.ChainUnaryInterceptor(c.DispatchUnaryMiddleware...),
+		grpc.ChainStreamInterceptor(c.DispatchStreamingMiddleware...),
+		grpc.StatsHandler(otelgrpc.NewServerHandler(otelOpts...)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create dispatch gRPC server: %w", err)
+	}
+
+	return dispatchGrpcServer, nil
 }
 
 func (c *Config) supportOldAndNewReadReplicaConnectionPoolFlags() {
@@ -726,11 +712,8 @@ type completedServerConfig struct {
 	telemetryReporter  telemetry.Reporter
 	healthManager      health.Manager
 
-	unaryMiddleware     []grpc.UnaryServerInterceptor
-	streamingMiddleware []grpc.StreamServerInterceptor
-	presharedKeys       []string
-	statsHandler        stats.Handler
-	closeFunc           func() error
+	presharedKeys []string
+	closeFunc     func() error
 }
 
 func (c *completedServerConfig) GRPCDialContext(ctx context.Context, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
@@ -759,7 +742,7 @@ func (c *completedServerConfig) Run(ctx context.Context) error {
 		}
 	}
 
-	g, ctx := errgroup.WithContext(ctx)
+	g := errgroup.Group{}
 
 	stopOnCancelWithErr := func(stopFn func() error) func() error {
 		return func() error {
@@ -768,17 +751,20 @@ func (c *completedServerConfig) Run(ctx context.Context) error {
 		}
 	}
 
-	grpcServer := c.gRPCServer.WithOpts(
-		grpc.ChainUnaryInterceptor(c.unaryMiddleware...),
-		grpc.ChainStreamInterceptor(c.streamingMiddleware...),
-		grpc.StatsHandler(c.statsHandler))
-
-	g.Go(c.healthManager.Checker(ctx))
-	g.Go(grpcServer.Listen(ctx))
-	g.Go(c.dispatchGRPCServer.Listen(ctx))
+	g.Go(func() error {
+		return c.healthManager.Checker(ctx)
+	})
+	g.Go(func() error {
+		return c.gRPCServer.Listen(ctx)
+	})
+	g.Go(func() error {
+		return c.dispatchGRPCServer.Listen(ctx)
+	})
 	g.Go(c.gatewayServer.ListenAndServe)
 	g.Go(c.metricsServer.ListenAndServe)
-	g.Go(func() error { return c.telemetryReporter(ctx) })
+	g.Go(func() error {
+		return c.telemetryReporter(ctx)
+	})
 
 	g.Go(stopOnCancelWithErr(c.closeFunc))
 

@@ -23,15 +23,14 @@ import (
 	maingraph "github.com/authzed/spicedb/internal/graph"
 	"github.com/authzed/spicedb/internal/grpchelpers"
 	log "github.com/authzed/spicedb/internal/logging"
-	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/namespace"
 	"github.com/authzed/spicedb/internal/relationships"
 	v1svc "github.com/authzed/spicedb/internal/services/v1"
 	"github.com/authzed/spicedb/internal/sharederrors"
 	caveattypes "github.com/authzed/spicedb/pkg/caveats/types"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/middleware/consistency"
-	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	devinterface "github.com/authzed/spicedb/pkg/proto/developer/v1"
 	"github.com/authzed/spicedb/pkg/schema"
 	"github.com/authzed/spicedb/pkg/schemadsl/compiler"
@@ -44,7 +43,7 @@ const defaultConnBufferSize = humanize.MiByte
 // DevContext holds the various helper types for running the developer calls.
 type DevContext struct {
 	Ctx            context.Context
-	Datastore      datastore.Datastore
+	DataLayer      datalayer.DataLayer
 	Revision       datastore.Revision
 	CompiledSchema *compiler.CompiledSchema
 	Dispatcher     dispatch.Dispatcher
@@ -57,12 +56,13 @@ func NewDevContext(ctx context.Context, requestContext *devinterface.RequestCont
 	if err != nil {
 		return nil, nil, err
 	}
-	ctx = datastoremw.ContextWithDatastore(ctx, ds)
+	dl := datalayer.NewDataLayer(ds)
+	ctx = datalayer.ContextWithDataLayer(ctx, dl)
 
-	dctx, devErrs, nerr := newDevContextWithDatastore(ctx, requestContext, ds)
+	dctx, devErrs, nerr := newDevContextWithDataLayer(ctx, requestContext, dl)
 	if nerr != nil || devErrs != nil {
-		// If any form of error occurred, immediately close the datastore
-		derr := ds.Close()
+		// If any form of error occurred, immediately close the data layer
+		derr := dl.Close()
 		if derr != nil {
 			return nil, nil, derr
 		}
@@ -73,7 +73,7 @@ func NewDevContext(ctx context.Context, requestContext *devinterface.RequestCont
 	return dctx, nil, nil
 }
 
-func newDevContextWithDatastore(ctx context.Context, requestContext *devinterface.RequestContext, ds datastore.Datastore) (*DevContext, *devinterface.DeveloperErrors, error) {
+func newDevContextWithDataLayer(ctx context.Context, requestContext *devinterface.RequestContext, dl datalayer.DataLayer) (*DevContext, *devinterface.DeveloperErrors, error) {
 	// Compile the schema and load its caveats and namespaces into the datastore.
 	compiled, devError, err := CompileSchema(requestContext.Schema)
 	if err != nil {
@@ -85,8 +85,8 @@ func newDevContextWithDatastore(ctx context.Context, requestContext *devinterfac
 	}
 
 	var inputErrors []*devinterface.DeveloperError
-	currentRevision, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		inputErrors, err = loadCompiled(ctx, compiled, rwt)
+	currentRevision, err := dl.ReadWriteTx(ctx, func(ctx context.Context, rwt datalayer.ReadWriteTransaction) error {
+		inputErrors, err = loadCompiled(ctx, compiled, requestContext.Schema, rwt)
 		if err != nil || len(inputErrors) > 0 {
 			return err
 		}
@@ -148,12 +148,17 @@ func newDevContextWithDatastore(ctx context.Context, requestContext *devinterfac
 		RelationshipChunkCache: nil, // Disable caching for devcontext
 	}
 
+	dispatcher, err := graph.NewLocalOnlyDispatcher(params)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	return &DevContext{
 		Ctx:            ctx,
-		Datastore:      ds,
+		DataLayer:      dl,
 		CompiledSchema: compiled,
 		Revision:       currentRevision,
-		Dispatcher:     graph.MustNewLocalOnlyDispatcher(params),
+		Dispatcher:     dispatcher,
 	}, nil, nil
 }
 
@@ -166,11 +171,11 @@ func (dc *DevContext) RunV1InMemoryService() (*grpc.ClientConn, func(), error) {
 
 	s := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
-			datastoremw.UnaryServerInterceptor(dc.Datastore),
+			datalayer.UnaryServerInterceptor(dc.DataLayer),
 			consistency.UnaryServerInterceptor("development", consistency.TreatMismatchingTokensAsError),
 		),
 		grpc.ChainStreamInterceptor(
-			datastoremw.StreamServerInterceptor(dc.Datastore),
+			datalayer.StreamServerInterceptor(dc.DataLayer),
 			consistency.StreamServerInterceptor("development", consistency.TreatMismatchingTokensAsError),
 		),
 	)
@@ -223,20 +228,24 @@ func (dc *DevContext) Dispose() {
 		log.Ctx(dc.Ctx).Err(err).Msg("error when disposing of dispatcher in devcontext")
 	}
 
-	if dc.Datastore == nil {
+	if dc.DataLayer == nil {
 		return
 	}
 
-	if err := dc.Datastore.Close(); err != nil {
-		log.Ctx(dc.Ctx).Err(err).Msg("error when disposing of datastore in devcontext")
+	if err := dc.DataLayer.Close(); err != nil {
+		log.Ctx(dc.Ctx).Err(err).Msg("error when disposing of data layer in devcontext")
 	}
 }
 
-func loadsRels(ctx context.Context, rels []tuple.Relationship, rwt datastore.ReadWriteTransaction) ([]*devinterface.DeveloperError, error) {
+func loadsRels(ctx context.Context, rels []tuple.Relationship, rwt datalayer.ReadWriteTransaction) ([]*devinterface.DeveloperError, error) {
 	devErrors := make([]*devinterface.DeveloperError, 0, len(rels))
 	updates := make([]tuple.RelationshipUpdate, 0, len(rels))
+	sr, srErr := rwt.ReadSchema()
+	if srErr != nil {
+		return nil, srErr
+	}
 	for _, rel := range rels {
-		if err := relationships.ValidateRelationshipsForCreateOrTouch(ctx, rwt, caveattypes.Default.TypeSet, rel); err != nil {
+		if err := relationships.ValidateRelationshipsForCreateOrTouch(ctx, sr, caveattypes.Default.TypeSet, rel); err != nil {
 			relString, serr := tuple.String(rel)
 			if serr != nil {
 				return nil, serr
@@ -262,17 +271,18 @@ func loadsRels(ctx context.Context, rels []tuple.Relationship, rwt datastore.Rea
 func loadCompiled(
 	ctx context.Context,
 	compiled *compiler.CompiledSchema,
-	rwt datastore.ReadWriteTransaction,
+	schemaText string,
+	rwt datalayer.ReadWriteTransaction,
 ) ([]*devinterface.DeveloperError, error) {
 	errors := make([]*devinterface.DeveloperError, 0, len(compiled.OrderedDefinitions))
-	ts := schema.NewTypeSystem(schema.ResolverForCompiledSchema(*compiled))
+	ts := schema.NewTypeSystem(schema.ResolverForCompiledSchema(compiled))
+
+	var validDefs []datastore.SchemaDefinition
 
 	for _, caveatDef := range compiled.CaveatDefinitions {
 		cverr := namespace.ValidateCaveatDefinition(caveattypes.Default.TypeSet, caveatDef)
 		if cverr == nil {
-			if err := rwt.WriteCaveats(ctx, []*core.CaveatDefinition{caveatDef}); err != nil {
-				return errors, err
-			}
+			validDefs = append(validDefs, caveatDef)
 			continue
 		}
 
@@ -306,7 +316,7 @@ func loadCompiled(
 	}
 
 	for _, nsDef := range compiled.ObjectDefinitions {
-		def, terr := schema.NewDefinition(ts, nsDef)
+		def, terr := schema.NewDefinition(nsDef)
 		if terr != nil {
 			errWithSource, ok := spiceerrors.AsWithSourceError(terr)
 			// NOTE: zeroes are fine here to mean "unknown"
@@ -339,11 +349,9 @@ func loadCompiled(
 			continue
 		}
 
-		_, tverr := def.Validate(ctx)
+		_, tverr := ts.Validate(ctx, def)
 		if tverr == nil {
-			if err := rwt.WriteNamespaces(ctx, nsDef); err != nil {
-				return errors, err
-			}
+			validDefs = append(validDefs, nsDef)
 			continue
 		}
 
@@ -373,6 +381,12 @@ func loadCompiled(
 				Source:  devinterface.DeveloperError_SCHEMA,
 				Context: nsDef.Name,
 			})
+		}
+	}
+
+	if len(validDefs) > 0 {
+		if err := rwt.WriteSchema(ctx, validDefs, schemaText, caveattypes.Default.TypeSet); err != nil {
+			return errors, err
 		}
 	}
 

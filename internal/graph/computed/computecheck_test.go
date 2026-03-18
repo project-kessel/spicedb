@@ -14,8 +14,8 @@ import (
 	"github.com/authzed/spicedb/internal/dispatch/graph"
 	"github.com/authzed/spicedb/internal/graph/computed"
 	log "github.com/authzed/spicedb/internal/logging"
-	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	caveattypes "github.com/authzed/spicedb/pkg/caveats/types"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	v1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
@@ -803,21 +803,19 @@ func TestComputeCheckWithCaveats(t *testing.T) {
 	}
 
 	for _, tt := range testCases {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+			ds, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 			require.NoError(t, err)
 
 			dispatch, err := graph.NewLocalOnlyDispatcher(graph.MustNewDefaultDispatcherParametersForTesting())
 			require.NoError(t, err)
-			ctx := log.Logger.WithContext(datastoremw.ContextWithHandle(t.Context()))
-			require.NoError(t, datastoremw.SetInContext(ctx, ds))
+			ctx := log.Logger.WithContext(datalayer.ContextWithHandle(t.Context()))
+			require.NoError(t, datalayer.SetInContext(ctx, datalayer.NewDataLayer(ds)))
 
 			revision, err := writeCaveatedTuples(ctx, t, ds, tt.schema, tt.updates)
 			require.NoError(t, err)
 
 			for _, r := range tt.checks {
-				r := r
 				t.Run(fmt.Sprintf("%s::%v", r.check, r.context), func(t *testing.T) {
 					rel := tuple.MustParse(r.check)
 
@@ -857,13 +855,13 @@ func TestComputeCheckWithCaveats(t *testing.T) {
 }
 
 func TestComputeCheckError(t *testing.T) {
-	ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+	ds, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(t, err)
 
 	dispatch, err := graph.NewLocalOnlyDispatcher(graph.MustNewDefaultDispatcherParametersForTesting())
 	require.NoError(t, err)
-	ctx := log.Logger.WithContext(datastoremw.ContextWithHandle(t.Context()))
-	require.NoError(t, datastoremw.SetInContext(ctx, ds))
+	ctx := log.Logger.WithContext(datalayer.ContextWithHandle(t.Context()))
+	require.NoError(t, datalayer.SetInContext(ctx, datalayer.NewDataLayer(ds)))
 
 	_, _, err = computed.ComputeCheck(ctx, dispatch,
 		caveattypes.Default.TypeSet,
@@ -882,13 +880,13 @@ func TestComputeCheckError(t *testing.T) {
 }
 
 func TestComputeBulkCheck(t *testing.T) {
-	ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+	ds, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(t, err)
 
 	dispatch, err := graph.NewLocalOnlyDispatcher(graph.MustNewDefaultDispatcherParametersForTesting())
 	require.NoError(t, err)
-	ctx := log.Logger.WithContext(datastoremw.ContextWithHandle(t.Context()))
-	require.NoError(t, datastoremw.SetInContext(ctx, ds))
+	ctx := log.Logger.WithContext(datalayer.ContextWithHandle(t.Context()))
+	require.NoError(t, datalayer.SetInContext(ctx, datalayer.NewDataLayer(ds)))
 
 	revision, err := writeCaveatedTuples(ctx, t, ds, `
 	definition user {}
@@ -944,11 +942,11 @@ func writeCaveatedTuples(ctx context.Context, _ *testing.T, ds datastore.Datasto
 	}
 
 	return ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		if err := rwt.WriteNamespaces(ctx, compiled.ObjectDefinitions...); err != nil {
+		if err := rwt.LegacyWriteNamespaces(ctx, compiled.ObjectDefinitions...); err != nil {
 			return err
 		}
 
-		if err := rwt.WriteCaveats(ctx, compiled.CaveatDefinitions); err != nil {
+		if err := rwt.LegacyWriteCaveats(ctx, compiled.CaveatDefinitions); err != nil {
 			return err
 		}
 

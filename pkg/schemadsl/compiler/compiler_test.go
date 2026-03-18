@@ -91,6 +91,294 @@ func TestCompile(t *testing.T) {
 			},
 		},
 		{
+			"simple partial",
+			withTenantPrefix,
+			`
+			use partial
+
+			partial view_partial {
+				relation user: user;
+			}
+
+			definition simple {
+				...view_partial
+			}`,
+			"",
+			[]SchemaDefinition{
+				namespace.Namespace("sometenant/simple",
+					namespace.MustRelation("user", nil,
+						namespace.AllowedRelation("sometenant/user", "..."),
+					),
+				),
+			},
+		},
+		{
+			"more complex partial",
+			withTenantPrefix,
+			`
+			use partial
+
+			definition user {}
+			definition organization {}
+
+			partial view_partial {
+				relation user: user;
+				permission view = user
+			}
+
+			definition resource {
+				relation organization: organization
+				permission manage = organization
+
+				...view_partial
+			}
+			`,
+			"",
+			[]SchemaDefinition{
+				namespace.Namespace("sometenant/user"),
+				namespace.Namespace("sometenant/organization"),
+				namespace.Namespace("sometenant/resource",
+					namespace.MustRelation("organization", nil,
+						namespace.AllowedRelation("sometenant/organization", "..."),
+					),
+					namespace.MustRelation("manage",
+						namespace.Union(
+							namespace.ComputedUserset("organization"),
+						),
+					),
+					namespace.MustRelation("user", nil,
+						namespace.AllowedRelation("sometenant/user", "..."),
+					),
+					namespace.MustRelation("view",
+						namespace.Union(
+							namespace.ComputedUserset("user"),
+						),
+					),
+				),
+			},
+		},
+		{
+			"partial defined after reference",
+			withTenantPrefix,
+			`
+			use partial
+
+			definition simple {
+				...view_partial
+			}
+
+			partial view_partial {
+				relation user: user;
+			}`,
+			"",
+			[]SchemaDefinition{
+				namespace.Namespace("sometenant/simple",
+					namespace.MustRelation("user", nil,
+						namespace.AllowedRelation("sometenant/user", "..."),
+					),
+				),
+			},
+		},
+		{
+			"transitive partials",
+			withTenantPrefix,
+			`
+			use partial
+
+			partial view_partial {
+				relation user: user;
+			}
+
+			partial transitive_partial {
+				...view_partial
+			}
+
+			definition simple {
+				...view_partial
+			}
+			`,
+			"",
+			[]SchemaDefinition{
+				namespace.Namespace("sometenant/simple",
+					namespace.MustRelation("user", nil,
+						namespace.AllowedRelation("sometenant/user", "..."),
+					),
+				),
+			},
+		},
+		{
+			"transitive partials out of order",
+			withTenantPrefix,
+			`
+			use partial
+
+			partial transitive_partial {
+				...view_partial
+			}
+
+			partial view_partial {
+				relation user: user;
+			}
+
+			definition simple {
+				...view_partial
+			}
+			`,
+			"",
+			[]SchemaDefinition{
+				namespace.Namespace("sometenant/simple",
+					namespace.MustRelation("user", nil,
+						namespace.AllowedRelation("sometenant/user", "..."),
+					),
+				),
+			},
+		},
+		{
+			"transitive partials in reverse order",
+			withTenantPrefix,
+			`
+			use partial
+
+			definition simple {
+				...view_partial
+			}
+
+			partial transitive_partial {
+				...view_partial
+			}
+
+			partial view_partial {
+				relation user: user;
+			}
+			`,
+			"",
+			[]SchemaDefinition{
+				namespace.Namespace("sometenant/simple",
+					namespace.MustRelation("user", nil,
+						namespace.AllowedRelation("sometenant/user", "..."),
+					),
+				),
+			},
+		},
+		{
+			"forking transitive partials out of order",
+			withTenantPrefix,
+			`
+			use partial
+
+			partial transitive_partial {
+				...view_partial
+				...group_partial
+			}
+
+			partial view_partial {
+				relation user: user;
+			}
+
+			partial group_partial {
+				relation group: group;
+			}
+
+			definition simple {
+				...transitive_partial
+			}
+			`,
+			"",
+			[]SchemaDefinition{
+				namespace.Namespace("sometenant/simple",
+					namespace.MustRelation("user", nil,
+						namespace.AllowedRelation("sometenant/user", "..."),
+					),
+					namespace.MustRelation("group", nil,
+						namespace.AllowedRelation("sometenant/group", "..."),
+					),
+				),
+			},
+		},
+		{
+			"circular reference in partials",
+			withTenantPrefix,
+			`
+			use partial
+
+			partial one_partial {
+				...another_partial
+			}
+
+			partial another_partial {
+				...one_partial
+			}
+
+			definition simple {
+				...one_partial
+			}
+			`,
+			"could not resolve partials",
+			[]SchemaDefinition{},
+		},
+		{
+			"definition reference to nonexistent partial",
+			withTenantPrefix,
+			`
+			use partial
+
+			definition simple {
+				...some_partial
+			}
+			`,
+			"could not find partial reference",
+			[]SchemaDefinition{},
+		},
+		{
+			"definition with same name as partial",
+			withTenantPrefix,
+			`
+			use partial
+
+			partial simple {
+				relation user: user
+			}
+			definition simple {
+				...simple
+			}
+			`,
+			"found definition with same name as existing partial",
+			[]SchemaDefinition{},
+		},
+		{
+			"caveat with same name as partial",
+			withTenantPrefix,
+			`
+			use partial
+
+			caveat some_caveat(someparam int) { someparam == 42}
+
+			partial some_caveat {
+				relation user: user
+			}
+			definition simple {
+				...some_caveat
+			}
+			`,
+			"found caveat with same name as existing partial",
+			[]SchemaDefinition{},
+		},
+		{
+			"definition reference to another definition errors",
+			withTenantPrefix,
+			`
+			use partial
+
+			definition some_definition {}
+
+			definition simple {
+				...some_definition
+			}
+			`,
+			"could not find partial reference",
+			[]SchemaDefinition{},
+		},
+		{
 			"explicit relation",
 			withTenantPrefix,
 			`definition simple {
@@ -583,6 +871,18 @@ func TestCompile(t *testing.T) {
 			[]SchemaDefinition{},
 		},
 		{
+			"duplicate caveat",
+			withTenantPrefix,
+			`caveat foo(someParam int) {
+				someParam == 42
+			}
+			caveat foo(someParam int) {
+				someParam == 42
+			}`,
+			"parse error in `duplicate caveat`, line 4, column 4: found name reused between multiple definitions and/or caveats: sometenant/foo",
+			[]SchemaDefinition{},
+		},
+		{
 			"duplicate definitions across objects and caveats",
 			withTenantPrefix,
 			`caveat foo(someParam int) {
@@ -1028,16 +1328,87 @@ func TestCompile(t *testing.T) {
 			},
 		},
 		{
-			"duplicate use pragmas",
+			"self is allowed when used in arrow and interpreted as relation name",
 			withTenantPrefix,
-			`
-			use expiration
-			use expiration
-
-			definition simple {
-				relation viewer: user with expiration
+			`definition expressioned {
+				permission foos = (arel->self) + brel
 			}`,
-			`found duplicate use flag`,
+			"",
+			[]SchemaDefinition{
+				namespace.Namespace("sometenant/expressioned",
+					namespace.MustRelation("foos",
+						namespace.Union(
+							namespace.TupleToUserset("arel", "self"),
+							namespace.ComputedUserset("brel"),
+						),
+					),
+				),
+			},
+		},
+		{
+			"self is allowed when used in union and interpreted as relation name",
+			withTenantPrefix,
+			`definition expressioned {
+				permission foos = (arel->brel) + self
+			}`,
+			"",
+			[]SchemaDefinition{
+				namespace.Namespace("sometenant/expressioned",
+					namespace.MustRelation("foos",
+						namespace.Union(
+							namespace.TupleToUserset("arel", "brel"),
+							namespace.ComputedUserset("self"),
+						),
+					),
+				),
+			},
+		},
+		{
+			"self without use self is allowed when used in permission name",
+			withTenantPrefix,
+			`definition expressioned {
+				permission self = (arel->brel) - drel
+			}`,
+			"",
+			[]SchemaDefinition{
+				namespace.Namespace("sometenant/expressioned",
+					namespace.MustRelation("self",
+						namespace.Exclusion(
+							namespace.TupleToUserset("arel", "brel"),
+							namespace.ComputedUserset("drel"),
+						),
+					),
+				),
+			},
+		},
+		{
+			"self with use self is allowed when used in permission expression",
+			withTenantPrefix,
+			`use self
+			definition expressioned {
+				permission foos = self
+			}`,
+			"",
+			[]SchemaDefinition{
+				namespace.Namespace("sometenant/expressioned",
+					namespace.MustRelation("foos",
+						namespace.Union(
+							namespace.Self(),
+						),
+					),
+				),
+			},
+		},
+		{
+			"self with use self errors when used as left side of arrow",
+			withTenantPrefix,
+			`use self
+			definition thing {}
+			definition expressioned {
+			  relation other: thing
+				permission foos = self->other
+			}`,
+			"Expected end of statement or definition, found: TokenTypeRightArrow",
 			[]SchemaDefinition{},
 		},
 		{
@@ -1060,7 +1431,6 @@ func TestCompile(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			require := require.New(t)

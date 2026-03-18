@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,7 +24,7 @@ import (
 	"github.com/authzed/spicedb/pkg/tuple"
 )
 
-const waitForChangesTimeout = 15 * time.Second
+const waitForChangesTimeout = 20 * time.Second // FIXME, for reasons unknown, tests against Spanner emulator time out if this is lower
 
 // WatchTest tests whether or not the requirements for watching changes hold
 // for a particular datastore.
@@ -56,19 +57,15 @@ func WatchTest(t *testing.T, tester DatastoreTester) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(fmt.Sprintf("%d-%v", tc.numTuples, tc.expectFallBehind), func(t *testing.T) {
 			require := require.New(t)
 
-			ds, err := tester.New(0, veryLargeGCInterval, veryLargeGCWindow, 16)
+			ds, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 16)
 			require.NoError(err)
 
 			setupDatastore(ds, require)
 
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-
-			lowestRevision, err := ds.HeadRevision(ctx)
+			lowestRevision, err := ds.HeadRevision(t.Context())
 			require.NoError(err)
 
 			opts := datastore.WatchOptions{
@@ -76,7 +73,7 @@ func WatchTest(t *testing.T, tester DatastoreTester) {
 				WatchBufferLength:       50,
 				WatchBufferWriteTimeout: tc.bufferTimeout,
 			}
-			changes, errchan := ds.Watch(ctx, lowestRevision, opts)
+			changes, errchan := ds.Watch(t.Context(), lowestRevision, opts)
 			require.Empty(errchan)
 
 			var testUpdates [][]tuple.RelationshipUpdate
@@ -85,10 +82,9 @@ func WatchTest(t *testing.T, tester DatastoreTester) {
 				newRelationship := makeTestRel(fmt.Sprintf("relation%d", i), "test_user")
 
 				newUpdate := tuple.Touch(newRelationship)
-				batch := []tuple.RelationshipUpdate{newUpdate}
-				testUpdates = append(testUpdates, batch)
+				testUpdates = append(testUpdates, []tuple.RelationshipUpdate{newUpdate})
 
-				_, err := common.UpdateRelationshipsInDatastore(ctx, ds, newUpdate)
+				_, err := common.UpdateRelationshipsInDatastore(t.Context(), ds, newUpdate)
 				require.NoError(err)
 
 				if i != 0 {
@@ -99,17 +95,16 @@ func WatchTest(t *testing.T, tester DatastoreTester) {
 			updateUpdate := tuple.Touch(tuple.MustWithCaveat(makeTestRel("relation0", "test_user"), "somecaveat"))
 			createUpdate := tuple.Touch(makeTestRel("another_relation", "somestuff"))
 
-			batch := []tuple.RelationshipUpdate{updateUpdate, createUpdate}
-			_, err = common.UpdateRelationshipsInDatastore(ctx, ds, batch...)
+			_, err = common.UpdateRelationshipsInDatastore(t.Context(), ds, updateUpdate, createUpdate)
 			require.NoError(err)
 
 			deleteUpdate := tuple.Delete(makeTestRel("relation0", "test_user"))
-			_, err = common.UpdateRelationshipsInDatastore(ctx, ds, deleteUpdate)
+			_, err = common.UpdateRelationshipsInDatastore(t.Context(), ds, deleteUpdate)
 			require.NoError(err)
 
-			testUpdates = append(testUpdates, batch, []tuple.RelationshipUpdate{deleteUpdate})
+			testUpdates = append(testUpdates, []tuple.RelationshipUpdate{updateUpdate, createUpdate}, []tuple.RelationshipUpdate{deleteUpdate})
 
-			_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
+			_, err = ds.ReadWriteTx(t.Context(), func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
 				_, _, err := rwt.DeleteRelationships(ctx, &v1.RelationshipFilter{
 					ResourceType:     testResourceNamespace,
 					OptionalRelation: testReaderRelation,
@@ -127,22 +122,24 @@ func WatchTest(t *testing.T, tester DatastoreTester) {
 				testUpdates = append(testUpdates, bulkDeletes)
 			}
 
-			VerifyUpdates(require, testUpdates, changes, errchan, tc.expectFallBehind)
+			VerifyUpdates(t, require, testUpdates, changes, errchan, tc.expectFallBehind)
 
 			// Test the catch-up case
-			changes, errchan = ds.Watch(ctx, lowestRevision, opts)
-			VerifyUpdates(require, testUpdates, changes, errchan, tc.expectFallBehind)
+			changes, errchan = ds.Watch(t.Context(), lowestRevision, opts)
+			VerifyUpdates(t, require, testUpdates, changes, errchan, tc.expectFallBehind)
 		})
 	}
 }
 
 func VerifyUpdates(
+	t *testing.T,
 	require *require.Assertions,
 	testUpdates [][]tuple.RelationshipUpdate,
 	changes <-chan datastore.RevisionChanges,
 	errchan <-chan error,
 	expectDisconnect bool,
 ) {
+	t.Helper()
 	for _, expected := range testUpdates {
 		changeWait := time.NewTimer(waitForChangesTimeout)
 		select {
@@ -179,12 +176,14 @@ func VerifyUpdates(
 }
 
 func VerifyUpdatesWithMetadata(
+	t *testing.T,
 	require *require.Assertions,
 	testUpdates []updateWithMetadata,
 	changes <-chan datastore.RevisionChanges,
 	errchan <-chan error,
 	expectDisconnect bool,
 ) {
+	t.Helper()
 	for _, expected := range testUpdates {
 		changeWait := time.NewTimer(waitForChangesTimeout)
 		select {
@@ -240,7 +239,7 @@ func setOfChanges(changes []tuple.RelationshipUpdate) *mapz.Set[string] {
 func WatchCancelTest(t *testing.T, tester DatastoreTester) {
 	require := require.New(t)
 
-	ds, err := tester.New(0, veryLargeGCInterval, veryLargeGCWindow, 1)
+	ds, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
 	startWatchRevision := setupDatastore(ds, require)
@@ -286,7 +285,7 @@ func WatchCancelTest(t *testing.T, tester DatastoreTester) {
 func WatchWithTouchTest(t *testing.T, tester DatastoreTester) {
 	require := require.New(t)
 
-	ds, err := tester.New(0, veryLargeGCInterval, veryLargeGCWindow, 16)
+	ds, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 16)
 	require.NoError(err)
 
 	setupDatastore(ds, require)
@@ -314,7 +313,7 @@ func WatchWithTouchTest(t *testing.T, tester DatastoreTester) {
 		tuple.MustParse("document:firstdoc#viewer@user:fred[thirdcaveat]"),
 	)
 
-	VerifyUpdates(require, [][]tuple.RelationshipUpdate{
+	VerifyUpdates(t, require, [][]tuple.RelationshipUpdate{
 		{
 			tuple.Touch(tuple.MustParse("document:firstdoc#viewer@user:tom")),
 			tuple.Touch(tuple.MustParse("document:firstdoc#viewer@user:sarah")),
@@ -358,7 +357,7 @@ func WatchWithTouchTest(t *testing.T, tester DatastoreTester) {
 		tuple.MustParse("document:firstdoc#viewer@user:fred[thirdcaveat]"),
 	)
 
-	VerifyUpdates(require, [][]tuple.RelationshipUpdate{
+	VerifyUpdates(t, require, [][]tuple.RelationshipUpdate{
 		{tuple.Touch(tuple.MustParse("document:firstdoc#viewer@user:tom[somecaveat]"))},
 	},
 		changes,
@@ -379,7 +378,7 @@ func WatchWithTouchTest(t *testing.T, tester DatastoreTester) {
 		tuple.MustParse("document:firstdoc#viewer@user:fred[thirdcaveat]"),
 	)
 
-	VerifyUpdates(require, [][]tuple.RelationshipUpdate{
+	VerifyUpdates(t, require, [][]tuple.RelationshipUpdate{
 		{tuple.Touch(tuple.MustParse("document:firstdoc#viewer@user:tom[somecaveat:{\"somecondition\": 42}]"))},
 	},
 		changes,
@@ -391,7 +390,7 @@ func WatchWithTouchTest(t *testing.T, tester DatastoreTester) {
 func WatchWithExpirationTest(t *testing.T, tester DatastoreTester) {
 	require := require.New(t)
 
-	ds, err := tester.New(0, veryLargeGCInterval, veryLargeGCWindow, 16)
+	ds, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 16)
 	require.NoError(err)
 
 	setupDatastore(ds, require)
@@ -415,7 +414,7 @@ func WatchWithExpirationTest(t *testing.T, tester DatastoreTester) {
 	}, options.WithMetadata(metadata))
 	require.NoError(err)
 
-	VerifyUpdates(require, [][]tuple.RelationshipUpdate{
+	VerifyUpdates(t, require, [][]tuple.RelationshipUpdate{
 		{tuple.Touch(tuple.MustParse("document:firstdoc#viewer@user:tom[expiration:2321-01-01T00:00:00Z]"))},
 	},
 		changes,
@@ -430,9 +429,13 @@ type updateWithMetadata struct {
 }
 
 func WatchWithMetadataTest(t *testing.T, tester DatastoreTester) {
+	if strings.Contains(t.Name(), "Spanner") {
+		t.Skip("Spanner emulator does not support transaction tags. See https://github.com/GoogleCloudPlatform/cloud-spanner-emulator/issues/280")
+	}
+
 	require := require.New(t)
 
-	ds, err := tester.New(0, veryLargeGCInterval, veryLargeGCWindow, 16)
+	ds, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 16)
 	require.NoError(err)
 
 	setupDatastore(ds, require)
@@ -456,7 +459,7 @@ func WatchWithMetadataTest(t *testing.T, tester DatastoreTester) {
 	}, options.WithMetadata(metadata))
 	require.NoError(err)
 
-	VerifyUpdatesWithMetadata(require, []updateWithMetadata{
+	VerifyUpdatesWithMetadata(t, require, []updateWithMetadata{
 		{
 			updates:  []tuple.RelationshipUpdate{tuple.Touch(tuple.MustParse("document:firstdoc#viewer@user:tom"))},
 			metadata: map[string]any{"somekey": "somevalue"},
@@ -471,7 +474,7 @@ func WatchWithMetadataTest(t *testing.T, tester DatastoreTester) {
 func WatchWithDeleteTest(t *testing.T, tester DatastoreTester) {
 	require := require.New(t)
 
-	ds, err := tester.New(0, veryLargeGCInterval, veryLargeGCWindow, 16)
+	ds, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 16)
 	require.NoError(err)
 
 	setupDatastore(ds, require)
@@ -499,7 +502,7 @@ func WatchWithDeleteTest(t *testing.T, tester DatastoreTester) {
 		tuple.MustParse("document:firstdoc#viewer@user:fred[thirdcaveat]"),
 	)
 
-	VerifyUpdates(require, [][]tuple.RelationshipUpdate{
+	VerifyUpdates(t, require, [][]tuple.RelationshipUpdate{
 		{
 			tuple.Touch(tuple.MustParse("document:firstdoc#viewer@user:tom")),
 			tuple.Touch(tuple.MustParse("document:firstdoc#viewer@user:sarah")),
@@ -523,7 +526,7 @@ func WatchWithDeleteTest(t *testing.T, tester DatastoreTester) {
 		tuple.MustParse("document:firstdoc#viewer@user:fred[thirdcaveat]"),
 	)
 
-	VerifyUpdates(require, [][]tuple.RelationshipUpdate{
+	VerifyUpdates(t, require, [][]tuple.RelationshipUpdate{
 		{tuple.Delete(tuple.MustParse("document:firstdoc#viewer@user:tom"))},
 	},
 		changes,
@@ -563,7 +566,7 @@ func verifyNoUpdates(
 func WatchSchemaTest(t *testing.T, tester DatastoreTester) {
 	require := require.New(t)
 
-	ds, err := tester.New(0, veryLargeGCInterval, veryLargeGCWindow, 16)
+	ds, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 16)
 	require.NoError(err)
 
 	setupDatastore(ds, require)
@@ -580,14 +583,14 @@ func WatchSchemaTest(t *testing.T, tester DatastoreTester) {
 	// Addition
 	// Write an updated schema and ensure the changes are returned.
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		err := rwt.WriteNamespaces(ctx, &core.NamespaceDefinition{
+		err := rwt.LegacyWriteNamespaces(ctx, &core.NamespaceDefinition{
 			Name: "somenewnamespace",
 		})
 		if err != nil {
 			return err
 		}
 
-		return rwt.WriteCaveats(ctx, []*core.CaveatDefinition{
+		return rwt.LegacyWriteCaveats(ctx, []*core.CaveatDefinition{
 			{
 				Name: "somenewcaveat",
 			},
@@ -604,7 +607,7 @@ func WatchSchemaTest(t *testing.T, tester DatastoreTester) {
 
 	// Changed
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		err := rwt.WriteNamespaces(ctx, &core.NamespaceDefinition{
+		err := rwt.LegacyWriteNamespaces(ctx, &core.NamespaceDefinition{
 			Name: "somenewnamespace",
 			Relation: []*core.Relation{
 				{
@@ -616,7 +619,7 @@ func WatchSchemaTest(t *testing.T, tester DatastoreTester) {
 			return err
 		}
 
-		return rwt.WriteCaveats(ctx, []*core.CaveatDefinition{
+		return rwt.LegacyWriteCaveats(ctx, []*core.CaveatDefinition{
 			{
 				Name:                 "somenewcaveat",
 				SerializedExpression: []byte("123"),
@@ -635,12 +638,12 @@ func WatchSchemaTest(t *testing.T, tester DatastoreTester) {
 	// Removed
 	// Delete some namespaces and caveats.
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		err := rwt.DeleteNamespaces(ctx, []string{"somenewnamespace"}, datastore.DeleteNamespacesAndRelationships)
+		err := rwt.LegacyDeleteNamespaces(ctx, []string{"somenewnamespace"}, datastore.DeleteNamespacesAndRelationships)
 		if err != nil {
 			return err
 		}
 
-		return rwt.DeleteCaveats(ctx, []string{"somenewcaveat"})
+		return rwt.LegacyDeleteCaveats(ctx, []string{"somenewcaveat"})
 	})
 	require.NoError(err)
 
@@ -655,7 +658,7 @@ func WatchSchemaTest(t *testing.T, tester DatastoreTester) {
 func WatchAllTest(t *testing.T, tester DatastoreTester) {
 	require := require.New(t)
 
-	ds, err := tester.New(0, veryLargeGCInterval, veryLargeGCWindow, 16)
+	ds, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 16)
 	require.NoError(err)
 
 	setupDatastore(ds, require)
@@ -673,14 +676,14 @@ func WatchAllTest(t *testing.T, tester DatastoreTester) {
 
 	// Write an updated schema.
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		err := rwt.WriteNamespaces(ctx, &core.NamespaceDefinition{
+		err := rwt.LegacyWriteNamespaces(ctx, &core.NamespaceDefinition{
 			Name: "somenewnamespace",
 		})
 		if err != nil {
 			return err
 		}
 
-		return rwt.WriteCaveats(ctx, []*core.CaveatDefinition{
+		return rwt.LegacyWriteCaveats(ctx, []*core.CaveatDefinition{
 			{
 				Name: "somenewcaveat",
 			},
@@ -713,12 +716,12 @@ func WatchAllTest(t *testing.T, tester DatastoreTester) {
 
 	// Delete some namespaces and caveats.
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		err := rwt.DeleteNamespaces(ctx, []string{"somenewnamespace"}, datastore.DeleteNamespacesAndRelationships)
+		err := rwt.LegacyDeleteNamespaces(ctx, []string{"somenewnamespace"}, datastore.DeleteNamespacesAndRelationships)
 		if err != nil {
 			return err
 		}
 
-		return rwt.DeleteCaveats(ctx, []string{"somenewcaveat"})
+		return rwt.LegacyDeleteCaveats(ctx, []string{"somenewcaveat"})
 	})
 	require.NoError(err)
 
@@ -787,7 +790,7 @@ func verifyMixedUpdates(
 func WatchCheckpointsTest(t *testing.T, tester DatastoreTester) {
 	require := require.New(t)
 
-	ds, err := tester.New(0, veryLargeGCInterval, veryLargeGCWindow, 16)
+	ds, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 16)
 	require.NoError(err)
 
 	setupDatastore(ds, require)
@@ -812,7 +815,7 @@ func WatchCheckpointsTest(t *testing.T, tester DatastoreTester) {
 	verifyCheckpointUpdate(require, afterTouchRevision, changes)
 
 	afterTouchRevision, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		return rwt.WriteNamespaces(ctx, &core.NamespaceDefinition{Name: "doesnotexist"})
+		return rwt.LegacyWriteNamespaces(ctx, &core.NamespaceDefinition{Name: "doesnotexist"})
 	})
 	require.NoError(err)
 
@@ -822,7 +825,7 @@ func WatchCheckpointsTest(t *testing.T, tester DatastoreTester) {
 func WatchEmissionStrategyTest(t *testing.T, tester DatastoreTester) {
 	require := require.New(t)
 
-	ds, err := tester.New(0, veryLargeGCInterval, veryLargeGCWindow, 16)
+	ds, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 16)
 	require.NoError(err)
 
 	setupDatastore(ds, require)

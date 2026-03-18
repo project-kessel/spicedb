@@ -209,8 +209,8 @@ func (vs ValidationString) Subject() (*SubjectWithExceptions, *spiceerrors.WithS
 		exceptions = make([]SubjectAndCaveat, 0, len(exceptionsStringsSlice))
 		for _, exceptionString := range exceptionsStringsSlice {
 			isCaveated := false
-			if strings.HasSuffix(exceptionString, "[...]") {
-				exceptionString = strings.TrimSuffix(exceptionString, "[...]")
+			if before, ok0 := strings.CutSuffix(exceptionString, "[...]"); ok0 {
+				exceptionString = before
 				isCaveated = true
 			}
 
@@ -230,7 +230,7 @@ func (vs ValidationString) Subject() (*SubjectWithExceptions, *spiceerrors.WithS
 // ONRStrings returns the ONRs contained in the ValidationString, if any.
 func (vs ValidationString) ONRStrings() []string {
 	results := vsObjectAndRelationRegex.FindAllStringSubmatch(string(vs), -1)
-	onrStrings := []string{}
+	onrStrings := make([]string, 0, len(results))
 	for _, result := range results {
 		onrStrings = append(onrStrings, result[2])
 	}

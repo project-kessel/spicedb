@@ -17,15 +17,15 @@ type Graph struct {
 	referenceInfoMap map[nsAndRel][]RelationReferenceInfo
 }
 
-// BuildGraph builds the graph of all reachable information in the schema.
-func BuildGraph(ctx context.Context, r *CompiledSchemaResolver) (*Graph, error) {
-	arrowSet, err := buildArrowSet(ctx, r)
+// NewGraph builds the graph of all reachable information in the schema.
+func NewGraph(ctx context.Context, compiledSchemaResolver *CompiledSchemaResolver) (*Graph, error) {
+	arrowSet, err := buildArrowSet(ctx, compiledSchemaResolver)
 	if err != nil {
 		return nil, err
 	}
 
-	ts := NewTypeSystem(r)
-	referenceInfoMap, err := preComputeRelationReferenceInfo(ctx, arrowSet, r, ts)
+	ts := NewTypeSystem(compiledSchemaResolver)
+	referenceInfoMap, err := preComputeRelationReferenceInfo(ctx, arrowSet, compiledSchemaResolver, ts)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +118,6 @@ func relationsReferencing(ctx context.Context, arrowSet *ArrowSet, res FullSchem
 	key := namespaceName + "#" + relationName
 	foundArrows, _ := arrowSet.arrowsByFullTuplesetRelation.Get(key)
 	for _, arrow := range foundArrows {
-		arrow := arrow
 		foundReferences = append(foundReferences, RelationReferenceInfo{
 			Relation: &core.RelationReference{
 				Namespace: namespaceName,
@@ -218,6 +217,9 @@ func setOperationReferencesRelation(ctx context.Context, so *core.SetOperation, 
 			// Nothing to do
 
 		case *core.SetOperation_Child_XNil:
+			// Nothing to do
+
+		case *core.SetOperation_Child_XSelf:
 			// Nothing to do
 
 		default:

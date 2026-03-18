@@ -112,7 +112,6 @@ func TestValidationString(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			require := require.New(t)
 			vs := ValidationString(tc.input)
@@ -143,8 +142,8 @@ func TestValidationString(t *testing.T) {
 				}
 			}
 
-			foundONRStrings := []string{}
 			onrs, _ := vs.ONRS()
+			foundONRStrings := make([]string, 0, len(onrs))
 			for _, onr := range onrs {
 				foundONRStrings = append(foundONRStrings, tuple.StringONR(onr))
 			}
@@ -251,7 +250,6 @@ document:seconddoc#view:
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			require := require.New(t)
 			per := ParsedExpectedRelations{}

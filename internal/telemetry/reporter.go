@@ -14,7 +14,7 @@ import (
 	"time"
 
 	prompb "buf.build/gen/go/prometheus/prometheus/protocolbuffers/go"
-	"github.com/cenkalti/backoff/v4"
+	"github.com/cenkalti/backoff/v5"
 	"github.com/golang/snappy"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/expfmt"
@@ -62,7 +62,7 @@ func writeTimeSeries(ctx context.Context, client *http.Client, endpoint string, 
 	r.Header.Add("Content-Encoding", "snappy")
 	r.Header.Set("Content-Type", "application/x-protobuf")
 
-	resp, err := client.Do(r)
+	resp, err := client.Do(r) //nolint:gosec  // re: SSRF: the only thing that's user-controllable is the endpoint, and that's through a config.
 	if err != nil {
 		return fmt.Errorf("failed to send Prometheus remote write: %w", err)
 	}
@@ -176,7 +176,6 @@ func RemoteReporter(
 		backoffInterval := backoff.NewExponentialBackOff()
 		backoffInterval.InitialInterval = interval
 		backoffInterval.MaxInterval = MaxElapsedTimeBetweenReports
-		backoffInterval.MaxElapsedTime = 0
 
 		// Must reset the backoff object after changing parameters
 		backoffInterval.Reset()

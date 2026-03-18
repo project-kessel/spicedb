@@ -2,17 +2,16 @@ package schema
 
 import (
 	"context"
-	"errors"
 	"slices"
 
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	"github.com/authzed/spicedb/pkg/schemadsl/compiler"
 )
 
-// Resolver is an interface defined for resolving referenced namespaces and caveats when constructing
-// and validating a type system.
-type Resolver interface {
+// TypeSystemResolver provides an abstraction for fetching definitions and caveats from different sources (datastore, compiled schema, predefined elements).
+type TypeSystemResolver interface {
 	// LookupDefinition lookups up a namespace definition, also returning whether it was pre-validated.
 	LookupDefinition(ctx context.Context, name string) (*core.NamespaceDefinition, bool, error)
 
@@ -20,10 +19,28 @@ type Resolver interface {
 	LookupCaveat(ctx context.Context, name string) (*Caveat, error)
 }
 
-// ResolverForDatastoreReader returns a Resolver for a datastore reader.
+// ResolverFor returns a TypeSystemResolver for a SchemaReader.
+func ResolverFor(sr datalayer.SchemaReader) *DatastoreResolver {
+	return &DatastoreResolver{
+		lookup: sr,
+	}
+}
+
+// ResolverForSchemaReader returns a TypeSystemResolver for a datalayer reader.
+// The reader's ReadSchema() method is called eagerly to resolve definitions.
+func ResolverForSchemaReader(reader datalayer.RevisionedReader) (*DatastoreResolver, error) {
+	sr, err := reader.ReadSchema()
+	if err != nil {
+		return nil, err
+	}
+	return &DatastoreResolver{lookup: sr}, nil
+}
+
+// ResolverForDatastoreReader returns a TypeSystemResolver for a datastore reader.
+// This uses the Legacy* methods directly on the reader.
 func ResolverForDatastoreReader(ds datastore.Reader) *DatastoreResolver {
 	return &DatastoreResolver{
-		ds: ds,
+		lookup: datalayer.SchemaReaderFromLegacy(ds),
 	}
 }
 
@@ -41,14 +58,14 @@ func (pe PredefinedElements) combineWith(other PredefinedElements) PredefinedEle
 }
 
 // ResolverForPredefinedDefinitions returns a resolver for predefined namespaces and caveats.
-func ResolverForPredefinedDefinitions(predefined PredefinedElements) Resolver {
+func ResolverForPredefinedDefinitions(predefined PredefinedElements) TypeSystemResolver {
 	return &DatastoreResolver{
 		predefined: predefined,
 	}
 }
 
 // ResolverForSchema returns a resolver for a schema.
-func ResolverForSchema(schema compiler.CompiledSchema) Resolver {
+func ResolverForSchema(schema *compiler.CompiledSchema) TypeSystemResolver {
 	return ResolverForPredefinedDefinitions(
 		PredefinedElements{
 			Definitions: schema.ObjectDefinitions,
@@ -59,7 +76,7 @@ func ResolverForSchema(schema compiler.CompiledSchema) Resolver {
 
 // DatastoreResolver is a resolver implementation for a datastore, to look up schema stored in the underlying storage.
 type DatastoreResolver struct {
-	ds         datastore.Reader
+	lookup     datalayer.SchemaReader
 	predefined PredefinedElements
 }
 
@@ -73,19 +90,26 @@ func (r *DatastoreResolver) LookupDefinition(ctx context.Context, name string) (
 		}
 	}
 
-	if r.ds == nil {
+	if r.lookup == nil {
 		return nil, false, asTypeError(NewDefinitionNotFoundErr(name))
 	}
 
-	ns, _, err := r.ds.ReadNamespaceByName(ctx, name)
-	return ns, true, err
+	revDef, found, err := r.lookup.LookupTypeDefByName(ctx, name)
+	if err != nil {
+		return nil, false, err
+	}
+	if !found {
+		return nil, false, asTypeError(NewDefinitionNotFoundErr(name))
+	}
+	ns := revDef.Definition
+	return ns, true, nil
 }
 
 // WithPredefinedElements adds elements (definitions and caveats) that will be used as a local overlay
 // for the datastore, often for validation.
-func (r *DatastoreResolver) WithPredefinedElements(predefined PredefinedElements) Resolver {
+func (r *DatastoreResolver) WithPredefinedElements(predefined PredefinedElements) TypeSystemResolver {
 	return &DatastoreResolver{
-		ds:         r.ds,
+		lookup:     r.lookup,
 		predefined: predefined.combineWith(r.predefined),
 	}
 }
@@ -100,15 +124,17 @@ func (r *DatastoreResolver) LookupCaveat(ctx context.Context, name string) (*Cav
 		}
 	}
 
-	if r.ds == nil {
+	if r.lookup == nil {
 		return nil, asTypeError(NewCaveatNotFoundErr(name))
 	}
 
-	cr, ok := r.ds.(datastore.CaveatReader)
-	if !ok {
-		return nil, errors.New("caveats are not supported on this datastore type")
+	revDef, found, err := r.lookup.LookupCaveatDefByName(ctx, name)
+	if err != nil {
+		return nil, err
 	}
-
-	caveatDef, _, err := cr.ReadCaveatByName(ctx, name)
-	return caveatDef, err
+	if !found {
+		return nil, asTypeError(NewCaveatNotFoundErr(name))
+	}
+	caveatDef := revDef.Definition
+	return caveatDef, nil
 }

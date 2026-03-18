@@ -2,120 +2,13 @@ package query
 
 import (
 	"context"
-	"fmt"
-	"strings"
 
 	"github.com/authzed/spicedb/internal/caveats"
-	"github.com/authzed/spicedb/pkg/datastore"
+	"github.com/authzed/spicedb/pkg/datalayer"
+	"github.com/authzed/spicedb/pkg/datastore/options"
 	"github.com/authzed/spicedb/pkg/spiceerrors"
+	"github.com/authzed/spicedb/pkg/tuple"
 )
-
-// TraceLogger is used for debugging iterator execution
-type TraceLogger struct {
-	traces []string
-	depth  int
-	stack  []Iterator // Stack of iterator pointers for proper indentation context
-}
-
-// NewTraceLogger creates a new trace logger
-func NewTraceLogger() *TraceLogger {
-	return &TraceLogger{
-		traces: make([]string, 0),
-		depth:  0,
-		stack:  make([]Iterator, 0),
-	}
-}
-
-// EnterIterator logs entering an iterator and pushes it onto the stack
-func (t *TraceLogger) EnterIterator(it Iterator, resources []Object, subject ObjectAndRelation) {
-	// Get iterator name from Explain
-	explain := it.Explain()
-	iteratorType := explain.Name
-	if iteratorType == "" {
-		iteratorType = explain.Info
-	}
-
-	indent := strings.Repeat("  ", t.depth)
-	resourceStrs := make([]string, len(resources))
-	for i, r := range resources {
-		resourceStrs[i] = fmt.Sprintf("%s:%s", r.ObjectType, r.ObjectID)
-	}
-	t.traces = append(t.traces, fmt.Sprintf("%s-> %s: check(%s, %s:%s)",
-		indent, iteratorType, strings.Join(resourceStrs, ","), subject.ObjectType, subject.ObjectID))
-	t.depth++
-	t.stack = append(t.stack, it) // Push iterator pointer onto stack
-}
-
-// ExitIterator logs exiting an iterator and pops it from the stack
-func (t *TraceLogger) ExitIterator(it Iterator, paths []Path) {
-	// Pop from stack to maintain stack consistency
-	if len(t.stack) > 0 {
-		t.stack = t.stack[:len(t.stack)-1]
-	}
-	t.depth--
-
-	// Get iterator name from Explain
-	explain := it.Explain()
-	iteratorType := explain.Name
-	if iteratorType == "" {
-		iteratorType = explain.Info
-	}
-
-	indent := strings.Repeat("  ", t.depth)
-	pathStrs := make([]string, len(paths))
-	for i, p := range paths {
-		caveatInfo := ""
-		if p.Caveat != nil {
-			// Extract caveat name from CaveatExpression
-			if p.Caveat.GetCaveat() != nil {
-				caveatInfo = fmt.Sprintf("[%s]", p.Caveat.GetCaveat().CaveatName)
-			} else {
-				caveatInfo = "[complex_caveat]"
-			}
-		}
-		pathStrs[i] = fmt.Sprintf("%s:%s#%s@%s:%s%s",
-			p.Resource.ObjectType, p.Resource.ObjectID, p.Relation,
-			p.Subject.ObjectType, p.Subject.ObjectID, caveatInfo)
-	}
-	t.traces = append(t.traces, fmt.Sprintf("%s<- %s: returned %d paths: [%s]",
-		indent, iteratorType, len(paths), strings.Join(pathStrs, ", ")))
-}
-
-// LogStep logs an intermediate step within an iterator, using the iterator pointer to find the correct indentation level
-func (t *TraceLogger) LogStep(it Iterator, step string, data ...any) {
-	// Find the iterator's position in the stack by comparing pointers
-	indentLevel := 0
-	found := false
-
-	for i, stackIt := range t.stack {
-		if stackIt == it {
-			indentLevel = i + 1 // +1 because we want to be indented inside the iterator
-			found = true
-			break
-		}
-	}
-
-	if !found {
-		// Iterator not found in stack, use current depth
-		indentLevel = t.depth
-	}
-
-	// Get iterator name from Explain
-	explain := it.Explain()
-	iteratorName := explain.Name
-	if iteratorName == "" {
-		iteratorName = explain.Info
-	}
-
-	indent := strings.Repeat("  ", indentLevel)
-	message := fmt.Sprintf(step, data...)
-	t.traces = append(t.traces, fmt.Sprintf("%s   %s: %s", indent, iteratorName, message))
-}
-
-// DumpTrace returns all traces as a string
-func (t *TraceLogger) DumpTrace() string {
-	return strings.Join(t.traces, "\n")
-}
 
 // Context represents a single execution of a query.
 // It is both a standard context.Context and all the query-time specific handles needed to evaluate a query, such as which datastore it is running against.
@@ -124,11 +17,97 @@ func (t *TraceLogger) DumpTrace() string {
 type Context struct {
 	context.Context
 	Executor          Executor
-	Reader            datastore.Reader // Datastore reader for this query at a specific revision
+	Reader            datalayer.RevisionedReader // Datastore reader for this query at a specific revision
 	CaveatContext     map[string]any
 	CaveatRunner      *caveats.CaveatRunner
-	TraceLogger       *TraceLogger // For debugging iterator execution
+	TraceLogger       *TraceLogger // For debugging iterator execution (used by TraceStep calls inside iterators)
 	MaxRecursionDepth int          // Maximum depth for recursive iterators (0 = use default of 10)
+
+	// Pagination options for IterSubjects and IterResources
+	PaginationCursors map[string]*tuple.Relationship // Cursors for pagination, keyed by iterator ID
+	PaginationLimit   *uint64                        // Limit for pagination (max number of results to return)
+	PaginationSort    options.SortOrder              // Sort order for pagination
+
+	// observers holds the list of Observer implementations to notify during query execution.
+	observers []Observer
+
+	// recursiveFrontierCollectors holds frontier collections for BFS IterSubjects.
+	// Key: RecursiveIterator.CanonicalKey().Hash()
+	// Value: collected Objects for the next frontier
+	// A non-nil entry for an ID enables collection mode for that RecursiveIterator.
+	recursiveFrontierCollectors map[uint64][]Object
+}
+
+// NewLocalContext creates a new query execution context with a LocalExecutor.
+// This is a convenience constructor for tests and local execution scenarios.
+func NewLocalContext(stdContext context.Context, opts ...ContextOption) *Context {
+	ctx := &Context{
+		Context:  stdContext,
+		Executor: LocalExecutor{},
+	}
+	for _, opt := range opts {
+		opt(ctx)
+	}
+	return ctx
+}
+
+// ContextOption is a function that configures a Context.
+type ContextOption func(*Context)
+
+// WithReader sets the datastore reader for the context.
+func WithReader(reader datalayer.RevisionedReader) ContextOption {
+	return func(ctx *Context) { ctx.Reader = reader }
+}
+
+// WithObserver adds an Observer to the context.
+func WithObserver(o Observer) ContextOption {
+	return func(ctx *Context) { ctx.observers = append(ctx.observers, o) }
+}
+
+// WithTraceLogger sets the trace logger for the context.
+func WithTraceLogger(logger *TraceLogger) ContextOption {
+	return func(ctx *Context) { ctx.TraceLogger = logger }
+}
+
+// WithCaveatRunner sets the caveat runner for the context.
+func WithCaveatRunner(runner *caveats.CaveatRunner) ContextOption {
+	return func(ctx *Context) { ctx.CaveatRunner = runner }
+}
+
+// WithCaveatContext sets the caveat context for the context.
+func WithCaveatContext(caveatCtx map[string]any) ContextOption {
+	return func(ctx *Context) { ctx.CaveatContext = caveatCtx }
+}
+
+// WithMaxRecursionDepth sets the maximum recursion depth for the context.
+func WithMaxRecursionDepth(depth int) ContextOption {
+	return func(ctx *Context) { ctx.MaxRecursionDepth = depth }
+}
+
+// WithPaginationLimit sets the pagination limit for the context.
+func WithPaginationLimit(limit uint64) ContextOption {
+	return func(ctx *Context) { ctx.PaginationLimit = &limit }
+}
+
+// WithPaginationSort sets the pagination sort order for the context.
+func WithPaginationSort(sort options.SortOrder) ContextOption {
+	return func(ctx *Context) { ctx.PaginationSort = sort }
+}
+
+// GetPaginationCursor retrieves the cursor for a specific iterator ID.
+func (ctx *Context) GetPaginationCursor(iteratorID string) *tuple.Relationship {
+	if ctx.PaginationCursors == nil {
+		return nil
+	}
+	return ctx.PaginationCursors[iteratorID]
+}
+
+// SetPaginationCursor sets the cursor for a specific iterator ID.
+func (ctx *Context) SetPaginationCursor(iteratorID string, cursor *tuple.Relationship) {
+	if ctx.PaginationCursors == nil {
+		ctx.PaginationCursors = make(map[string]*tuple.Relationship)
+	}
+	ctx.PaginationCursors[iteratorID] = cursor
 }
 
 func (ctx *Context) TraceStep(it Iterator, step string, data ...any) {
@@ -137,9 +116,9 @@ func (ctx *Context) TraceStep(it Iterator, step string, data ...any) {
 	}
 }
 
-func (ctx *Context) TraceEnter(it Iterator, resources []Object, subject ObjectAndRelation) {
+func (ctx *Context) TraceEnter(it Iterator, traceString string) {
 	if ctx.TraceLogger != nil {
-		ctx.TraceLogger.EnterIterator(it, resources, subject)
+		ctx.TraceLogger.EnterIterator(it, traceString)
 	}
 }
 
@@ -149,16 +128,16 @@ func (ctx *Context) TraceExit(it Iterator, paths []Path) {
 	}
 }
 
-// Helper methods for conditional tracing with iterator name extraction
+// shouldTrace reports whether tracing is enabled on this context.
 func (ctx *Context) shouldTrace() bool {
 	return ctx.TraceLogger != nil
 }
 
-func (ctx *Context) traceEnterIfEnabled(it Iterator, resources []Object, subject ObjectAndRelation) Iterator {
+func (ctx *Context) traceEnterIfEnabled(it Iterator, traceString string) Iterator {
 	if !ctx.shouldTrace() {
 		return nil
 	}
-	ctx.TraceEnter(it, resources, subject)
+	ctx.TraceEnter(it, traceString)
 	return it
 }
 
@@ -197,6 +176,38 @@ func (ctx *Context) wrapPathSeqForTracing(it Iterator, pathSeq PathSeq) PathSeq 
 	}
 }
 
+// notifyEnterIterator calls ObserveEnterIterator on all registered observers.
+func (ctx *Context) notifyEnterIterator(op ObserverOperation, key CanonicalKey) {
+	for _, obs := range ctx.observers {
+		obs.ObserveEnterIterator(op, key)
+	}
+}
+
+// wrapPathSeqWithObservers wraps a PathSeq to notify all registered observers of paths and completion.
+// Returns the original PathSeq unchanged when there are no observers.
+func (ctx *Context) wrapPathSeqWithObservers(op ObserverOperation, key CanonicalKey, pathSeq PathSeq) PathSeq {
+	if len(ctx.observers) == 0 {
+		return pathSeq
+	}
+	return func(yield func(Path, error) bool) {
+		defer func() {
+			for _, obs := range ctx.observers {
+				obs.ObserveReturnIterator(op, key)
+			}
+		}()
+		for path, err := range pathSeq {
+			if err == nil {
+				for _, obs := range ctx.observers {
+					obs.ObservePath(op, key, path)
+				}
+			}
+			if !yield(path, err) {
+				return
+			}
+		}
+	}
+}
+
 // Check tests if, for the underlying set of relationships (which may be a full expression or a basic lookup, depending on the iterator)
 // any of the `resources` are connected to `subject`.
 // Returns the sequence of matching paths, if they exist, at most `len(resources)`.
@@ -205,46 +216,59 @@ func (ctx *Context) Check(it Iterator, resources []Object, subject ObjectAndRela
 		return nil, spiceerrors.MustBugf("no executor has been set")
 	}
 
-	tracedIterator := ctx.traceEnterIfEnabled(it, resources, subject)
+	tracedIterator := ctx.traceEnterIfEnabled(it, checkTraceString(resources, subject))
+	key := it.CanonicalKey()
+	ctx.notifyEnterIterator(CheckOperation, key)
 
 	pathSeq, err := ctx.Executor.Check(ctx, it, resources, subject)
 	if err != nil {
 		return nil, err
 	}
 
-	return ctx.wrapPathSeqForTracing(tracedIterator, pathSeq), nil
+	pathSeq = ctx.wrapPathSeqForTracing(tracedIterator, pathSeq)
+	return ctx.wrapPathSeqWithObservers(CheckOperation, key, pathSeq), nil
 }
 
 // IterSubjects returns a sequence of all the paths in this set that match the given resource.
-func (ctx *Context) IterSubjects(it Iterator, resource Object) (PathSeq, error) {
+// The filterSubjectType parameter filters results to only include subjects matching the
+// specified ObjectType. If filterSubjectType.Type is empty, no filtering is applied.
+func (ctx *Context) IterSubjects(it Iterator, resource Object, filterSubjectType ObjectType) (PathSeq, error) {
 	if ctx.Executor == nil {
 		return nil, spiceerrors.MustBugf("no executor has been set")
 	}
 
-	tracedIterator := ctx.traceEnterIfEnabled(it, []Object{resource}, ObjectAndRelation{})
+	tracedIterator := ctx.traceEnterIfEnabled(it, iterSubjectsTraceString(resource, filterSubjectType))
+	key := it.CanonicalKey()
+	ctx.notifyEnterIterator(IterSubjectsOperation, key)
 
-	pathSeq, err := ctx.Executor.IterSubjects(ctx, it, resource)
+	pathSeq, err := ctx.Executor.IterSubjects(ctx, it, resource, filterSubjectType)
 	if err != nil {
 		return nil, err
 	}
 
-	return ctx.wrapPathSeqForTracing(tracedIterator, pathSeq), nil
+	pathSeq = ctx.wrapPathSeqForTracing(tracedIterator, pathSeq)
+	return ctx.wrapPathSeqWithObservers(IterSubjectsOperation, key, pathSeq), nil
 }
 
 // IterResources returns a sequence of all the relations in this set that match the given subject.
-func (ctx *Context) IterResources(it Iterator, subject ObjectAndRelation) (PathSeq, error) {
+// The filterResourceType parameter filters results to only include resources matching the
+// specified ObjectType. If filterResourceType.Type is empty, no filtering is applied.
+func (ctx *Context) IterResources(it Iterator, subject ObjectAndRelation, filterResourceType ObjectType) (PathSeq, error) {
 	if ctx.Executor == nil {
 		return nil, spiceerrors.MustBugf("no executor has been set")
 	}
 
-	tracedIterator := ctx.traceEnterIfEnabled(it, []Object{}, subject)
+	tracedIterator := ctx.traceEnterIfEnabled(it, iterResourcesTraceString(subject, filterResourceType))
+	key := it.CanonicalKey()
+	ctx.notifyEnterIterator(IterResourcesOperation, key)
 
-	pathSeq, err := ctx.Executor.IterResources(ctx, it, subject)
+	pathSeq, err := ctx.Executor.IterResources(ctx, it, subject, filterResourceType)
 	if err != nil {
 		return nil, err
 	}
 
-	return ctx.wrapPathSeqForTracing(tracedIterator, pathSeq), nil
+	pathSeq = ctx.wrapPathSeqForTracing(tracedIterator, pathSeq)
+	return ctx.wrapPathSeqWithObservers(IterResourcesOperation, key, pathSeq), nil
 }
 
 // Executor as chooses how to proceed given an iterator -- perhaps in parallel, perhaps by RPC, etc -- and chooses how to process iteration from the subtree.
@@ -257,8 +281,51 @@ type Executor interface {
 	Check(ctx *Context, it Iterator, resources []Object, subject ObjectAndRelation) (PathSeq, error)
 
 	// IterSubjects returns a sequence of all the relations in this set that match the given resource.
-	IterSubjects(ctx *Context, it Iterator, resource Object) (PathSeq, error)
+	// The filterSubjectType parameter filters results to only include subjects matching the
+	// specified ObjectType. If filterSubjectType.Type is empty, no filtering is applied.
+	IterSubjects(ctx *Context, it Iterator, resource Object, filterSubjectType ObjectType) (PathSeq, error)
 
 	// IterResources returns a sequence of all the relations in this set that match the given subject.
-	IterResources(ctx *Context, it Iterator, subject ObjectAndRelation) (PathSeq, error)
+	// The filterResourceType parameter filters results to only include resources matching the
+	// specified ObjectType. If filterResourceType.Type is empty, no filtering is applied.
+	IterResources(ctx *Context, it Iterator, subject ObjectAndRelation, filterResourceType ObjectType) (PathSeq, error)
+}
+
+// EnableFrontierCollection enables frontier collection for a RecursiveIterator.
+// Creates a non-nil entry in the map, which signals collection mode.
+func (ctx *Context) EnableFrontierCollection(iteratorID uint64) {
+	if ctx.recursiveFrontierCollectors == nil {
+		ctx.recursiveFrontierCollectors = make(map[uint64][]Object)
+	}
+	ctx.recursiveFrontierCollectors[iteratorID] = []Object{}
+}
+
+// CollectFrontierObject appends an object to the frontier collection.
+// Only appends if collection mode is enabled (non-nil entry exists).
+func (ctx *Context) CollectFrontierObject(iteratorID uint64, obj Object) {
+	if ctx.recursiveFrontierCollectors == nil {
+		return
+	}
+	if collection, exists := ctx.recursiveFrontierCollectors[iteratorID]; exists {
+		ctx.recursiveFrontierCollectors[iteratorID] = append(collection, obj)
+	}
+}
+
+// ExtractFrontierCollection retrieves and removes the collected frontier.
+func (ctx *Context) ExtractFrontierCollection(iteratorID uint64) []Object {
+	if ctx.recursiveFrontierCollectors == nil {
+		return nil
+	}
+	collection := ctx.recursiveFrontierCollectors[iteratorID]
+	delete(ctx.recursiveFrontierCollectors, iteratorID)
+	return collection
+}
+
+// IsCollectingFrontier checks if collection mode is enabled (non-nil entry exists).
+func (ctx *Context) IsCollectingFrontier(iteratorID uint64) bool {
+	if ctx.recursiveFrontierCollectors == nil {
+		return false
+	}
+	_, exists := ctx.recursiveFrontierCollectors[iteratorID]
+	return exists
 }

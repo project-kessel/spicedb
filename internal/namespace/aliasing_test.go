@@ -190,11 +190,10 @@ func TestAliasing(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			require := require.New(t)
 
-			ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+			ds, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 			require.NoError(err)
 
 			lastRevision, err := ds.HeadRevision(t.Context())
@@ -202,11 +201,11 @@ func TestAliasing(t *testing.T) {
 
 			ts := schema.NewTypeSystem(schema.ResolverForDatastoreReader(ds.SnapshotReader(lastRevision)))
 
-			def, err := schema.NewDefinition(ts, tc.toCheck)
+			def, err := schema.NewDefinition(tc.toCheck)
 			require.NoError(err)
 
 			ctx := t.Context()
-			vdef, terr := def.Validate(ctx)
+			vdef, terr := ts.Validate(ctx, def)
 			require.NoError(terr)
 
 			computed, aerr := computePermissionAliases(vdef)

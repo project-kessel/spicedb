@@ -276,13 +276,10 @@ func TestReadRelationships(t *testing.T) {
 	}
 
 	for _, pageSize := range []int{0, 1, 5, 10} {
-		pageSize := pageSize
 		t.Run(fmt.Sprintf("page%d_", pageSize), func(t *testing.T) {
 			for _, delta := range testTimedeltas {
-				delta := delta
 				t.Run(fmt.Sprintf("fuzz%d", delta/time.Millisecond), func(t *testing.T) {
 					for _, tc := range testCases {
-						tc := tc
 						t.Run(tc.name, func(t *testing.T) {
 							require := require.New(t)
 							conn, cleanup, _, revision := testserver.NewTestServer(require, delta, memdb.DisableGC, true, tf.StandardDatastoreWithData)
@@ -299,7 +296,7 @@ func TestReadRelationships(t *testing.T) {
 
 							uintPageSize, err := safecast.Convert[uint32](pageSize)
 							require.NoError(err)
-							for i := 0; i < 20; i++ {
+							for range 20 {
 								stream, err := client.ReadRelationships(t.Context(), &v1.ReadRelationshipsRequest{
 									Consistency: &v1.Consistency{
 										Requirement: &v1.Consistency_AtLeastAsFresh{
@@ -876,17 +873,15 @@ func TestInvalidWriteRelationship(t *testing.T) {
 	}
 
 	for _, delta := range testTimedeltas {
-		delta := delta
 		t.Run(fmt.Sprintf("fuzz%d", delta/time.Millisecond), func(t *testing.T) {
 			for _, tc := range testCases {
-				tc := tc
 				t.Run(tc.name, func(t *testing.T) {
 					require := require.New(t)
 					conn, cleanup, _, _ := testserver.NewTestServer(require, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
 					client := v1.NewPermissionsServiceClient(conn)
 					t.Cleanup(cleanup)
 
-					var preconditions []*v1.Precondition
+					preconditions := make([]*v1.Precondition, 0, len(tc.preconditions))
 					for _, filter := range tc.preconditions {
 						preconditions = append(preconditions, &v1.Precondition{
 							Operation: v1.Precondition_OPERATION_MUST_MATCH,
@@ -894,7 +889,7 @@ func TestInvalidWriteRelationship(t *testing.T) {
 						})
 					}
 
-					var mutations []*v1.RelationshipUpdate
+					mutations := make([]*v1.RelationshipUpdate, 0, len(tc.relationships))
 					for _, rel := range tc.relationships {
 						mutations = append(mutations, &v1.RelationshipUpdate{
 							Operation:    v1.RelationshipUpdate_OPERATION_TOUCH,
@@ -1248,9 +1243,7 @@ func TestDeleteRelationships(t *testing.T) {
 		},
 	}
 	for _, delta := range testTimedeltas {
-		delta := delta
 		for _, tc := range testCases {
-			tc := tc
 			t.Run(fmt.Sprintf("fuzz%d/%s", delta/time.Millisecond, tc.name), func(t *testing.T) {
 				require := require.New(t)
 				conn, cleanup, ds, revision := testserver.NewTestServer(require, delta, memdb.DisableGC, true, tf.StandardDatastoreWithData)
@@ -1350,7 +1343,6 @@ func TestDeleteRelationshipsBeyondLimitPartial(t *testing.T) {
 	}
 
 	for _, batchSize := range []int{5, 6, 7, 10} {
-		batchSize := batchSize
 		require.Greater(t, len(expected), batchSize)
 
 		t.Run(fmt.Sprintf("batchsize-%d", batchSize), func(t *testing.T) {
@@ -1362,7 +1354,7 @@ func TestDeleteRelationshipsBeyondLimitPartial(t *testing.T) {
 			iterations := 0
 			uintBatchSize, err := safecast.Convert[uint32](batchSize)
 			require.NoError(err)
-			for i := 0; i < 10; i++ {
+			for i := range 10 {
 				iterations++
 
 				headRev, err := ds.HeadRevision(t.Context())
@@ -1653,7 +1645,7 @@ func TestWriteRelationshipsUpdatesOverLimit(t *testing.T) {
 	})
 
 	require.Error(err)
-	require.Contains(err.Error(), "update count of 2 is greater than maximum allowed of 1")
+	require.Contains(err.Error(), "too many updates (2) for WriteRelationships call (maximum: 1); consider using ImportBulkRelationships API instead")
 }
 
 func TestWriteRelationshipsCaveatExceedsMaxSize(t *testing.T) {
@@ -1710,9 +1702,9 @@ func TestReadRelationshipsWithTimeout(t *testing.T) {
 
 	// Write additional test data.
 	counter := 0
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		updates := make([]*v1.RelationshipUpdate, 0, 100)
-		for j := 0; j < 1000; j++ {
+		for range 1000 {
 			counter++
 			updates = append(updates, &v1.RelationshipUpdate{
 				Operation:    v1.RelationshipUpdate_OPERATION_CREATE,
@@ -1727,7 +1719,7 @@ func TestReadRelationshipsWithTimeout(t *testing.T) {
 	}
 
 	retryCount := 5
-	for i := 0; i < retryCount; i++ {
+	for range retryCount {
 		// Perform a read and ensures it times out.
 		stream, err := client.ReadRelationships(t.Context(), &v1.ReadRelationshipsRequest{
 			Consistency: &v1.Consistency{
@@ -1842,11 +1834,10 @@ func TestManyConcurrentWriteRelationshipsReturnsSerializationErrorOnMemdb(t *tes
 	// is limited.
 	g := errgroup.Group{}
 
-	for i := 0; i < 50; i++ {
-		i := i
+	for i := range 50 {
 		g.Go(func() error {
-			updates := []*v1.RelationshipUpdate{}
-			for j := 0; j < 500; j++ {
+			updates := make([]*v1.RelationshipUpdate, 0, 500) //nolint:prealloc  // for some reason prealloc thinks this should be 1k
+			for j := range 500 {
 				updates = append(updates, &v1.RelationshipUpdate{
 					Operation:    v1.RelationshipUpdate_OPERATION_CREATE,
 					Relationship: tuple.ToV1Relationship(tuple.MustParse(fmt.Sprintf("document:doc-%d-%d#viewer@user:tom", i, j))),
@@ -2317,7 +2308,7 @@ func TestReadRelationshipsWithTraitsAndFilters(t *testing.T) {
 
 			// Write the test relationships if any
 			if len(tc.setupRelationships) > 0 {
-				var updates []*v1.RelationshipUpdate
+				updates := make([]*v1.RelationshipUpdate, 0, len(tc.setupRelationships))
 				for _, relStr := range tc.setupRelationships {
 					rel := tuple.MustParse(relStr)
 					updates = append(updates, &v1.RelationshipUpdate{

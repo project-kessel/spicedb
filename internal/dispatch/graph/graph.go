@@ -16,10 +16,10 @@ import (
 	"github.com/authzed/spicedb/internal/dispatch"
 	"github.com/authzed/spicedb/internal/graph"
 	log "github.com/authzed/spicedb/internal/logging"
-	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/telemetry/otelconv"
 	"github.com/authzed/spicedb/pkg/cache"
 	caveattypes "github.com/authzed/spicedb/pkg/caveats/types"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/middleware/nodeid"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
@@ -204,20 +204,28 @@ type localDispatcher struct {
 }
 
 func (ld *localDispatcher) loadNamespace(ctx context.Context, nsName string, revision datastore.Revision) (*core.NamespaceDefinition, error) {
-	ds := datastoremw.MustFromContext(ctx).SnapshotReader(revision)
+	reader := datalayer.MustFromContext(ctx).SnapshotReader(revision)
 
 	// Load namespace and relation from the datastore
-	ns, _, err := ds.ReadNamespaceByName(ctx, nsName)
+	schemaReader, err := reader.ReadSchema()
 	if err != nil {
 		return nil, rewriteNamespaceError(err)
 	}
+	revDef, found, err := schemaReader.LookupTypeDefByName(ctx, nsName)
+	if err != nil {
+		return nil, rewriteNamespaceError(err)
+	}
+	if !found {
+		return nil, rewriteNamespaceError(datastore.NewNamespaceNotFoundErr(nsName))
+	}
+	ns := revDef.Definition
 
-	return ns, err
+	return ns, nil
 }
 
 func (ld *localDispatcher) parseRevision(ctx context.Context, s string) (datastore.Revision, error) {
-	ds := datastoremw.MustFromContext(ctx)
-	return ds.RevisionFromString(s)
+	dl := datalayer.MustFromContext(ctx)
+	return dl.RevisionFromString(s)
 }
 
 func (ld *localDispatcher) lookupRelation(_ context.Context, ns *core.NamespaceDefinition, relationName string) (*core.Relation, error) {
@@ -464,6 +472,9 @@ func (ld *localDispatcher) DispatchLookupSubjects(
 }
 
 func (ld *localDispatcher) Close() error {
+	if ld.lookupResourcesHandler3 != nil {
+		ld.lookupResourcesHandler3.Close()
+	}
 	return nil
 }
 

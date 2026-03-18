@@ -22,6 +22,7 @@ import (
 	"github.com/authzed/spicedb/internal/testserver/datastore/config"
 	caveattypes "github.com/authzed/spicedb/pkg/caveats/types"
 	dsconfig "github.com/authzed/spicedb/pkg/cmd/datastore"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/validationfile"
 )
@@ -29,7 +30,7 @@ import (
 func TestMemdbSteelThreads(t *testing.T) {
 	for _, tc := range steelThreadTestCases {
 		t.Run(tc.name, func(t *testing.T) {
-			emptyDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 5*time.Second, 2*time.Hour)
+			emptyDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 5*time.Second, 2*time.Hour)
 			require.NoError(t, err)
 
 			runSteelThreadTest(t, tc, emptyDS)
@@ -54,7 +55,6 @@ func TestNonMemdbSteelThreads(t *testing.T) {
 						dsconfig.WithRevisionQuantization(10),
 						dsconfig.WithMaxRetries(50),
 						dsconfig.WithExperimentalColumnOptimization(true),
-						dsconfig.WithRequestHedgingEnabled(false),
 						dsconfig.WithWriteAcquisitionTimeout(5*time.Second)))
 
 					ds = indexcheck.WrapWithIndexCheckingDatastoreProxyIfApplicable(ds)
@@ -76,7 +76,7 @@ func runSteelThreadTest(t *testing.T, tc steelThreadTestCase, ds datastore.Datas
 		ds,
 		func(ds datastore.Datastore, require *require.Assertions) (datastore.Datastore, datastore.Revision) {
 			// Load in the data.
-			_, rev, err := validationfile.PopulateFromFiles(ctx, ds, caveattypes.Default.TypeSet, []string{"testdata/" + tc.datafile})
+			_, rev, err := validationfile.PopulateFromFiles(ctx, datalayer.NewDataLayer(ds), caveattypes.Default.TypeSet, []string{"testdata/" + tc.datafile})
 			require.NoError(err)
 
 			return ds, rev

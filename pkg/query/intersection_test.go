@@ -1,6 +1,7 @@
 package query
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -15,23 +16,17 @@ func TestIntersectionIterator(t *testing.T) {
 	require := require.New(t)
 
 	// Create test context
-	ctx := &Context{
-		Context:  t.Context(),
-		Executor: LocalExecutor{},
-	}
+	ctx := NewLocalContext(t.Context())
 
 	t.Run("Check_Intersection", func(t *testing.T) {
 		t.Parallel()
 
 		// Create an intersection where both iterators have matching data
-		intersect := NewIntersection()
-
 		// Both iterators should have alice with access to doc1
 		documentAccess := NewDocumentAccessFixedIterator()
 		multiRole := NewMultiRoleFixedIterator()
 
-		intersect.addSubIterator(documentAccess)
-		intersect.addSubIterator(multiRole)
+		intersect := NewIntersectionIterator(documentAccess, multiRole)
 
 		pathSeq, err := ctx.Check(intersect, NewObjects("document", "doc1"), NewObject("user", "alice").WithEllipses())
 		require.NoError(err)
@@ -54,14 +49,11 @@ func TestIntersectionIterator(t *testing.T) {
 		t.Parallel()
 
 		// Create an intersection with contradictory requirements
-		intersect := NewIntersection()
-
 		// Use iterators that don't have overlapping data
 		documentAccess := NewDocumentAccessFixedIterator()
 		singleUser := NewSingleUserFixedIterator("bob") // bob won't be in documentAccess
 
-		intersect.addSubIterator(documentAccess)
-		intersect.addSubIterator(singleUser)
+		intersect := NewIntersectionIterator(documentAccess, singleUser)
 
 		// Use a subject that doesn't exist in both
 		pathSeq, err := ctx.Check(intersect, NewObjects("document", "doc1"), NewObject("user", "bob").WithEllipses())
@@ -77,7 +69,7 @@ func TestIntersectionIterator(t *testing.T) {
 	t.Run("Check_NoSubIterators", func(t *testing.T) {
 		t.Parallel()
 
-		intersect := NewIntersection()
+		intersect := NewIntersectionIterator()
 
 		// Empty intersection should return empty results
 		pathSeq, err := ctx.Check(intersect, NewObjects("document", "doc1"), NewObject("user", "alice").WithEllipses())
@@ -94,10 +86,8 @@ func TestIntersectionIterator(t *testing.T) {
 	t.Run("Check_SingleSubIterator", func(t *testing.T) {
 		t.Parallel()
 
-		intersect := NewIntersection()
-
 		documentAccess := NewDocumentAccessFixedIterator()
-		intersect.addSubIterator(documentAccess)
+		intersect := NewIntersectionIterator(documentAccess)
 
 		pathSeq, err := ctx.Check(intersect, NewObjects("document", "doc1"), NewObject("user", "alice").WithEllipses())
 		require.NoError(err)
@@ -110,10 +100,8 @@ func TestIntersectionIterator(t *testing.T) {
 	t.Run("Check_EmptyResourceList", func(t *testing.T) {
 		t.Parallel()
 
-		intersect := NewIntersection()
-
 		documentAccess := NewDocumentAccessFixedIterator()
-		intersect.addSubIterator(documentAccess)
+		intersect := NewIntersectionIterator(documentAccess)
 
 		pathSeq, err := ctx.Check(intersect, []Object{}, NewObject("user", "alice").WithEllipses())
 		require.NoError(err)
@@ -130,13 +118,10 @@ func TestIntersectionIterator(t *testing.T) {
 	t.Run("Check_NoMatchingSubject", func(t *testing.T) {
 		t.Parallel()
 
-		intersect := NewIntersection()
-
 		documentAccess := NewDocumentAccessFixedIterator()
 		multiRole := NewMultiRoleFixedIterator()
 
-		intersect.addSubIterator(documentAccess)
-		intersect.addSubIterator(multiRole)
+		intersect := NewIntersectionIterator(documentAccess, multiRole)
 
 		pathSeq, err := ctx.Check(intersect, NewObjects("document", "doc1"), NewObject("user", "nonexistent").WithEllipses())
 		require.NoError(err)
@@ -148,22 +133,42 @@ func TestIntersectionIterator(t *testing.T) {
 		}
 	})
 
-	t.Run("IterSubjects_Unimplemented", func(t *testing.T) {
+	t.Run("IterSubjects", func(t *testing.T) {
 		t.Parallel()
 
-		intersect := NewIntersection()
-		require.Panics(func() {
-			_, _ = ctx.IterSubjects(intersect, NewObject("document", "doc1"))
-		})
+		// Add test iterators
+		documentAccess := NewDocumentAccessFixedIterator()
+		multiRole := NewMultiRoleFixedIterator()
+
+		intersect := NewIntersectionIterator(documentAccess, multiRole)
+
+		pathSeq, err := ctx.IterSubjects(intersect, NewObject("document", "doc1"), NoObjectFilter())
+		require.NoError(err)
+
+		paths, err := CollectAll(pathSeq)
+		require.NoError(err)
+
+		// Should return subjects that are in BOTH iterators
+		require.NotEmpty(paths, "Intersection should find common subjects")
 	})
 
-	t.Run("IterResources_Unimplemented", func(t *testing.T) {
+	t.Run("IterResources", func(t *testing.T) {
 		t.Parallel()
 
-		intersect := NewIntersection()
-		require.Panics(func() {
-			_, _ = ctx.IterResources(intersect, NewObject("user", "alice").WithEllipses())
-		})
+		// Add test iterators
+		documentAccess := NewDocumentAccessFixedIterator()
+		multiRole := NewMultiRoleFixedIterator()
+
+		intersect := NewIntersectionIterator(documentAccess, multiRole)
+
+		pathSeq, err := ctx.IterResources(intersect, NewObject("user", "alice").WithEllipses(), NoObjectFilter())
+		require.NoError(err)
+
+		paths, err := CollectAll(pathSeq)
+		require.NoError(err)
+
+		// Should return resources that are in BOTH iterators
+		require.NotEmpty(paths, "Intersection should find common resources")
 	})
 }
 
@@ -173,18 +178,12 @@ func TestIntersectionIteratorClone(t *testing.T) {
 	require := require.New(t)
 
 	// Create test context
-	ctx := &Context{
-		Context:  t.Context(),
-		Executor: LocalExecutor{},
-	}
-
-	original := NewIntersection()
+	ctx := NewLocalContext(t.Context())
 
 	documentAccess := NewDocumentAccessFixedIterator()
 	multiRole := NewMultiRoleFixedIterator()
 
-	original.addSubIterator(documentAccess)
-	original.addSubIterator(multiRole)
+	original := NewIntersectionIterator(documentAccess, multiRole)
 
 	cloned := original.Clone()
 	require.NotSame(original, cloned, "cloned iterator should be a different object")
@@ -193,7 +192,7 @@ func TestIntersectionIteratorClone(t *testing.T) {
 	originalExplain := original.Explain()
 	clonedExplain := cloned.Explain()
 	require.Equal(originalExplain.Info, clonedExplain.Info)
-	require.Equal(len(originalExplain.SubExplain), len(clonedExplain.SubExplain))
+	require.Len(clonedExplain.SubExplain, len(originalExplain.SubExplain))
 
 	// Test that both iterators produce the same results
 	resourceIDs := []string{"doc1"}
@@ -220,13 +219,7 @@ func TestIntersectionIteratorClone(t *testing.T) {
 	// Both iterators should produce identical results (order may vary)
 	require.Len(clonedResults, len(originalResults), "cloned iterator should produce same number of results")
 	for _, expectedPath := range originalResults {
-		found := false
-		for _, actualPath := range clonedResults {
-			if expectedPath.Equals(actualPath) {
-				found = true
-				break
-			}
-		}
+		found := slices.ContainsFunc(clonedResults, expectedPath.Equals)
 		require.True(found, "Expected path %v should be found in cloned results", expectedPath)
 	}
 }
@@ -239,10 +232,14 @@ func TestIntersectionIteratorExplain(t *testing.T) {
 	t.Run("EmptyIntersection", func(t *testing.T) {
 		t.Parallel()
 
-		intersect := NewIntersection()
+		// NewIntersectionIterator() with no args returns empty FixedIterator (canonical form)
+		intersect := NewIntersectionIterator()
+		_, isFixed := intersect.(*FixedIterator)
+		require.True(isFixed, "empty intersection should be canonicalized to FixedIterator")
+
 		explain := intersect.Explain()
-		require.Equal("Intersection", explain.Info)
-		require.Empty(explain.SubExplain, "empty intersection should have no sub-explains")
+		require.Contains(explain.Info, "Fixed", "empty intersection should be a FixedIterator")
+		require.Empty(explain.SubExplain, "empty fixed iterator should have no sub-explains")
 	})
 
 	t.Run("IntersectionWithSubIterators", func(t *testing.T) {
@@ -251,9 +248,7 @@ func TestIntersectionIteratorExplain(t *testing.T) {
 		documentAccess := NewDocumentAccessFixedIterator()
 		multiRole := NewMultiRoleFixedIterator()
 
-		intersect := NewIntersection()
-		intersect.addSubIterator(documentAccess)
-		intersect.addSubIterator(multiRole)
+		intersect := NewIntersectionIterator(documentAccess, multiRole)
 
 		explain := intersect.Explain()
 		require.Equal("Intersection", explain.Info)
@@ -271,21 +266,15 @@ func TestIntersectionIteratorEarlyTermination(t *testing.T) {
 	require := require.New(t)
 
 	// Create test context
-	ctx := &Context{
-		Context:  t.Context(),
-		Executor: LocalExecutor{},
-	}
+	ctx := NewLocalContext(t.Context())
 
 	// Create an intersection where the first iterator returns no results
 	// This should cause early termination
-	intersect := NewIntersection()
-
 	// First, add an iterator that will return no results for the given subject
 	emptyIterator := NewEmptyFixedIterator()
 	documentAccess := NewDocumentAccessFixedIterator()
 
-	intersect.addSubIterator(emptyIterator)
-	intersect.addSubIterator(documentAccess)
+	intersect := NewIntersectionIterator(emptyIterator, documentAccess)
 
 	// Use any subject - should get no results due to empty first iterator
 	pathSeq, err := ctx.Check(intersect, NewObjects("document", "doc1"), NewObject("user", "alice").WithEllipses())
@@ -306,10 +295,7 @@ func TestIntersectionIteratorCaveatCombination(t *testing.T) {
 	require := require.New(t)
 
 	// Create test context
-	ctx := &Context{
-		Context:  t.Context(),
-		Executor: LocalExecutor{},
-	}
+	ctx := NewLocalContext(t.Context())
 
 	t.Run("CombineTwoCaveats_AND_Logic", func(t *testing.T) {
 		t.Parallel()
@@ -337,9 +323,7 @@ func TestIntersectionIteratorCaveatCombination(t *testing.T) {
 		iter1 := NewFixedIterator(pathWithCaveat1)
 		iter2 := NewFixedIterator(pathWithCaveat2)
 
-		intersect := NewIntersection()
-		intersect.addSubIterator(iter1)
-		intersect.addSubIterator(iter2)
+		intersect := NewIntersectionIterator(iter1, iter2)
 
 		relSeq, err := ctx.Check(intersect, NewObjects("document", "doc1"), NewObject("user", "alice").WithEllipses())
 		require.NoError(err)
@@ -351,7 +335,7 @@ func TestIntersectionIteratorCaveatCombination(t *testing.T) {
 		relCaveat := rels[0].Caveat
 		require.NotNil(relCaveat, "Result should have combined caveat")
 		require.NotNil(relCaveat.GetOperation(), "Caveat should be an operation")
-		require.Equal(relCaveat.GetOperation().Op, core.CaveatOperation_AND, "Caveat should be an AND")
+		require.Equal(core.CaveatOperation_AND, relCaveat.GetOperation().Op, "Caveat should be an AND")
 		require.Len(relCaveat.GetOperation().GetChildren(), 2, "Caveat should be an AND of two children")
 	})
 
@@ -373,9 +357,7 @@ func TestIntersectionIteratorCaveatCombination(t *testing.T) {
 		iter1 := NewFixedIterator(pathWithCaveat)
 		iter2 := NewFixedIterator(pathNoCaveat)
 
-		intersect := NewIntersection()
-		intersect.addSubIterator(iter1)
-		intersect.addSubIterator(iter2)
+		intersect := NewIntersectionIterator(iter1, iter2)
 
 		relSeq, err := ctx.Check(intersect, NewObjects("document", "doc1"), NewObject("user", "alice").WithEllipses())
 		require.NoError(err)
@@ -414,9 +396,7 @@ func TestIntersectionIteratorCaveatCombination(t *testing.T) {
 		iter1 := NewFixedIterator(pathViewer, pathEditor)
 		iter2 := NewFixedIterator(pathViewer, pathEditor)
 
-		intersect := NewIntersection()
-		intersect.addSubIterator(iter1)
-		intersect.addSubIterator(iter2)
+		intersect := NewIntersectionIterator(iter1, iter2)
 
 		relSeq, err := ctx.Check(intersect, NewObjects("document", "doc1"), NewObject("user", "alice").WithEllipses())
 		require.NoError(err)
@@ -434,7 +414,7 @@ func TestIntersectionIteratorCaveatCombination(t *testing.T) {
 		require.Equal("user", path.Subject.ObjectType)
 		require.Equal("alice", path.Subject.ObjectID)
 		// The relation should be empty since different relations were merged (per Path.mergeFrom logic)
-		require.Equal("", path.Relation, "Different relations should result in empty relation")
+		require.Empty(path.Relation, "Different relations should result in empty relation")
 	})
 
 	t.Run("No_Common_Endpoints", func(t *testing.T) {
@@ -462,9 +442,7 @@ func TestIntersectionIteratorCaveatCombination(t *testing.T) {
 		iter1 := NewFixedIterator(pathDoc1Alice)
 		iter2 := NewFixedIterator(pathDoc2Bob)
 
-		intersect := NewIntersection()
-		intersect.addSubIterator(iter1)
-		intersect.addSubIterator(iter2)
+		intersect := NewIntersectionIterator(iter1, iter2)
 
 		relSeq, err := ctx.Check(intersect, NewObjects("document", "doc1", "doc2"), NewObject("user", "alice").WithEllipses())
 		require.NoError(err)
@@ -472,7 +450,7 @@ func TestIntersectionIteratorCaveatCombination(t *testing.T) {
 		rels, err := CollectAll(relSeq)
 		require.NoError(err)
 
-		require.Len(rels, 0, "Different endpoints should not intersect - should return empty")
+		require.Empty(rels, "Different endpoints should not intersect - should return empty")
 	})
 
 	t.Run("Three_Iterators_Mixed_Caveats", func(t *testing.T) {
@@ -503,10 +481,7 @@ func TestIntersectionIteratorCaveatCombination(t *testing.T) {
 		iter2 := NewFixedIterator(pathNoCaveat)
 		iter3 := NewFixedIterator(pathCaveat2)
 
-		intersect := NewIntersection()
-		intersect.addSubIterator(iter1)
-		intersect.addSubIterator(iter2)
-		intersect.addSubIterator(iter3)
+		intersect := NewIntersectionIterator(iter1, iter2, iter3)
 
 		relSeq, err := ctx.Check(intersect, NewObjects("document", "doc1"), NewObject("user", "alice").WithEllipses())
 		require.NoError(err)
@@ -518,7 +493,242 @@ func TestIntersectionIteratorCaveatCombination(t *testing.T) {
 		relCaveat := rels[0].Caveat
 		require.NotNil(relCaveat, "Final result should have combined caveat")
 		require.NotNil(relCaveat.GetOperation(), "Caveat should be an operation")
-		require.Equal(relCaveat.GetOperation().Op, core.CaveatOperation_AND, "Caveat should be an AND")
+		require.Equal(core.CaveatOperation_AND, relCaveat.GetOperation().Op, "Caveat should be an AND")
 		require.Len(relCaveat.GetOperation().GetChildren(), 2, "Caveat should be an AND of two children (caveat1 and caveat2)")
+	})
+}
+
+func TestIntersectionIterSubjects(t *testing.T) {
+	t.Parallel()
+
+	require := require.New(t)
+
+	ctx := &Context{
+		Context:  t.Context(),
+		Executor: LocalExecutor{},
+	}
+
+	t.Run("SimpleIntersection", func(t *testing.T) {
+		t.Parallel()
+
+		// Both iterators return alice for doc1
+		path1 := MustPathFromString("document:doc1#viewer@user:alice")
+		path2 := MustPathFromString("document:doc1#editor@user:alice")
+
+		iter1 := NewFixedIterator(path1)
+		iter2 := NewFixedIterator(path2)
+
+		intersect := NewIntersectionIterator(iter1, iter2)
+
+		pathSeq, err := ctx.IterSubjects(intersect, NewObject("document", "doc1"), NoObjectFilter())
+		require.NoError(err)
+
+		paths, err := CollectAll(pathSeq)
+		require.NoError(err)
+
+		require.Len(paths, 1, "Should find alice in intersection")
+		require.Equal("alice", paths[0].Subject.ObjectID)
+	})
+
+	t.Run("NoCommonSubjects", func(t *testing.T) {
+		t.Parallel()
+
+		// Different subjects in each iterator
+		path1 := MustPathFromString("document:doc1#viewer@user:alice")
+		path2 := MustPathFromString("document:doc1#editor@user:bob")
+
+		iter1 := NewFixedIterator(path1)
+		iter2 := NewFixedIterator(path2)
+
+		intersect := NewIntersectionIterator(iter1, iter2)
+
+		pathSeq, err := ctx.IterSubjects(intersect, NewObject("document", "doc1"), NoObjectFilter())
+		require.NoError(err)
+
+		paths, err := CollectAll(pathSeq)
+		require.NoError(err)
+
+		require.Empty(paths, "No common subjects should result in empty")
+	})
+
+	t.Run("EmptyIterator", func(t *testing.T) {
+		t.Parallel()
+
+		// One iterator is empty
+		path1 := MustPathFromString("document:doc1#viewer@user:alice")
+		iter1 := NewFixedIterator(path1)
+		iter2 := NewFixedIterator()
+
+		intersect := NewIntersectionIterator(iter1, iter2)
+
+		pathSeq, err := ctx.IterSubjects(intersect, NewObject("document", "doc1"), NoObjectFilter())
+		require.NoError(err)
+
+		paths, err := CollectAll(pathSeq)
+		require.NoError(err)
+
+		require.Empty(paths, "Empty iterator should short-circuit to empty result")
+	})
+
+	t.Run("ThreeIteratorsWithCommonSubject", func(t *testing.T) {
+		t.Parallel()
+
+		// Alice appears in all three
+		path1 := MustPathFromString("document:doc1#viewer@user:alice")
+		path2 := MustPathFromString("document:doc1#editor@user:alice")
+		path3 := MustPathFromString("document:doc1#owner@user:alice")
+
+		iter1 := NewFixedIterator(path1)
+		iter2 := NewFixedIterator(path2)
+		iter3 := NewFixedIterator(path3)
+
+		intersect := NewIntersectionIterator(iter1, iter2, iter3)
+
+		pathSeq, err := ctx.IterSubjects(intersect, NewObject("document", "doc1"), NoObjectFilter())
+		require.NoError(err)
+
+		paths, err := CollectAll(pathSeq)
+		require.NoError(err)
+
+		require.Len(paths, 1, "Should find alice in all three")
+		require.Equal("alice", paths[0].Subject.ObjectID)
+	})
+
+	t.Run("CaveatCombination", func(t *testing.T) {
+		t.Parallel()
+
+		// Both have alice with different caveats
+		path1 := MustPathFromString("document:doc1#viewer@user:alice")
+		path1.Caveat = &core.CaveatExpression{
+			OperationOrCaveat: &core.CaveatExpression_Caveat{
+				Caveat: &core.ContextualizedCaveat{
+					CaveatName: "caveat1",
+				},
+			},
+		}
+
+		path2 := MustPathFromString("document:doc1#editor@user:alice")
+		path2.Caveat = &core.CaveatExpression{
+			OperationOrCaveat: &core.CaveatExpression_Caveat{
+				Caveat: &core.ContextualizedCaveat{
+					CaveatName: "caveat2",
+				},
+			},
+		}
+
+		iter1 := NewFixedIterator(path1)
+		iter2 := NewFixedIterator(path2)
+
+		intersect := NewIntersectionIterator(iter1, iter2)
+
+		pathSeq, err := ctx.IterSubjects(intersect, NewObject("document", "doc1"), NoObjectFilter())
+		require.NoError(err)
+
+		paths, err := CollectAll(pathSeq)
+		require.NoError(err)
+
+		require.Len(paths, 1, "Should find alice with combined caveats")
+		require.NotNil(paths[0].Caveat, "Should have combined caveat")
+		require.NotNil(paths[0].Caveat.GetOperation(), "Caveat should be an operation")
+		require.Equal(core.CaveatOperation_AND, paths[0].Caveat.GetOperation().Op, "Caveat should be AND")
+	})
+}
+
+func TestIntersection_Types(t *testing.T) {
+	t.Parallel()
+
+	t.Run("ResourceType", func(t *testing.T) {
+		t.Parallel()
+		require := require.New(t)
+
+		// Create intersection with fixed iterators
+		path1 := MustPathFromString("document:doc1#viewer@user:alice")
+		path2 := MustPathFromString("document:doc1#editor@user:alice")
+		iter1 := NewFixedIterator(path1)
+		iter2 := NewFixedIterator(path2)
+
+		intersect := NewIntersectionIterator(iter1, iter2)
+
+		resourceType, err := intersect.ResourceType()
+		require.NoError(err)
+		require.Len(resourceType, 1)
+		require.Equal("document", resourceType[0].Type)
+	})
+
+	t.Run("ResourceType_EmptyIntersection", func(t *testing.T) {
+		t.Parallel()
+		require := require.New(t)
+
+		intersect := NewIntersectionIterator()
+
+		resourceType, err := intersect.ResourceType()
+		require.NoError(err)
+		require.Empty(resourceType)
+	})
+
+	t.Run("SubjectTypes", func(t *testing.T) {
+		t.Parallel()
+		require := require.New(t)
+
+		// Create intersection with different subject types across iterators
+		path1 := MustPathFromString("document:doc1#viewer@user:alice")
+		path2 := MustPathFromString("document:doc1#editor@group:engineers#member")
+		iter1 := NewFixedIterator(path1)
+		iter2 := NewFixedIterator(path2)
+
+		intersect := NewIntersectionIterator(iter1, iter2)
+
+		subjectTypes, err := intersect.SubjectTypes()
+		require.NoError(err)
+		require.Len(subjectTypes, 2, "Should collect all subject types from all iterators")
+		require.Contains(subjectTypes, ObjectType{Type: "user", Subrelation: tuple.Ellipsis})
+		require.Contains(subjectTypes, ObjectType{Type: "group", Subrelation: "member"})
+	})
+
+	t.Run("SubjectTypes_Deduplication", func(t *testing.T) {
+		t.Parallel()
+		require := require.New(t)
+
+		// Create intersection where multiple iterators have same subject types
+		path1 := MustPathFromString("document:doc1#viewer@user:alice")
+		path2 := MustPathFromString("document:doc1#editor@user:bob")
+		iter1 := NewFixedIterator(path1)
+		iter2 := NewFixedIterator(path2)
+
+		intersect := NewIntersectionIterator(iter1, iter2)
+
+		subjectTypes, err := intersect.SubjectTypes()
+		require.NoError(err)
+		require.Len(subjectTypes, 1, "Should deduplicate subject types")
+		require.Equal("user", subjectTypes[0].Type)
+	})
+
+	t.Run("SubjectTypes_EmptyIntersection", func(t *testing.T) {
+		t.Parallel()
+		require := require.New(t)
+
+		intersect := NewIntersectionIterator()
+
+		subjectTypes, err := intersect.SubjectTypes()
+		require.NoError(err)
+		require.Empty(subjectTypes)
+	})
+
+	t.Run("ResourceType_Mismatch", func(t *testing.T) {
+		t.Parallel()
+		require := require.New(t)
+
+		// Create intersection with mismatched resource types
+		path1 := MustPathFromString("document:doc1#viewer@user:alice")
+		path2 := MustPathFromString("folder:folder1#viewer@user:bob")
+		iter1 := NewFixedIterator(path1)
+		iter2 := NewFixedIterator(path2)
+
+		intersect := NewIntersectionIterator(iter1, iter2)
+
+		// Intersection returns common types - with mismatched types, should be empty
+		resourceTypes, err := intersect.ResourceType()
+		require.NoError(err)
+		require.Empty(resourceTypes, "Intersection of document and folder should be empty")
 	})
 }

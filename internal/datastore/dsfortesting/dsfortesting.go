@@ -4,23 +4,27 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"testing"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
 
 	"github.com/authzed/spicedb/internal/datastore/common"
 	"github.com/authzed/spicedb/internal/datastore/memdb"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/datastore/options"
 	"github.com/authzed/spicedb/pkg/tuple"
 )
 
-// NewMemDBDatastoreForTesting creates a new in-memory datastore for testing.
+// NewMemDBDatastoreForTesting creates a new in-memory datastore for testing
+// that is automatically closed when the test ends.
 // This is a convenience function that wraps the creation of a new MemDB datastore,
 // and injects additional proxies for validation at test time.
 // NOTE: These additional proxies are not performant for use in production (but then,
 // neither is memdb)
 func NewMemDBDatastoreForTesting(
+	t testing.TB,
 	watchBufferLength uint16,
 	revisionQuantization,
 	gcWindow time.Duration,
@@ -29,8 +33,26 @@ func NewMemDBDatastoreForTesting(
 	if err != nil {
 		return nil, err
 	}
+	t.Cleanup(func() {
+		_ = ds.Close()
+	})
 
 	return validatingDatastore{ds}, nil
+}
+
+// DataLayerForTesting creates a new in-memory DataLayer for testing
+// that is automatically closed when the test ends.
+func DataLayerForTesting(
+	t testing.TB,
+	watchBufferLength uint16,
+	revisionQuantization,
+	gcWindow time.Duration,
+) (datalayer.DataLayer, error) {
+	ds, err := NewMemDBDatastoreForTesting(t, watchBufferLength, revisionQuantization, gcWindow)
+	if err != nil {
+		return nil, err
+	}
+	return datalayer.NewDataLayer(ds), nil
 }
 
 type validatingDatastore struct {

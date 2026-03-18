@@ -13,6 +13,16 @@ const (
 	// FlagTypeChecking indicates that `typechecking` is supported as a first-class
 	// feature in the schema.
 	FlagTypeChecking = "typechecking"
+
+	// FlagSelf indicates that `self` is supported as a first-class
+	// feature in the schema.
+	FlagSelf = "self"
+
+	// FlagPartials indicates that partials are supported in the schema.
+	FlagPartials = "partial"
+
+	// FlagImports indicates that imports are supported in the schema.
+	FlagImports = "import"
 )
 
 var AllUseFlags []string
@@ -33,7 +43,7 @@ var Flags = map[string]transformer{
 			return lexeme, true
 		}
 
-		// `and` becomes a keyword.
+		// `and` becomes a keyword (for "caveat and expiration")
 		if lexeme.Kind == TokenTypeIdentifier && lexeme.Value == "and" {
 			lexeme.Kind = TokenTypeKeyword
 			return lexeme, true
@@ -44,6 +54,33 @@ var Flags = map[string]transformer{
 	FlagTypeChecking: func(lexeme Lexeme) (Lexeme, bool) {
 		// `typechecking` becomes a keyword.
 		if lexeme.Kind == TokenTypeIdentifier && lexeme.Value == "typechecking" {
+			lexeme.Kind = TokenTypeKeyword
+			return lexeme, true
+		}
+
+		return lexeme, false
+	},
+	FlagSelf: func(lexeme Lexeme) (Lexeme, bool) {
+		// `self` becomes a keyword.
+		if lexeme.Kind == TokenTypeIdentifier && lexeme.Value == "self" {
+			lexeme.Kind = TokenTypeKeyword
+			return lexeme, true
+		}
+
+		return lexeme, false
+	},
+	FlagPartials: func(lexeme Lexeme) (Lexeme, bool) {
+		// `partial` becomes a keyword.
+		if lexeme.Kind == TokenTypeIdentifier && lexeme.Value == "partial" {
+			lexeme.Kind = TokenTypeKeyword
+			return lexeme, true
+		}
+
+		return lexeme, false
+	},
+	FlagImports: func(lexeme Lexeme) (Lexeme, bool) {
+		// `import` becomes a keyword.
+		if lexeme.Kind == TokenTypeIdentifier && lexeme.Value == "import" {
 			lexeme.Kind = TokenTypeKeyword
 			return lexeme, true
 		}

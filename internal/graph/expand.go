@@ -7,8 +7,8 @@ import (
 	"github.com/authzed/spicedb/internal/caveats"
 	"github.com/authzed/spicedb/internal/dispatch"
 	log "github.com/authzed/spicedb/internal/logging"
-	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/namespace"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/datastore/options"
 	"github.com/authzed/spicedb/pkg/datastore/queryshape"
@@ -58,8 +58,8 @@ func (ce *ConcurrentExpander) expandDirect(
 ) ReduceableExpandFunc {
 	log.Ctx(ctx).Trace().Object("direct", req).Send()
 	return func(ctx context.Context, resultChan chan<- ExpandResult) {
-		ds := datastoremw.MustFromContext(ctx).SnapshotReader(req.Revision)
-		it, err := ds.QueryRelationships(ctx, datastore.RelationshipsFilter{
+		dl := datalayer.MustFromContext(ctx).SnapshotReader(req.Revision)
+		it, err := dl.QueryRelationships(ctx, datastore.RelationshipsFilter{
 			OptionalResourceType:     req.ResourceAndRelation.Namespace,
 			OptionalResourceIds:      []string{req.ResourceAndRelation.ObjectId},
 			OptionalResourceRelation: req.ResourceAndRelation.Relation,
@@ -205,6 +205,8 @@ func (ce *ConcurrentExpander) expandSetOperation(ctx context.Context, req Valida
 			}
 		case *core.SetOperation_Child_XNil:
 			requests = append(requests, emptyExpansion(req.ResourceAndRelation))
+		case *core.SetOperation_Child_XSelf:
+			requests = append(requests, selfExpansion(req.ResourceAndRelation))
 		default:
 			return expandError(spiceerrors.MustBugf("unknown set operation child `%T` in expand", child))
 		}
@@ -241,8 +243,12 @@ func (ce *ConcurrentExpander) expandComputedUserset(ctx context.Context, req Val
 	}
 
 	// Check if the target relation exists. If not, return nothing.
-	ds := datastoremw.MustFromContext(ctx).SnapshotReader(req.Revision)
-	err := namespace.CheckNamespaceAndRelation(ctx, start.ObjectType, cu.Relation, true, ds)
+	dl := datalayer.MustFromContext(ctx).SnapshotReader(req.Revision)
+	sr, err := dl.ReadSchema()
+	if err != nil {
+		return expandError(err)
+	}
+	err = namespace.CheckNamespaceAndRelation(ctx, start.ObjectType, cu.Relation, true, sr)
 	if err != nil {
 		if errors.As(err, &namespace.RelationNotFoundError{}) {
 			return emptyExpansion(req.ResourceAndRelation)
@@ -275,8 +281,8 @@ func expandTupleToUserset[T relation](
 	expandFunc expandFunc,
 ) ReduceableExpandFunc {
 	return func(ctx context.Context, resultChan chan<- ExpandResult) {
-		ds := datastoremw.MustFromContext(ctx).SnapshotReader(req.Revision)
-		it, err := ds.QueryRelationships(ctx, datastore.RelationshipsFilter{
+		dl := datalayer.MustFromContext(ctx).SnapshotReader(req.Revision)
+		it, err := dl.QueryRelationships(ctx, datastore.RelationshipsFilter{
 			OptionalResourceType:     req.ResourceAndRelation.Namespace,
 			OptionalResourceIds:      []string{req.ResourceAndRelation.ObjectId},
 			OptionalResourceRelation: ttu.GetTupleset().GetRelation(),
@@ -358,6 +364,29 @@ func expandSetOperation(
 	}
 
 	return setResult(op, start, children, responseMetadata)
+}
+
+// selfExpansion returns a self expansion.
+func selfExpansion(start *core.ObjectAndRelation) ReduceableExpandFunc {
+	return func(ctx context.Context, resultChan chan<- ExpandResult) {
+		resultChan <- expandResult(&core.RelationTupleTreeNode{
+			NodeType: &core.RelationTupleTreeNode_LeafNode{
+				LeafNode: &core.DirectSubjects{
+					Subjects: []*core.DirectSubject{
+						{
+							// `self` expands into the resource itself, without any relation.
+							Subject: &core.ObjectAndRelation{
+								Namespace: start.Namespace,
+								ObjectId:  start.ObjectId,
+								Relation:  tuple.Ellipsis,
+							},
+						},
+					},
+				},
+			},
+			Expanded: start,
+		}, emptyMetadata)
+	}
 }
 
 // emptyExpansion returns an empty expansion.

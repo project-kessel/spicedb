@@ -345,6 +345,9 @@ func (sg *sourceGenerator) mustEmitSetOpChild(setOpChild *core.SetOperation_Chil
 	case *core.SetOperation_Child_XNil:
 		sg.append("nil")
 
+	case *core.SetOperation_Child_XSelf:
+		sg.append("self")
+
 	case *core.SetOperation_Child_ComputedUserset:
 		sg.append(child.ComputedUserset.Relation)
 
@@ -392,8 +395,8 @@ func (sg *sourceGenerator) appendComment(comment string) {
 	case strings.HasPrefix(comment, "/*"):
 		stripped := strings.TrimSpace(comment)
 
-		if strings.HasPrefix(stripped, "/**") {
-			stripped = strings.TrimPrefix(stripped, "/**")
+		if after, ok := strings.CutPrefix(stripped, "/**"); ok {
+			stripped = after
 			sg.append("/**")
 		} else {
 			stripped = strings.TrimPrefix(stripped, "/*")
