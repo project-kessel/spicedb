@@ -13,9 +13,9 @@ import (
 	"github.com/authzed/spicedb/internal/datasets"
 	"github.com/authzed/spicedb/internal/dispatch"
 	log "github.com/authzed/spicedb/internal/logging"
-	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/namespace"
 	"github.com/authzed/spicedb/internal/taskrunner"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/datastore/options"
 	"github.com/authzed/spicedb/pkg/datastore/queryshape"
@@ -67,18 +67,22 @@ func (cl *ConcurrentLookupSubjects) LookupSubjects(
 		}
 	}
 
-	ds := datastoremw.MustFromContext(ctx)
-	reader := ds.SnapshotReader(req.Revision)
+	dl := datalayer.MustFromContext(ctx)
+	reader := dl.SnapshotReader(req.Revision)
+	sr, err := reader.ReadSchema()
+	if err != nil {
+		return err
+	}
 	_, relation, err := namespace.ReadNamespaceAndRelation(
 		ctx,
 		req.ResourceRelation.Namespace,
 		req.ResourceRelation.Relation,
-		reader)
+		sr)
 	if err != nil {
 		return err
 	}
 
-	ts := schema.NewTypeSystem(schema.ResolverForDatastoreReader(reader))
+	ts := schema.NewTypeSystem(schema.ResolverFor(sr))
 
 	if relation.UsersetRewrite == nil {
 		// Direct lookup of subjects.
@@ -133,7 +137,7 @@ func (cl *ConcurrentLookupSubjects) lookupDirectSubjects(
 	req ValidatedLookupSubjectsRequest,
 	stream dispatch.LookupSubjectsStream,
 	ts *schema.TypeSystem,
-	reader datastore.Reader,
+	reader datalayer.RevisionedReader,
 ) error {
 	toDispatchByType := datasets.NewSubjectByTypeSet()
 	foundSubjectsByResourceID := datasets.NewSubjectSetByResourceID()
@@ -194,8 +198,12 @@ func (cl *ConcurrentLookupSubjects) lookupViaComputed(
 	ts *schema.TypeSystem,
 	cu *core.ComputedUserset,
 ) error {
-	ds := datastoremw.MustFromContext(ctx).SnapshotReader(parentRequest.Revision)
-	if err := namespace.CheckNamespaceAndRelation(ctx, parentRequest.ResourceRelation.Namespace, cu.Relation, true, ds); err != nil {
+	dl := datalayer.MustFromContext(ctx).SnapshotReader(parentRequest.Revision)
+	sr, err := dl.ReadSchema()
+	if err != nil {
+		return err
+	}
+	if err := namespace.CheckNamespaceAndRelation(ctx, parentRequest.ResourceRelation.Namespace, cu.Relation, true, sr); err != nil {
 		if errors.As(err, &namespace.RelationNotFoundError{}) {
 			return nil
 		}
@@ -250,13 +258,17 @@ func lookupViaIntersectionTupleToUserset(
 	ts *schema.TypeSystem,
 	ttu *core.FunctionedTupleToUserset,
 ) error {
-	ds := datastoremw.MustFromContext(ctx).SnapshotReader(parentRequest.Revision)
+	dl := datalayer.MustFromContext(ctx).SnapshotReader(parentRequest.Revision)
+	sr, err := dl.ReadSchema()
+	if err != nil {
+		return err
+	}
 	opts, err := cl.queryOptionsForRelation(ctx, ts, parentRequest.ResourceRelation.Namespace, ttu.GetTupleset().GetRelation())
 	if err != nil {
 		return err
 	}
 
-	it, err := ds.QueryRelationships(ctx, datastore.RelationshipsFilter{
+	it, err := dl.QueryRelationships(ctx, datastore.RelationshipsFilter{
 		OptionalResourceType:     parentRequest.ResourceRelation.Namespace,
 		OptionalResourceRelation: ttu.GetTupleset().GetRelation(),
 		OptionalResourceIds:      parentRequest.ResourceIds,
@@ -288,7 +300,7 @@ func lookupViaIntersectionTupleToUserset(
 			ttuCaveat = caveatAnd(ttuCaveat, wrapCaveat(rel.OptionalCaveat))
 		}
 
-		if err := namespace.CheckNamespaceAndRelation(ctx, rel.Subject.ObjectType, ttu.GetComputedUserset().Relation, false, ds); err != nil {
+		if err := namespace.CheckNamespaceAndRelation(ctx, rel.Subject.ObjectType, ttu.GetComputedUserset().Relation, false, sr); err != nil {
 			if !errors.As(err, &namespace.RelationNotFoundError{}) {
 				return err
 			}
@@ -425,13 +437,17 @@ func lookupViaTupleToUserset[T relation](
 	toDispatchByTuplesetType := datasets.NewSubjectByTypeSet()
 	relationshipsBySubjectONR := mapz.NewMultiMap[tuple.ObjectAndRelation, tuple.Relationship]()
 
-	ds := datastoremw.MustFromContext(ctx).SnapshotReader(parentRequest.Revision)
+	dl := datalayer.MustFromContext(ctx).SnapshotReader(parentRequest.Revision)
+	sr, err := dl.ReadSchema()
+	if err != nil {
+		return err
+	}
 	opts, err := cl.queryOptionsForRelation(ctx, ts, parentRequest.ResourceRelation.Namespace, ttu.GetTupleset().GetRelation())
 	if err != nil {
 		return err
 	}
 
-	it, err := ds.QueryRelationships(ctx, datastore.RelationshipsFilter{
+	it, err := dl.QueryRelationships(ctx, datastore.RelationshipsFilter{
 		OptionalResourceType:     parentRequest.ResourceRelation.Namespace,
 		OptionalResourceRelation: ttu.GetTupleset().GetRelation(),
 		OptionalResourceIds:      parentRequest.ResourceIds,
@@ -458,7 +474,7 @@ func lookupViaTupleToUserset[T relation](
 
 	// Map the found subject types by the computed userset relation, so that we dispatch to it.
 	toDispatchByComputedRelationType, err := toDispatchByTuplesetType.Map(func(resourceType *core.RelationReference) (*core.RelationReference, error) {
-		if err := namespace.CheckNamespaceAndRelation(ctx, resourceType.Namespace, ttu.GetComputedUserset().Relation, false, ds); err != nil {
+		if err := namespace.CheckNamespaceAndRelation(ctx, resourceType.Namespace, ttu.GetComputedUserset().Relation, false, sr); err != nil {
 			if errors.As(err, &namespace.RelationNotFoundError{}) {
 				return nil, nil
 			}
@@ -553,6 +569,28 @@ func (cl *ConcurrentLookupSubjects) lookupSetOperation(
 
 		case *core.SetOperation_Child_XNil:
 			// Purposely do nothing.
+			continue
+
+		case *core.SetOperation_Child_XSelf:
+			// Return the current resource(s) as the found subject(s).
+			foundResources := map[string]*v1.FoundSubjects{}
+			for _, resourceID := range req.ResourceIds {
+				foundResources[resourceID] = &v1.FoundSubjects{
+					FoundSubjects: []*v1.FoundSubject{
+						{
+							SubjectId: resourceID,
+						},
+					},
+				}
+			}
+
+			err := stream.Publish(&v1.DispatchLookupSubjectsResponse{
+				FoundSubjectsByResourceId: foundResources,
+				Metadata:                  emptyMetadata,
+			})
+			if err != nil {
+				return err
+			}
 			continue
 
 		default:

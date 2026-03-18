@@ -11,10 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/authzed/spicedb/internal/datastore/common"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/datastore/options"
 	"github.com/authzed/spicedb/pkg/datastore/queryshape"
-	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	"github.com/authzed/spicedb/pkg/tuple"
 )
 
@@ -38,7 +38,6 @@ func TestPaginatedIterator(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(fmt.Sprintf("%d/%d-%d", tc.pageSize, tc.totalRelationships, tc.order), func(t *testing.T) {
 			t.Parallel()
 			require := require.New(t)
@@ -88,10 +87,7 @@ func generateMock(t *testing.T, rels []tuple.Relationship, pageSize int, order o
 
 	var last options.Cursor
 	for i := 0; i <= relsLen; i += pageSize {
-		pastLastIndex := i + pageSize
-		if pastLastIndex > relsLen {
-			pastLastIndex = relsLen
-		}
+		pastLastIndex := min(i+pageSize, relsLen)
 
 		pageSize64, err := safecast.Convert[uint64](pageSize)
 		require.NoError(t, err)
@@ -111,7 +107,11 @@ type mockedReader struct {
 	mock.Mock
 }
 
-var _ datastore.Reader = &mockedReader{}
+var _ datalayer.RevisionedReader = &mockedReader{}
+
+func (m *mockedReader) ReadSchema() (datalayer.SchemaReader, error) {
+	panic("not implemented")
+}
 
 func (m *mockedReader) QueryRelationships(
 	_ context.Context,
@@ -135,34 +135,10 @@ func (m *mockedReader) ReverseQueryRelationships(
 	panic("not implemented")
 }
 
-func (m *mockedReader) CountRelationships(ctx context.Context, name string) (int, error) {
+func (m *mockedReader) CountRelationships(_ context.Context, _ string) (int, error) {
 	panic("not implemented")
 }
 
-func (m *mockedReader) LookupCounters(ctx context.Context) ([]datastore.RelationshipCounter, error) {
-	panic("not implemented")
-}
-
-func (m *mockedReader) ReadCaveatByName(_ context.Context, _ string) (caveat *core.CaveatDefinition, lastWritten datastore.Revision, err error) {
-	panic("not implemented")
-}
-
-func (m *mockedReader) ListAllCaveats(_ context.Context) ([]datastore.RevisionedCaveat, error) {
-	panic("not implemented")
-}
-
-func (m *mockedReader) LookupCaveatsWithNames(_ context.Context, _ []string) ([]datastore.RevisionedCaveat, error) {
-	panic("not implemented")
-}
-
-func (m *mockedReader) ReadNamespaceByName(_ context.Context, _ string) (ns *core.NamespaceDefinition, lastWritten datastore.Revision, err error) {
-	panic("not implemented")
-}
-
-func (m *mockedReader) ListAllNamespaces(_ context.Context) ([]datastore.RevisionedNamespace, error) {
-	panic("not implemented")
-}
-
-func (m *mockedReader) LookupNamespacesWithNames(_ context.Context, _ []string) ([]datastore.RevisionedNamespace, error) {
+func (m *mockedReader) LookupCounters(_ context.Context) ([]datastore.RelationshipCounter, error) {
 	panic("not implemented")
 }

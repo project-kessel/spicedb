@@ -68,7 +68,7 @@ func (pgd *pgDatastore) Watch(
 	options datastore.WatchOptions,
 ) (<-chan datastore.RevisionChanges, <-chan error) {
 	watchBufferLength := options.WatchBufferLength
-	if watchBufferLength <= 0 {
+	if watchBufferLength == 0 {
 		watchBufferLength = pgd.watchBufferLength
 	}
 
@@ -88,10 +88,7 @@ func (pgd *pgDatastore) Watch(
 	}
 
 	afterRevision := afterRevisionRaw.(postgresRevision)
-	watchSleep := options.CheckpointInterval
-	if watchSleep < minimumWatchSleep {
-		watchSleep = minimumWatchSleep
-	}
+	watchSleep := max(options.CheckpointInterval, minimumWatchSleep)
 
 	watchBufferWriteTimeout := options.WatchBufferWriteTimeout
 	if watchBufferWriteTimeout <= 0 {
@@ -159,7 +156,6 @@ func (pgd *pgDatastore) Watch(
 				}
 
 				for _, changeToWrite := range changesToWrite {
-					changeToWrite := changeToWrite
 					if !sendChange(changeToWrite) {
 						return
 					}
@@ -173,9 +169,9 @@ func (pgd *pgDatastore) Watch(
 				currentTxn = newTxns[len(newTxns)-1]
 				for _, newTx := range newTxns {
 					currentTxn = postgresRevision{
-						snapshot:               currentTxn.snapshot.markComplete(newTx.optionalTxID.Uint64),
-						optionalTxID:           currentTxn.optionalTxID,
-						optionalNanosTimestamp: currentTxn.optionalNanosTimestamp,
+						snapshot:                      currentTxn.snapshot.markComplete(newTx.optionalTxID.Uint64),
+						optionalTxID:                  currentTxn.optionalTxID,
+						optionalInexactNanosTimestamp: currentTxn.optionalInexactNanosTimestamp,
 					}
 				}
 
@@ -229,10 +225,10 @@ func (pgd *pgDatastore) getNewRevisions(ctx context.Context, afterTX postgresRev
 			}
 
 			ids = append(ids, postgresRevision{
-				snapshot:               nextSnapshot.markComplete(nextXID.Uint64),
-				optionalTxID:           nextXID,
-				optionalNanosTimestamp: nanosTimestamp,
-				optionalMetadata:       metadata,
+				snapshot:                      nextSnapshot.markComplete(nextXID.Uint64),
+				optionalTxID:                  nextXID,
+				optionalInexactNanosTimestamp: nanosTimestamp,
+				optionalMetadata:              metadata,
 			})
 		}
 		if rows.Err() != nil {
@@ -252,7 +248,12 @@ func (pgd *pgDatastore) loadChanges(ctx context.Context, revisions []postgresRev
 	filter := make(map[uint64]int, len(revisions))
 	txidToRevision := make(map[uint64]postgresRevision, len(revisions))
 
-	tracked := common.NewChanges(revisionKeyFunc, options.Content, options.MaximumBufferedChangesByteSize)
+	watchBufferSize := options.MaximumBufferedChangesByteSize
+	if watchBufferSize == 0 {
+		watchBufferSize = pgd.watchChangeBufferMaximumSize
+	}
+
+	tracked := common.NewChanges(revisionKeyFunc, options.Content, watchBufferSize)
 
 	for i, rev := range revisions {
 		if rev.optionalTxID.Uint64 < xmin {

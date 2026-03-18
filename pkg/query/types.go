@@ -3,6 +3,9 @@ package query
 import (
 	"fmt"
 	"strings"
+
+	"github.com/authzed/spicedb/pkg/genutil/mapz"
+	"github.com/authzed/spicedb/pkg/tuple"
 )
 
 // Plan is the external-facing notion of a query plan. These follow the general API for
@@ -14,10 +17,14 @@ type Plan interface {
 	CheckImpl(ctx *Context, resources []Object, subject ObjectAndRelation) (PathSeq, error)
 
 	// IterSubjectsImpl returns a sequence of all the paths in this set that match the given resourceID.
-	IterSubjectsImpl(ctx *Context, resource Object) (PathSeq, error)
+	// The filterSubjectType parameter filters the results to only include subjects matching the
+	// specified ObjectType. If filterSubjectType.Type is empty, no filtering is applied.
+	IterSubjectsImpl(ctx *Context, resource Object, filterSubjectType ObjectType) (PathSeq, error)
 
 	// IterResourcesImpl returns a sequence of all the paths in this set that match the given subjectID.
-	IterResourcesImpl(ctx *Context, subject ObjectAndRelation) (PathSeq, error)
+	// The filterResourceType parameter filters the results to only include resources matching the
+	// specified ObjectType. If filterResourceType.Type is empty, no filtering is applied.
+	IterResourcesImpl(ctx *Context, subject ObjectAndRelation, filterResourceType ObjectType) (PathSeq, error)
 
 	// Explain generates a human-readable tree that describes each iterator and its state.
 	Explain() Explain
@@ -51,6 +58,40 @@ type Iterator interface {
 	// For composite iterators, the length of newSubs should match the length of Subiterators().
 	// Returns an error if the replacement fails or if the length of newSubs doesn't match expectations.
 	ReplaceSubiterators(newSubs []Iterator) (Iterator, error)
+
+	// CanonicalKey returns the canonical key for this iterator.
+	// Cloned iterators share the same canonical key since they represent the same query plan node.
+	CanonicalKey() CanonicalKey
+
+	// ResourceType returns the ObjectType(s) of this iterator's resources.
+	// Returns a slice to support iterators that can return multiple types (e.g., unions).
+	ResourceType() ([]ObjectType, error)
+
+	// SubjectTypes returns all the ObjectTypes for this iterator tree.
+	// Returns an error if subject types cannot be determined.
+	SubjectTypes() ([]ObjectType, error)
+}
+
+type ObjectType struct {
+	Type        string
+	Subrelation string
+}
+
+func NewType(typename string, subrelation ...string) ObjectType {
+	if len(subrelation) == 0 {
+		return ObjectType{Type: typename, Subrelation: tuple.Ellipsis}
+	}
+	return ObjectType{Type: typename, Subrelation: subrelation[0]}
+}
+
+func (t ObjectType) String() string {
+	return fmt.Sprintf("%s#%s", t.Type, t.Subrelation)
+}
+
+// NoObjectFilter returns an empty ObjectType that indicates no filtering should be applied.
+// Use this instead of ObjectType{} for clarity when calling IterResources or IterSubjects.
+func NoObjectFilter() ObjectType {
+	return ObjectType{}
 }
 
 // Explain describes the state of an iterator tree, in a human-readable fashion, with an Info line at
@@ -74,4 +115,30 @@ func (e Explain) IndentString(depth int) string {
 		sb.WriteString(sub.IndentString(depth + 1))
 	}
 	return fmt.Sprintf("%s%s\n%s", strings.Repeat("\t", depth), e.Info, sb.String())
+}
+
+// collectAndDeduplicateSubjectTypes collects subject types from multiple iterators and deduplicates
+func collectAndDeduplicateSubjectTypes(iterators []Iterator) ([]ObjectType, error) {
+	if len(iterators) == 0 {
+		return []ObjectType{}, nil
+	}
+	set := mapz.NewSet[string]()
+
+	var result []ObjectType
+
+	for _, it := range iterators {
+		subjectTypes, err := it.SubjectTypes()
+		if err != nil {
+			return nil, err
+		}
+		for _, st := range subjectTypes {
+			key := st.String()
+			if !set.Has(key) {
+				set.Add(st.String())
+				result = append(result, st)
+			}
+		}
+	}
+
+	return result, nil
 }

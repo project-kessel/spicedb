@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
 
@@ -24,17 +25,22 @@ import (
 
 	"github.com/authzed/spicedb/internal/datastore/dsfortesting"
 	"github.com/authzed/spicedb/internal/dispatch/graph"
-	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/middleware/servicespecific"
 	tf "github.com/authzed/spicedb/internal/testfixtures"
 	"github.com/authzed/spicedb/pkg/cmd/server"
 	"github.com/authzed/spicedb/pkg/cmd/util"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/middleware/consistency"
+	"github.com/authzed/spicedb/pkg/testutil"
 	"github.com/authzed/spicedb/pkg/tuple"
 	"github.com/authzed/spicedb/pkg/zedtoken"
 )
 
 func TestCertRotation(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
+
 	const (
 		// length of time the initial cert is valid
 		initialValidDuration = 3 * time.Second
@@ -111,7 +117,7 @@ func TestCertRotation(t *testing.T) {
 	require.NoError(t, certFile.Close())
 
 	// start a server with an initial set of certs
-	emptyDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 10, time.Duration(90_000_000_000_000))
+	emptyDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 10, time.Duration(90_000_000_000_000))
 	require.NoError(t, err)
 	ds, revision := tf.StandardDatastoreWithData(emptyDS, require.New(t))
 
@@ -144,7 +150,7 @@ func TestCertRotation(t *testing.T) {
 				Middlewares: []server.ReferenceableMiddleware[grpc.UnaryServerInterceptor]{
 					{
 						Name:       "datastore",
-						Middleware: datastoremw.UnaryServerInterceptor(ds),
+						Middleware: datalayer.UnaryServerInterceptor(datalayer.NewDataLayer(ds)),
 					},
 					{
 						Name:       "consistency",
@@ -163,7 +169,7 @@ func TestCertRotation(t *testing.T) {
 				Middlewares: []server.ReferenceableMiddleware[grpc.StreamServerInterceptor]{
 					{
 						Name:       "datastore",
-						Middleware: datastoremw.StreamServerInterceptor(ds),
+						Middleware: datalayer.StreamServerInterceptor(datalayer.NewDataLayer(ds)),
 					},
 					{
 						Name:       "consistency",
@@ -241,7 +247,7 @@ func TestCertRotation(t *testing.T) {
 	newCertParsed, err := x509.ParseCertificate(newCertBytes)
 	require.NoError(t, err)
 
-	keyFile, err = os.OpenFile(keyFile.Name(), os.O_WRONLY|os.O_TRUNC, 0o755)
+	keyFile, err = os.OpenFile(keyFile.Name(), os.O_WRONLY|os.O_TRUNC, 0o755) //nolint:gosec  // path traversal isn't a problem in tests
 	require.NoError(t, err)
 	newKeyBytes, err := x509.MarshalECPrivateKey(newCertPrivateKey)
 	require.NoError(t, err)
@@ -251,7 +257,7 @@ func TestCertRotation(t *testing.T) {
 	}))
 	require.NoError(t, keyFile.Close())
 
-	certFile, err = os.OpenFile(certFile.Name(), os.O_WRONLY|os.O_TRUNC, 0o755)
+	certFile, err = os.OpenFile(certFile.Name(), os.O_WRONLY|os.O_TRUNC, 0o755) //nolint:gosec  // path traversal isn't a problem in tests
 	require.NoError(t, err)
 	require.NoError(t, pem.Encode(certFile, &pem.Block{
 		Type:  "CERTIFICATE",
@@ -260,7 +266,7 @@ func TestCertRotation(t *testing.T) {
 	require.NoError(t, certFile.Close())
 
 	// check for waitFactor*initialValidDuration seconds
-	for i := 0; i < waitFactor; i++ {
+	for range waitFactor {
 		_, err = client.CheckPermission(ctx, &v1.CheckPermissionRequest{
 			Consistency: &v1.Consistency{
 				Requirement: &v1.Consistency_AtLeastAsFresh{

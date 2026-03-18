@@ -13,6 +13,7 @@ import (
 
 	"github.com/IBM/pgxpoolprometheus"
 	sq "github.com/Masterminds/squirrel"
+	"github.com/ccoveille/go-safecast/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -252,15 +253,9 @@ func newPostgresDatastore(
 
 	gcCtx, cancelGc := context.WithCancel(context.Background())
 
-	quantizationPeriodNanos := config.revisionQuantization.Nanoseconds()
-	if quantizationPeriodNanos < 1 {
-		quantizationPeriodNanos = 1
-	}
+	quantizationPeriodNanos := max(config.revisionQuantization.Nanoseconds(), 1)
 
-	followerReadDelayNanos := config.followerReadDelay.Nanoseconds()
-	if followerReadDelayNanos < 0 {
-		followerReadDelayNanos = 0
-	}
+	followerReadDelayNanos := max(config.followerReadDelay.Nanoseconds(), 0)
 
 	revisionQuery := fmt.Sprintf(
 		querySelectRevision,
@@ -305,32 +300,33 @@ func newPostgresDatastore(
 		CachedOptimizedRevisions: revisions.NewCachedOptimizedRevisions(
 			maxRevisionStaleness,
 		),
-		MigrationValidator:      common.NewMigrationValidator(headMigration, config.allowedMigrations),
-		dburl:                   pgURL,
-		readPool:                pgxcommon.MustNewInterceptorPooler(readPool, config.queryInterceptor),
-		writePool:               nil, /* disabled by default */
-		collectors:              collectors,
-		watchBufferLength:       config.watchBufferLength,
-		watchBufferWriteTimeout: config.watchBufferWriteTimeout,
-		optimizedRevisionQuery:  revisionQuery,
-		validTransactionQuery:   validTransactionQuery,
-		revisionHeartbeatQuery:  revisionHeartbeatQuery,
-		gcWindow:                config.gcWindow,
-		gcInterval:              config.gcInterval,
-		gcTimeout:               config.gcMaxOperationTime,
-		analyzeBeforeStatistics: config.analyzeBeforeStatistics,
-		watchEnabled:            watchEnabled,
-		workerCtx:               gcCtx,
-		cancelGc:                cancelGc,
-		readTxOptions:           pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly},
-		maxRetries:              config.maxRetries,
-		credentialsProvider:     credentialsProvider,
-		isPrimary:               isPrimary,
-		inStrictReadMode:        config.readStrictMode,
-		filterMaximumIDCount:    config.filterMaximumIDCount,
-		schema:                  *schema.Schema(config.columnOptimizationOption, false),
-		quantizationPeriodNanos: quantizationPeriodNanos,
-		isolationLevel:          isolationLevel,
+		MigrationValidator:           common.NewMigrationValidator(headMigration, config.allowedMigrations),
+		dburl:                        pgURL,
+		readPool:                     pgxcommon.MustNewInterceptorPooler(readPool, config.queryInterceptor),
+		writePool:                    nil, /* disabled by default */
+		collectors:                   collectors,
+		watchBufferLength:            config.watchBufferLength,
+		watchChangeBufferMaximumSize: config.watchChangeBufferMaximumSize,
+		watchBufferWriteTimeout:      config.watchBufferWriteTimeout,
+		optimizedRevisionQuery:       revisionQuery,
+		validTransactionQuery:        validTransactionQuery,
+		revisionHeartbeatQuery:       revisionHeartbeatQuery,
+		gcWindow:                     config.gcWindow,
+		gcInterval:                   config.gcInterval,
+		gcTimeout:                    config.gcMaxOperationTime,
+		analyzeBeforeStatistics:      config.analyzeBeforeStatistics,
+		watchEnabled:                 watchEnabled,
+		workerCtx:                    gcCtx,
+		cancelGc:                     cancelGc,
+		readTxOptions:                pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly},
+		maxRetries:                   config.maxRetries,
+		credentialsProvider:          credentialsProvider,
+		isPrimary:                    isPrimary,
+		inStrictReadMode:             config.readStrictMode,
+		filterMaximumIDCount:         config.filterMaximumIDCount,
+		schema:                       *schema.Schema(config.columnOptimizationOption, false),
+		quantizationPeriodNanos:      quantizationPeriodNanos,
+		isolationLevel:               isolationLevel,
 	}
 
 	if isPrimary && config.readStrictMode {
@@ -378,6 +374,7 @@ type pgDatastore struct {
 	readPool, writePool            pgxcommon.ConnPooler
 	collectors                     []prometheus.Collector
 	watchBufferLength              uint16
+	watchChangeBufferMaximumSize   uint64
 	watchBufferWriteTimeout        time.Duration
 	optimizedRevisionQuery         string
 	validTransactionQuery          string
@@ -452,6 +449,7 @@ func (pgd *pgDatastore) ReadWriteTx(
 	for i := uint8(0); i <= pgd.maxRetries; i++ {
 		var newXID xid8
 		var newSnapshot pgSnapshot
+		var timestamp time.Time
 		err = wrapError(pgx.BeginTxFunc(ctx, pgd.writePool, pgx.TxOptions{IsoLevel: pgd.isolationLevel}, func(tx pgx.Tx) error {
 			var err error
 			var metadata map[string]any
@@ -459,7 +457,7 @@ func (pgd *pgDatastore) ReadWriteTx(
 				metadata = config.Metadata.AsMap()
 			}
 
-			newXID, newSnapshot, err = createNewTransaction(ctx, tx, metadata)
+			newXID, newSnapshot, timestamp, err = createNewTransaction(ctx, tx, metadata)
 			if err != nil {
 				return err
 			}
@@ -496,7 +494,12 @@ func (pgd *pgDatastore) ReadWriteTx(
 			log.Debug().Uint8("retries", i).Msg("transaction succeeded after retry")
 		}
 
-		return postgresRevision{snapshot: newSnapshot.markComplete(newXID.Uint64), optionalTxID: newXID}, nil
+		nanosTimestamp, err := safecast.Convert[uint64](timestamp.UnixNano())
+		if err != nil {
+			return nil, spiceerrors.MustBugf("could not cast timestamp to uint64")
+		}
+
+		return postgresRevision{snapshot: newSnapshot.markComplete(newXID.Uint64), optionalTxID: newXID, optionalInexactNanosTimestamp: nanosTimestamp}, nil
 	}
 
 	if !config.DisableRetries {
@@ -701,32 +704,23 @@ func (pgd *pgDatastore) OfflineFeatures() (*datastore.Features, error) {
 		continuousCheckpointing = datastore.FeatureSupported
 	}
 
+	watchStatus := datastore.FeatureUnsupported
 	if pgd.watchEnabled {
-		return &datastore.Features{
-			Watch: datastore.Feature{
-				Status: datastore.FeatureSupported,
-			},
-			IntegrityData: datastore.Feature{
-				Status: datastore.FeatureUnsupported,
-			},
-			ContinuousCheckpointing: datastore.Feature{
-				Status: continuousCheckpointing,
-			},
-			WatchEmitsImmediately: datastore.Feature{
-				Status: datastore.FeatureUnsupported,
-			},
-		}, nil
+		watchStatus = datastore.FeatureSupported
 	}
 
 	return &datastore.Features{
 		Watch: datastore.Feature{
+			Status: watchStatus,
+		},
+		WatchEmitsImmediately: datastore.Feature{
 			Status: datastore.FeatureUnsupported,
 		},
 		IntegrityData: datastore.Feature{
 			Status: datastore.FeatureUnsupported,
 		},
 		ContinuousCheckpointing: datastore.Feature{
-			Status: datastore.FeatureUnsupported,
+			Status: continuousCheckpointing,
 		},
 	}, nil
 }

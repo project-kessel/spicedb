@@ -78,6 +78,7 @@ var lexerTests = []lexerTest{
 	{"keyword", "private", []Lexeme{{TokenTypeKeyword, 0, "private", ""}, tEOF}},
 	{"keyword", "public", []Lexeme{{TokenTypeKeyword, 0, "public", ""}, tEOF}},
 
+	{"identifier", "self", []Lexeme{{TokenTypeIdentifier, 0, "self", ""}, tEOF}},
 	{"identifier", "define", []Lexeme{{TokenTypeIdentifier, 0, "define", ""}, tEOF}},
 	{"typepath", "foo/bar", []Lexeme{
 		{TokenTypeIdentifier, 0, "foo", ""},
@@ -281,7 +282,6 @@ var lexerTests = []lexerTest{
 
 func TestLexer(t *testing.T) {
 	for _, test := range lexerTests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			test := test // Close over test and not the pointer that is reused.
 			tokens := performLex(&test)

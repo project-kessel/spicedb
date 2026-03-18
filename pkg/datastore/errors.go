@@ -111,6 +111,34 @@ func NewNamespaceNotFoundErr(nsName string) error {
 	}
 }
 
+// SchemaNotDefinedError occurs when no schema has been defined in the datastore.
+type SchemaNotDefinedError struct {
+	error
+}
+
+var _ ErrNotFound = SchemaNotDefinedError{}
+
+func (err SchemaNotDefinedError) IsNotFoundError() bool {
+	return true
+}
+
+// MarshalZerologObject implements zerolog object marshalling.
+func (err SchemaNotDefinedError) MarshalZerologObject(e *zerolog.Event) {
+	e.Err(err.error)
+}
+
+// DetailsMetadata returns the metadata for details for this error.
+func (err SchemaNotDefinedError) DetailsMetadata() map[string]string {
+	return map[string]string{}
+}
+
+// NewSchemaNotDefinedErr constructs a new schema not defined error.
+func NewSchemaNotDefinedErr() error {
+	return SchemaNotDefinedError{
+		error: errors.New("no schema has been defined; please call WriteSchema to start"),
+	}
+}
+
 // NewWatchDisconnectedErr constructs a new watch was disconnected error.
 func NewWatchDisconnectedErr() error {
 	return WatchDisconnectedError{
@@ -271,7 +299,7 @@ type MaximumChangesSizeExceededError struct {
 
 // NewMaximumChangesSizeExceededError creates a new MaximumChangesSizeExceededError.
 func NewMaximumChangesSizeExceededError(maxSize uint64) error {
-	return MaximumChangesSizeExceededError{fmt.Errorf("maximum changes byte size of %d exceeded", maxSize), maxSize}
+	return MaximumChangesSizeExceededError{fmt.Errorf("maximum changes byte size of %d exceeded; adjust --datastore-watch-change-buffer-maximum-size accordingly", maxSize), maxSize}
 }
 
 var (

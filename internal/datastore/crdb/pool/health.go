@@ -7,9 +7,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/lthibault/jitterbug"
 	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/time/rate"
+
+	"github.com/authzed/jitterbug"
 
 	pgxcommon "github.com/authzed/spicedb/internal/datastore/postgres/common"
 	log "github.com/authzed/spicedb/internal/logging"
@@ -63,7 +64,6 @@ func (t *NodeHealthTracker) Poll(ctx context.Context, interval time.Duration) {
 		// G404 use of non cryptographically secure random number generator is not concern here,
 		// as it's used for jittering the interval for health checks.
 		Source: rand.New(rand.NewSource(time.Now().Unix())),
-		Min:    interval,
 	})
 	defer ticker.Stop()
 	for {

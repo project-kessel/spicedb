@@ -12,8 +12,8 @@ import (
 
 type observableTest struct{}
 
-func (obs observableTest) New(revisionQuantization, _, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
-	db, err := dsfortesting.NewMemDBDatastoreForTesting(watchBufferLength, revisionQuantization, gcWindow)
+func (obs observableTest) New(tb testing.TB, revisionQuantization, _, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
+	db, err := dsfortesting.NewMemDBDatastoreForTesting(tb, watchBufferLength, revisionQuantization, gcWindow)
 	if err != nil {
 		return nil, err
 	}

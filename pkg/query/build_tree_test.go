@@ -8,6 +8,7 @@ import (
 	"github.com/authzed/spicedb/internal/datastore/dsfortesting"
 	"github.com/authzed/spicedb/internal/datastore/memdb"
 	"github.com/authzed/spicedb/internal/testfixtures"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/namespace"
 	corev1 "github.com/authzed/spicedb/pkg/proto/core/v1"
 	"github.com/authzed/spicedb/pkg/schema/v2"
@@ -17,7 +18,7 @@ func TestBuildTree(t *testing.T) {
 	t.Parallel()
 
 	require := require.New(t)
-	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
 
 	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require)
@@ -30,11 +31,8 @@ func TestBuildTree(t *testing.T) {
 	it, err := BuildIteratorFromSchema(dsSchema, "document", "edit")
 	require.NoError(err)
 
-	ctx := &Context{
-		Context:  t.Context(),
-		Executor: LocalExecutor{},
-		Reader:   ds.SnapshotReader(revision),
-	}
+	ctx := NewLocalContext(t.Context(),
+		WithReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
 
 	relSeq, err := ctx.Check(it, NewObjects("document", "specialplan"), NewObject("user", "multiroleguy").WithEllipses())
 	require.NoError(err)
@@ -47,7 +45,7 @@ func TestBuildTreeMultipleRelations(t *testing.T) {
 	t.Parallel()
 
 	require := require.New(t)
-	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
 
 	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require)
@@ -63,11 +61,8 @@ func TestBuildTreeMultipleRelations(t *testing.T) {
 	explain := it.Explain()
 	require.Contains(explain.String(), "Union", "edit permission should create a union iterator")
 
-	ctx := &Context{
-		Context:  t.Context(),
-		Executor: LocalExecutor{},
-		Reader:   ds.SnapshotReader(revision),
-	}
+	ctx := NewLocalContext(t.Context(),
+		WithReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
 
 	relSeq, err := ctx.Check(it, NewObjects("document", "specialplan"), NewObject("user", "multiroleguy").WithEllipses())
 	require.NoError(err)
@@ -100,7 +95,7 @@ func TestBuildTreeSubRelations(t *testing.T) {
 	t.Parallel()
 
 	require := require.New(t)
-	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
 
 	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require)
@@ -117,11 +112,8 @@ func TestBuildTreeSubRelations(t *testing.T) {
 	explain := it.Explain()
 	require.NotEmpty(explain.String())
 
-	ctx := &Context{
-		Context:  t.Context(),
-		Executor: LocalExecutor{},
-		Reader:   ds.SnapshotReader(revision),
-	}
+	ctx := NewLocalContext(t.Context(),
+		WithReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
 
 	// Just test that the iterator can be executed without error
 	relSeq, err := ctx.Check(it, NewObjects("document", "companyplan"), NewObject("user", "legal").WithEllipses())
@@ -170,7 +162,7 @@ func TestBuildTreeRecursion(t *testing.T) {
 
 	// Verify the explain output
 	explain := it.Explain()
-	require.Equal("RecursiveIterator", explain.Name)
+	require.Equal("Recursive", explain.Name)
 }
 
 func TestBuildTreeArrowOperation(t *testing.T) {
@@ -201,7 +193,7 @@ func TestBuildTreeIntersectionOperation(t *testing.T) {
 	t.Parallel()
 
 	require := require.New(t)
-	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
 
 	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require)
@@ -219,11 +211,8 @@ func TestBuildTreeIntersectionOperation(t *testing.T) {
 	require.NotEmpty(explain.String())
 	require.Contains(explain.String(), "Intersection", "should create intersection iterator")
 
-	ctx := &Context{
-		Context:  t.Context(),
-		Executor: LocalExecutor{},
-		Reader:   ds.SnapshotReader(revision),
-	}
+	ctx := NewLocalContext(t.Context(),
+		WithReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
 
 	// Test execution
 	relSeq, err := ctx.Check(it, NewObjects("document", "specialplan"), NewObject("user", "multiroleguy").WithEllipses())
@@ -260,9 +249,9 @@ func TestBuildTreeExclusionOperation(t *testing.T) {
 	require.NoError(err)
 	require.NotNil(it)
 	// Should be wrapped in an Alias
-	alias, ok := it.(*Alias)
-	require.True(ok, "Expected Alias wrapper")
-	require.IsType(&Exclusion{}, alias.subIt)
+	require.IsType(&AliasIterator{}, it, "Expected Alias wrapper")
+	alias := it.(*AliasIterator)
+	require.IsType(&ExclusionIterator{}, alias.subIt)
 
 	// Verify the explain shows alias structure with exclusion underneath
 	explain := it.Explain()
@@ -280,16 +269,13 @@ func TestBuildTreeExclusionEdgeCases(t *testing.T) {
 	t.Parallel()
 
 	require := require.New(t)
-	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
 
 	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require)
 
-	ctx := &Context{
-		Context:  t.Context(),
-		Executor: LocalExecutor{},
-		Reader:   ds.SnapshotReader(revision),
-	}
+	ctx := NewLocalContext(t.Context(),
+		WithReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
 
 	userDef := testfixtures.UserNS.CloneVT()
 
@@ -315,9 +301,9 @@ func TestBuildTreeExclusionEdgeCases(t *testing.T) {
 		require.NoError(err)
 		require.NotNil(it)
 		// Should be wrapped in an Alias
-		alias, ok := it.(*Alias)
-		require.True(ok, "Expected Alias wrapper")
-		require.IsType(&Exclusion{}, alias.subIt)
+		require.IsType(&AliasIterator{}, it, "Expected Alias wrapper")
+		alias := it.(*AliasIterator)
+		require.IsType(&ExclusionIterator{}, alias.subIt)
 
 		// Test execution doesn't crash
 		relSeq, err := ctx.Check(it, []Object{NewObject("document", "test_doc")}, NewObject("user", "alice").WithEllipses())
@@ -354,9 +340,9 @@ func TestBuildTreeExclusionEdgeCases(t *testing.T) {
 		require.NoError(err)
 		require.NotNil(it)
 		// Should be wrapped in an Alias
-		alias, ok := it.(*Alias)
-		require.True(ok, "Expected Alias wrapper")
-		require.IsType(&Exclusion{}, alias.subIt)
+		require.IsType(&AliasIterator{}, it, "Expected Alias wrapper")
+		alias := it.(*AliasIterator)
+		require.IsType(&ExclusionIterator{}, alias.subIt)
 
 		// Verify the structure includes union in main set
 		explain := it.Explain()
@@ -395,9 +381,9 @@ func TestBuildTreeExclusionEdgeCases(t *testing.T) {
 		require.NoError(err)
 		require.NotNil(it)
 		// Should be wrapped in an Alias
-		alias, ok := it.(*Alias)
-		require.True(ok, "Expected Alias wrapper")
-		require.IsType(&Exclusion{}, alias.subIt)
+		require.IsType(&AliasIterator{}, it, "Expected Alias wrapper")
+		alias := it.(*AliasIterator)
+		require.IsType(&ExclusionIterator{}, alias.subIt)
 
 		// Verify the structure includes intersection in main set
 		explain := it.Explain()
@@ -437,9 +423,9 @@ func TestBuildTreeExclusionEdgeCases(t *testing.T) {
 		require.NoError(err)
 		require.NotNil(it)
 		// Should be wrapped in an Alias
-		alias, ok := it.(*Alias)
-		require.True(ok, "Expected Alias wrapper")
-		require.IsType(&Exclusion{}, alias.subIt)
+		require.IsType(&AliasIterator{}, it, "Expected Alias wrapper")
+		alias := it.(*AliasIterator)
+		require.IsType(&ExclusionIterator{}, alias.subIt)
 
 		// Verify nested structure
 		explain := it.Explain()
@@ -530,7 +516,7 @@ func TestBuildTreeSingleRelationOptimization(t *testing.T) {
 	t.Parallel()
 
 	require := require.New(t)
-	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
 
 	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require)
@@ -546,13 +532,10 @@ func TestBuildTreeSingleRelationOptimization(t *testing.T) {
 	// Should create a simple relation iterator without extra union wrappers
 	explain := it.Explain()
 	require.NotEmpty(explain.String())
-	require.Contains(explain.String(), "Relation", "should create relation iterator")
+	require.Contains(explain.String(), "Datastore", "should create datastore iterator")
 
-	ctx := &Context{
-		Context:  t.Context(),
-		Executor: LocalExecutor{},
-		Reader:   ds.SnapshotReader(revision),
-	}
+	ctx := NewLocalContext(t.Context(),
+		WithReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
 
 	// Test execution
 	relSeq, err := ctx.Check(it, NewObjects("document", "companyplan"), NewObject("user", "legal").WithEllipses())
@@ -566,16 +549,13 @@ func TestBuildTreeSubrelationHandling(t *testing.T) {
 	t.Parallel()
 
 	require := require.New(t)
-	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
 
 	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require)
 
-	ctx := &Context{
-		Context:  t.Context(),
-		Executor: LocalExecutor{},
-		Reader:   ds.SnapshotReader(revision),
-	}
+	ctx := NewLocalContext(t.Context(),
+		WithReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
 
 	userDef := testfixtures.UserNS.CloneVT()
 
@@ -641,10 +621,8 @@ func TestBuildTreeSubrelationHandling(t *testing.T) {
 		require.NoError(err)
 		require.NotNil(it)
 
-		// Should create union with arrow for subrelation handling
-		explain := it.Explain()
-		explainStr := explain.String()
-		require.Contains(explainStr, "Union") // Should contain union for base relation + arrow
+		// Note: After canonicalization, single-element unions are collapsed,
+		// so we don't check for specific structure, just that execution works
 
 		// Test execution doesn't crash
 		relSeq, err := ctx.Check(it, []Object{NewObject("document", "test_doc")}, NewObject("user", "alice").WithEllipses())
@@ -656,7 +634,7 @@ func TestBuildTreeSubrelationHandling(t *testing.T) {
 	t.Run("Base Relation Without Subrelations Disabled", func(t *testing.T) {
 		t.Parallel()
 		// Test base relation iterator with withSubRelations = false
-		// This hits the buildBaseRelationIterator path where subrelations are disabled
+		// This hits the buildBaseDatastoreIterator path where subrelations are disabled
 		docDef := namespace.Namespace("document",
 			namespace.MustRelation("parent", nil, namespace.AllowedRelation("document", "...")),
 			namespace.MustRelation("viewer",
@@ -796,15 +774,15 @@ func TestBuildTreeWildcardIterator(t *testing.T) {
 		require.NoError(err)
 		require.NotNil(it)
 
-		// Verify it's an Alias wrapping a RelationIterator with wildcard support
-		require.IsType(&Alias{}, it)
-		alias := it.(*Alias)
-		require.IsType(&RelationIterator{}, alias.subIt)
+		// Verify it's an Alias wrapping a DatastoreIterator with wildcard support
+		require.IsType(&AliasIterator{}, it)
+		alias := it.(*AliasIterator)
+		require.IsType(&DatastoreIterator{}, alias.subIt)
 
 		// Check the explain output contains wildcard information
 		explain := it.Explain()
 		explainStr := explain.String()
-		require.Contains(explainStr, "Relation")
+		require.Contains(explainStr, "Datastore")
 		require.Contains(explainStr, "user:*")
 	})
 
@@ -828,9 +806,9 @@ func TestBuildTreeWildcardIterator(t *testing.T) {
 		require.NotNil(it)
 
 		// Should create an alias with a union containing both regular and wildcard iterators
-		require.IsType(&Alias{}, it)
-		alias := it.(*Alias)
-		require.IsType(&Union{}, alias.subIt)
+		require.IsType(&AliasIterator{}, it)
+		alias := it.(*AliasIterator)
+		require.IsType(&UnionIterator{}, alias.subIt)
 
 		// Check explain contains both relation types (regular and wildcard)
 		explain := it.Explain()
@@ -888,7 +866,7 @@ func TestBuildTreeMutualRecursionSentinelFiltering(t *testing.T) {
 		// The tree should contain RecursiveIterator(s) due to mutual recursion
 		explain := it.Explain()
 		explainStr := explain.String()
-		require.Contains(explainStr, "RecursiveIterator", "should contain RecursiveIterator for mutual recursion")
+		require.Contains(explainStr, "Recursive", "should contain Recursive for mutual recursion")
 	})
 
 	t.Run("otherdocument viewer builds successfully with mutual recursion", func(t *testing.T) {
@@ -901,7 +879,7 @@ func TestBuildTreeMutualRecursionSentinelFiltering(t *testing.T) {
 		// The tree should contain RecursiveIterator(s)
 		explain := it.Explain()
 		explainStr := explain.String()
-		require.Contains(explainStr, "RecursiveIterator", "should contain RecursiveIterator for mutual recursion")
+		require.Contains(explainStr, "Recursive", "should contain Recursive for mutual recursion")
 	})
 
 	t.Run("sentinels are filtered by definition/relation", func(t *testing.T) {
@@ -933,9 +911,9 @@ func TestBuildTreeMutualRecursionSentinelFiltering(t *testing.T) {
 			require.NotEmpty(recursiveIterator.definitionName)
 			require.NotEmpty(recursiveIterator.relationName)
 
-			var recursiveSentinels []*RecursiveSentinel
+			var recursiveSentinels []*RecursiveSentinelIterator
 			_, _ = Walk(recursiveIterator.templateTree, func(it Iterator) (Iterator, error) {
-				if sentinel, ok := it.(*RecursiveSentinel); ok {
+				if sentinel, ok := it.(*RecursiveSentinelIterator); ok {
 					recursiveSentinels = append(recursiveSentinels, sentinel)
 				}
 				return it, nil

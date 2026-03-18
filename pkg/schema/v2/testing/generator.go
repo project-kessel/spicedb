@@ -87,7 +87,7 @@ func CheckWithSchema(t *testing.T, handler func(t *rapid.T, schema *schema.Schem
 		builder := schema.NewSchemaBuilder()
 
 		// Generate between 1 and 3 types to represent subjects.
-		subjectTypeNames := rapid.SliceOfN(rapidDefinitionString, 1, 3).Draw(t, "subjectTypeNames")
+		subjectTypeNames := rapid.SliceOfNDistinct(rapidDefinitionString, 1, 3, rapid.ID[string]).Draw(t, "subjectTypeNames")
 		subjectTypeRelationMap := map[string]string{}
 		for _, subjectTypeName := range subjectTypeNames {
 			builder = builder.AddDefinition(subjectTypeName).Done()
@@ -108,17 +108,17 @@ func CheckWithSchema(t *testing.T, handler func(t *rapid.T, schema *schema.Schem
 		}
 
 		// Generate between 1 and 3 types to represent resources.
-		resourceTypeNames := rapid.SliceOfN(rapidDefinitionString, 1, 3).Draw(t, "resourceTypeNames")
+		resourceTypeNames := rapid.SliceOfNDistinct(rapidDefinitionString, 1, 3, rapid.ID[string]).Draw(t, "resourceTypeNames")
 		for _, resourceTypeName := range resourceTypeNames {
 			resourceBuilder := builder.AddDefinition(resourceTypeName)
 
 			// Generate between 3 and 5 relations per resource.
-			relationNames := rapid.SliceOfN(rapidRelationString, 3, 5).Draw(t, resourceTypeName+"-relationNames")
+			relationNames := rapid.SliceOfNDistinct(rapidRelationString, 3, 5, rapid.ID[string]).Draw(t, resourceTypeName+"-relationNames")
 			for _, relationName := range relationNames {
 				relationBuilder := resourceBuilder.AddRelation(relationName)
 
 				// Link the relation to between 1 and 3 subject types.
-				subjectTypeNames := rapid.SliceOfN(rapid.SampledFrom(subjectTypeNames), 1, 3).Draw(t, resourceTypeName+"-"+relationName+"-subjectTypeNames")
+				subjectTypeNames := rapid.SliceOfNDistinct(rapid.SampledFrom(subjectTypeNames), 1, 3, rapid.ID[string]).Draw(t, resourceTypeName+"-"+relationName+"-subjectTypeNames")
 				addedSubjectTypeNames := mapz.NewSet[string]()
 				for _, subjectTypeName := range subjectTypeNames {
 					if !addedSubjectTypeNames.Add(subjectTypeName) {
@@ -138,7 +138,7 @@ func CheckWithSchema(t *testing.T, handler func(t *rapid.T, schema *schema.Schem
 
 			// Generate between 1 and 5 permissions per resource.
 			subjectRelationNames := slices.Collect(maps.Values(subjectTypeRelationMap))
-			permissionNames := rapid.SliceOfN(rapidPermissionString, 1, 5).Draw(t, resourceTypeName+"-permissionNames")
+			permissionNames := rapid.SliceOfNDistinct(rapidPermissionString, 1, 5, rapid.ID[string]).Draw(t, resourceTypeName+"-permissionNames")
 			for _, permissionName := range permissionNames {
 				permBuilder := resourceBuilder.AddPermission(permissionName)
 				op := mustGenerateOperation(t, relationNames, subjectRelationNames, 3, "")
@@ -182,7 +182,7 @@ func mustGenerateOperation(t *rapid.T, relationNames []string, subjectRelationNa
 		// Union
 		numChildren := rapid.IntRange(1, 3).Draw(t, path+"::unionNumChildren")
 		unionBuilder := schema.NewUnion()
-		for i := 0; i < numChildren; i++ {
+		for i := range numChildren {
 			childOp := mustGenerateOperation(t, relationNames, subjectRelationNames, depthRemaining-1, path+"::unionChild#"+strconv.Itoa(i))
 			unionBuilder = unionBuilder.Add(childOp)
 		}
@@ -192,7 +192,7 @@ func mustGenerateOperation(t *rapid.T, relationNames []string, subjectRelationNa
 		// Intersection
 		numChildren := rapid.IntRange(1, 3).Draw(t, "intersectionNumChildren")
 		intersectionBuilder := schema.NewIntersection()
-		for i := 0; i < numChildren; i++ {
+		for i := range numChildren {
 			childOp := mustGenerateOperation(t, relationNames, subjectRelationNames, depthRemaining-1, path+"::intersectionChild#"+strconv.Itoa(i))
 			intersectionBuilder = intersectionBuilder.Add(childOp)
 		}

@@ -33,7 +33,7 @@ const (
 )
 
 // Implement TestableDatastore interface
-func (mds *Datastore) ExampleRetryableError() error {
+func (mds *mysqlDatastore) ExampleRetryableError() error {
 	return &mysql.MySQLError{
 		Number: errMysqlDeadlock,
 	}
@@ -41,13 +41,12 @@ func (mds *Datastore) ExampleRetryableError() error {
 
 type datastoreTester struct {
 	b      testdatastore.RunningEngineForTest
-	t      *testing.T
 	prefix string
 }
 
-func (dst *datastoreTester) createDatastore(revisionQuantization, gcInterval, gcWindow time.Duration, _ uint16) (datastore.Datastore, error) {
+func (dst *datastoreTester) createDatastore(tb testing.TB, revisionQuantization, gcInterval, gcWindow time.Duration, _ uint16) (datastore.Datastore, error) {
 	ctx := context.Background()
-	ds := dst.b.NewDatastore(dst.t, func(engine, uri string) datastore.Datastore {
+	ds := dst.b.NewDatastore(tb, func(engine, uri string) datastore.Datastore {
 		ds, err := newMySQLDatastore(ctx, uri, primaryInstanceID,
 			RevisionQuantization(revisionQuantization),
 			GCWindow(gcWindow),
@@ -56,11 +55,11 @@ func (dst *datastoreTester) createDatastore(revisionQuantization, gcInterval, gc
 			DebugAnalyzeBeforeStatistics(),
 			OverrideLockWaitTimeout(1),
 		)
-		require.NoError(dst.t, err)
+		require.NoError(tb, err)
 		return indexcheck.WrapWithIndexCheckingDatastoreProxyIfApplicable(ds)
 	})
 	_, err := ds.ReadyState(context.Background())
-	require.NoError(dst.t, err)
+	require.NoError(tb, err)
 	return ds, nil
 }
 
@@ -123,7 +122,7 @@ func TestMySQLDatastoreDSNWithoutParseTime(t *testing.T) {
 
 func TestMySQL8Datastore(t *testing.T) {
 	b := testdatastore.RunMySQLForTestingWithOptions(t, testdatastore.MySQLTesterOptions{MigrateForNewDatastore: true}, "")
-	dst := datastoreTester{b: b, t: t}
+	dst := datastoreTester{b: b}
 	test.AllWithExceptions(t, test.DatastoreTesterFunc(dst.createDatastore), test.WithCategories(test.WatchSchemaCategory, test.WatchCheckpointsCategory), true)
 	additionalMySQLTests(t, b)
 }
@@ -152,8 +151,8 @@ func additionalMySQLTests(t *testing.T, b testdatastore.RunningEngineForTest) {
 }
 
 func LockingTest(t *testing.T, ds datastore.Datastore, ds2 datastore.Datastore) {
-	mds := ds.(*Datastore)
-	mds2 := ds2.(*Datastore)
+	mds := ds.(*mysqlDatastore)
+	mds2 := ds2.(*mysqlDatastore)
 
 	// Acquire a lock.
 	ctx := context.Background()
@@ -194,7 +193,7 @@ func DatabaseSeedingTest(t *testing.T, ds datastore.Datastore) {
 
 	// ensure datastore is seeded right after initialization
 	ctx := context.Background()
-	isSeeded, err := ds.(*Datastore).isSeeded(ctx)
+	isSeeded, err := ds.(*mysqlDatastore).isSeeded(ctx)
 	req.NoError(err)
 	req.True(isSeeded, "expected datastore to be seeded after initialization")
 
@@ -235,7 +234,7 @@ func GarbageCollectionTest(t *testing.T, ds datastore.Datastore) {
 
 	// Write basic namespaces.
 	writtenAt, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		return rwt.WriteNamespaces(
+		return rwt.LegacyWriteNamespaces(
 			ctx,
 			namespace.Namespace(
 				"resource",
@@ -247,7 +246,7 @@ func GarbageCollectionTest(t *testing.T, ds datastore.Datastore) {
 	req.NoError(err)
 
 	// Run GC at the transaction and ensure no relationships are removed.
-	mds := ds.(*Datastore)
+	mds := ds.(*mysqlDatastore)
 
 	mgg, err := mds.BuildGarbageCollector(ctx)
 	req.NoError(err)
@@ -260,7 +259,7 @@ func GarbageCollectionTest(t *testing.T, ds datastore.Datastore) {
 
 	// Replace the namespace with a new one.
 	writtenAt, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		return rwt.WriteNamespaces(
+		return rwt.LegacyWriteNamespaces(
 			ctx,
 			namespace.Namespace(
 				"resource",
@@ -380,7 +379,7 @@ func GarbageCollectionByTimeTest(t *testing.T, ds datastore.Datastore) {
 
 	// Write basic namespaces.
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		return rwt.WriteNamespaces(
+		return rwt.LegacyWriteNamespaces(
 			ctx,
 			namespace.Namespace(
 				"resource",
@@ -391,7 +390,7 @@ func GarbageCollectionByTimeTest(t *testing.T, ds datastore.Datastore) {
 	})
 	req.NoError(err)
 
-	mds := ds.(*Datastore)
+	mds := ds.(*mysqlDatastore)
 
 	mgg, err := mds.BuildGarbageCollector(ctx)
 	req.NoError(err)
@@ -485,7 +484,7 @@ func NoRelationshipsGarbageCollectionTest(t *testing.T, ds datastore.Datastore) 
 
 	// Write basic namespaces.
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		return rwt.WriteNamespaces(
+		return rwt.LegacyWriteNamespaces(
 			ctx,
 			namespace.Namespace(
 				"resource",
@@ -526,7 +525,7 @@ func ChunkedGarbageCollectionTest(t *testing.T, ds datastore.Datastore) {
 
 	// Write basic namespaces.
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		return rwt.WriteNamespaces(
+		return rwt.LegacyWriteNamespaces(
 			ctx,
 			namespace.Namespace(
 				"resource",
@@ -537,7 +536,7 @@ func ChunkedGarbageCollectionTest(t *testing.T, ds datastore.Datastore) {
 	})
 	req.NoError(err)
 
-	mds := ds.(*Datastore)
+	mds := ds.(*mysqlDatastore)
 
 	mgg, err := mds.BuildGarbageCollector(ctx)
 	req.NoError(err)
@@ -679,7 +678,7 @@ func QuantizedRevisionTest(t *testing.T, b testdatastore.RunningEngineForTest) {
 				require.NoError(err)
 				return ds
 			})
-			mds := ds.(*Datastore)
+			mds := ds.(*mysqlDatastore)
 
 			mgg, err := mds.BuildGarbageCollector(ctx)
 			require.NoError(err)
@@ -733,7 +732,7 @@ func TransactionTimestampsTest(t *testing.T, ds datastore.Datastore) {
 
 	// Setting db default time zone to before UTC
 	ctx := context.Background()
-	db := ds.(*Datastore).db
+	db := ds.(*mysqlDatastore).db
 	_, err := db.ExecContext(ctx, "SET GLOBAL time_zone = 'America/New_York';")
 	req.NoError(err)
 
@@ -742,7 +741,7 @@ func TransactionTimestampsTest(t *testing.T, ds datastore.Datastore) {
 	req.True(r.IsReady)
 
 	// Get timestamp in UTC as reference
-	mgg, err := ds.(*Datastore).BuildGarbageCollector(ctx)
+	mgg, err := ds.(*mysqlDatastore).BuildGarbageCollector(ctx)
 	req.NoError(err)
 	defer mgg.Close()
 
@@ -752,19 +751,19 @@ func TransactionTimestampsTest(t *testing.T, ds datastore.Datastore) {
 	// Transaction timestamp should not be stored in system time zone
 	tx, err := db.BeginTx(ctx, nil)
 	req.NoError(err)
-	txID, err := ds.(*Datastore).createNewTransaction(ctx, tx, nil)
+	txID, err := ds.(*mysqlDatastore).createNewTransaction(ctx, tx, nil)
 	req.NoError(err)
 	err = tx.Commit()
 	req.NoError(err)
 
 	var ts time.Time
-	query, args, err := sb.Select(colTimestamp).From(ds.(*Datastore).driver.RelationTupleTransaction()).Where(sq.Eq{colID: txID}).ToSql()
+	query, args, err := sb.Select(colTimestamp).From(ds.(*mysqlDatastore).driver.RelationTupleTransaction()).Where(sq.Eq{colID: txID}).ToSql()
 	req.NoError(err)
 	err = db.QueryRowContext(ctx, query, args...).Scan(&ts)
 	req.NoError(err)
 
 	// Let's make sure both Now() and transactionCreated() have timezones aligned
-	req.True(ts.Sub(startTimeUTC) < 5*time.Minute)
+	req.Less(ts.Sub(startTimeUTC), 5*time.Minute)
 
 	revision, err := ds.OptimizedRevision(ctx)
 	req.NoError(err)
@@ -782,7 +781,7 @@ func TestMySQLMigrations(t *testing.T) {
 
 	version, err := migrationDriver.Version(context.Background())
 	req.NoError(err)
-	req.Equal("", version)
+	req.Empty(version)
 
 	err = migrations.Manager.Run(context.Background(), migrationDriver, migrate.Head, migrate.LiveRun)
 	req.NoError(err)
@@ -804,7 +803,7 @@ func TestMySQLMigrationsWithPrefix(t *testing.T) {
 
 	version, err := migrationDriver.Version(context.Background())
 	req.NoError(err)
-	req.Equal("", version)
+	req.Empty(version)
 
 	err = migrations.Manager.Run(context.Background(), migrationDriver, migrate.Head, migrate.LiveRun)
 	req.NoError(err)

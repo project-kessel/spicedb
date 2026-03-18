@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"iter"
 	"maps"
+	"slices"
 	"time"
 
 	"github.com/authzed/spicedb/internal/caveats"
@@ -120,21 +121,11 @@ func (p Path) mergeFrom(other Path, caveatMerger func(pCaveat, otherCaveat *core
 	// Combine caveats using the provided merger function
 	result.Caveat = caveatMerger(p.Caveat, other.Caveat)
 
-	// Keep any Expiration, and if there are two of them, take the earlier one
-	if other.Expiration != nil {
-		if p.Expiration == nil || other.Expiration.Before(*p.Expiration) {
-			result.Expiration = other.Expiration
-		} else {
-			result.Expiration = p.Expiration
-		}
-	} else {
-		result.Expiration = p.Expiration
-	}
+	// Combine expiration (take the earlier time)
+	result.Expiration = combineExpiration(p.Expiration, other.Expiration)
 
-	// Append all integrities together
-	result.Integrity = make([]*core.RelationshipIntegrity, 0, len(p.Integrity)+len(other.Integrity))
-	result.Integrity = append(result.Integrity, p.Integrity...)
-	result.Integrity = append(result.Integrity, other.Integrity...)
+	// Combine integrity (append all values)
+	result.Integrity = combineIntegrity(p.Integrity, other.Integrity)
 
 	// Merge the metadata by combining both maps
 	// WARNING: This is a simple overwrite strategy and may not be appropriate for all use cases.
@@ -150,6 +141,36 @@ func (p Path) mergeFrom(other Path, caveatMerger func(pCaveat, otherCaveat *core
 	}
 
 	return result, nil
+}
+
+// combineExpiration returns the earlier (shorter) expiration time between two times.
+// If either time is nil, it returns the non-nil time. If both are nil, it returns nil.
+// This ensures the combined path is only valid as long as both constituent paths are valid.
+func combineExpiration(t1, t2 *time.Time) *time.Time {
+	if t2 == nil {
+		return t1
+	}
+	if t1 == nil {
+		return t2
+	}
+	if t2.Before(*t1) {
+		return t2
+	}
+	return t1
+}
+
+// combineIntegrity appends all integrity values from both slices into a new slice.
+// This preserves all integrity proofs from both paths. Returns nil if both inputs are
+// nil or empty, following the codebase convention for Integrity fields.
+func combineIntegrity(i1, i2 []*core.RelationshipIntegrity) []*core.RelationshipIntegrity {
+	// If both are empty, return nil (not empty slice) to match codebase convention
+	if len(i1) == 0 && len(i2) == 0 {
+		return nil
+	}
+	result := make([]*core.RelationshipIntegrity, 0, len(i1)+len(i2))
+	result = append(result, i1...)
+	result = append(result, i2...)
+	return result
 }
 
 func (p Path) IsExpired() bool {
@@ -295,6 +316,150 @@ func (p Path) Equals(other Path) bool {
 	return true
 }
 
+// PathOrder defines ordering for Path objects
+// Returns -1 if a < b, 0 if a == b, 1 if a > b
+//
+// Compatible with slices.SortFunc.
+func PathOrder(a, b Path) int {
+	// Compare resource type
+	if a.Resource.ObjectType != b.Resource.ObjectType {
+		if a.Resource.ObjectType < b.Resource.ObjectType {
+			return -1
+		}
+		return 1
+	}
+
+	// Compare resource ID
+	if a.Resource.ObjectID != b.Resource.ObjectID {
+		if a.Resource.ObjectID < b.Resource.ObjectID {
+			return -1
+		}
+		return 1
+	}
+
+	// Compare relation
+	if a.Relation != b.Relation {
+		if a.Relation < b.Relation {
+			return -1
+		}
+		return 1
+	}
+
+	// Compare subject type
+	if a.Subject.ObjectType != b.Subject.ObjectType {
+		if a.Subject.ObjectType < b.Subject.ObjectType {
+			return -1
+		}
+		return 1
+	}
+
+	// Compare subject ID
+	if a.Subject.ObjectID != b.Subject.ObjectID {
+		if a.Subject.ObjectID < b.Subject.ObjectID {
+			return -1
+		}
+		return 1
+	}
+
+	// Compare subject relation
+	if a.Subject.Relation != b.Subject.Relation {
+		if a.Subject.Relation < b.Subject.Relation {
+			return -1
+		}
+		return 1
+	}
+
+	// Compare expiration
+	if (a.Expiration == nil) != (b.Expiration == nil) {
+		if a.Expiration == nil {
+			return -1
+		}
+		return 1
+	}
+	if a.Expiration != nil && b.Expiration != nil {
+		if a.Expiration.Before(*b.Expiration) {
+			return -1
+		}
+		if a.Expiration.After(*b.Expiration) {
+			return 1
+		}
+	}
+
+	// Compare caveat
+	if (a.Caveat == nil) != (b.Caveat == nil) {
+		if a.Caveat == nil {
+			return -1
+		}
+		return 1
+	}
+	if a.Caveat != nil && b.Caveat != nil {
+		aStr := a.Caveat.String()
+		bStr := b.Caveat.String()
+		if aStr != bStr {
+			if aStr < bStr {
+				return -1
+			}
+			return 1
+		}
+	}
+
+	// Compare integrity length
+	if len(a.Integrity) != len(b.Integrity) {
+		if len(a.Integrity) < len(b.Integrity) {
+			return -1
+		}
+		return 1
+	}
+
+	// Compare integrity elements
+	for i := range a.Integrity {
+		aStr := a.Integrity[i].String()
+		bStr := b.Integrity[i].String()
+		if aStr != bStr {
+			if aStr < bStr {
+				return -1
+			}
+			return 1
+		}
+	}
+
+	// Compare metadata: extract sorted key lists, compare keys first,
+	// then compare values key-by-key using the common sorted key order.
+	// nil maps are treated as empty.
+	aKeys := slices.Sorted(maps.Keys(a.Metadata))
+	bKeys := slices.Sorted(maps.Keys(b.Metadata))
+
+	for i, ak := range aKeys {
+		if i >= len(bKeys) {
+			return 1
+		}
+		bk := bKeys[i]
+		if ak != bk {
+			if ak < bk {
+				return -1
+			}
+			return 1
+		}
+	}
+	if len(aKeys) < len(bKeys) {
+		return -1
+	}
+
+	// Same keys; compare values in sorted-key order
+	for _, k := range aKeys {
+		aVal := fmt.Sprintf("%v", a.Metadata[k])
+		bVal := fmt.Sprintf("%v", b.Metadata[k])
+		if aVal != bVal {
+			if aVal < bVal {
+				return -1
+			}
+			return 1
+		}
+	}
+
+	return 0
+}
+
 // CollectAll is a helper function to build read a complete PathSeq and turn it into a fully realized slice of Paths.
 func CollectAll(seq PathSeq) ([]Path, error) {
 	out := make([]Path, 0)
@@ -305,6 +470,17 @@ func CollectAll(seq PathSeq) ([]Path, error) {
 		out = append(out, x)
 	}
 	return out, nil
+}
+
+// PathSeqFromSlice creates a PathSeq that yields all paths from the given slice.
+func PathSeqFromSlice(paths []Path) PathSeq {
+	return func(yield func(Path, error) bool) {
+		for _, path := range paths {
+			if !yield(path, nil) {
+				return
+			}
+		}
+	}
 }
 
 // DeduplicatePathSeq returns a new PathSeq that deduplicates paths based on their
@@ -336,6 +512,124 @@ func DeduplicatePathSeq(seq PathSeq) PathSeq {
 
 		// Yield all deduplicated paths
 		for _, path := range seen {
+			if !yield(path, nil) {
+				return
+			}
+		}
+	}
+}
+
+func RewriteSubject(seq PathSeq, subject ObjectAndRelation) PathSeq {
+	return func(yield func(Path, error) bool) {
+		for path, err := range seq {
+			if err != nil {
+				if !yield(Path{}, err) {
+					return
+				}
+				continue
+			}
+
+			// Replace the wildcard subject with the concrete subject
+			path.Subject = subject
+
+			// Convert to Path
+			if !yield(path, nil) {
+				return
+			}
+		}
+	}
+}
+
+// FilterWildcardSubjects filters out any paths with wildcard subjects.
+func FilterWildcardSubjects(seq PathSeq) PathSeq {
+	return func(yield func(Path, error) bool) {
+		for path, err := range seq {
+			if err != nil {
+				if !yield(Path{}, err) {
+					return
+				}
+				continue
+			}
+
+			// Skip wildcard subjects
+			if path.Subject.ObjectID == tuple.PublicWildcard {
+				continue
+			}
+
+			if !yield(path, nil) {
+				return
+			}
+		}
+	}
+}
+
+// FilterResourcesByType filters a PathSeq to only include paths where the resource
+// matches the specified ObjectType. If filter.Type is empty, no filtering is applied.
+func FilterResourcesByType(seq PathSeq, filter ObjectType) PathSeq {
+	return func(yield func(Path, error) bool) {
+		for path, err := range seq {
+			if err != nil {
+				if !yield(Path{}, err) {
+					return
+				}
+				continue
+			}
+
+			// Empty Type means no filtering
+			if filter.Type == "" {
+				if !yield(path, nil) {
+					return
+				}
+				continue
+			}
+
+			// Check if resource matches the filter
+			if path.Resource.ObjectType != filter.Type {
+				continue // Skip this path
+			}
+
+			// If Subrelation specified, check relation too
+			if filter.Subrelation != "" && path.Relation != filter.Subrelation {
+				continue
+			}
+
+			if !yield(path, nil) {
+				return
+			}
+		}
+	}
+}
+
+// FilterSubjectsByType filters a PathSeq to only include paths where the subject
+// matches the specified ObjectType. If filter.Type is empty, no filtering is applied.
+func FilterSubjectsByType(seq PathSeq, filter ObjectType) PathSeq {
+	return func(yield func(Path, error) bool) {
+		for path, err := range seq {
+			if err != nil {
+				if !yield(Path{}, err) {
+					return
+				}
+				continue
+			}
+
+			// Empty Type means no filtering
+			if filter.Type == "" {
+				if !yield(path, nil) {
+					return
+				}
+				continue
+			}
+
+			// Check if subject matches the filter
+			if path.Subject.ObjectType != filter.Type {
+				continue
+			}
+
+			// If Subrelation specified, check it too
+			if filter.Subrelation != "" && path.Subject.Relation != filter.Subrelation {
+				continue
+			}
+
 			if !yield(path, nil) {
 				return
 			}

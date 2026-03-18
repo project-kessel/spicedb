@@ -3,6 +3,7 @@ package namespace
 import (
 	"context"
 
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/genutil/mapz"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
@@ -18,12 +19,16 @@ func ReadNamespaceAndRelation(
 	ctx context.Context,
 	namespace string,
 	relation string,
-	ds datastore.Reader,
+	sr datalayer.SchemaReader,
 ) (*core.NamespaceDefinition, *core.Relation, error) {
-	config, _, err := ds.ReadNamespaceByName(ctx, namespace)
+	revDef, found, err := sr.LookupTypeDefByName(ctx, namespace)
 	if err != nil {
 		return nil, nil, err
 	}
+	if !found {
+		return nil, nil, datastore.NewNamespaceNotFoundErr(namespace)
+	}
+	config := revDef.Definition
 
 	for _, rel := range config.Relation {
 		if rel.Name == relation {
@@ -51,7 +56,7 @@ type TypeAndRelationToCheck struct {
 // Returns NamespaceNotFoundError if the namespace cannot be found.
 // Returns RelationNotFoundError if the relation was not found in the namespace.
 // Returns the direct downstream error for all other unknown error.
-func CheckNamespaceAndRelations(ctx context.Context, checks []TypeAndRelationToCheck, ds datastore.Reader) error {
+func CheckNamespaceAndRelations(ctx context.Context, checks []TypeAndRelationToCheck, sr datalayer.SchemaReader) error {
 	nsNames := mapz.NewSet[string]()
 	for _, toCheck := range checks {
 		nsNames.Insert(toCheck.NamespaceName)
@@ -61,14 +66,14 @@ func CheckNamespaceAndRelations(ctx context.Context, checks []TypeAndRelationToC
 		return nil
 	}
 
-	namespaces, err := ds.LookupNamespacesWithNames(ctx, nsNames.AsSlice())
+	foundDefs, err := sr.LookupTypeDefinitionsByNames(ctx, nsNames.AsSlice())
 	if err != nil {
 		return err
 	}
 
-	mappedNamespaces := make(map[string]*core.NamespaceDefinition, len(namespaces))
-	for _, namespace := range namespaces {
-		mappedNamespaces[namespace.Definition.Name] = namespace.Definition
+	mappedNamespaces := make(map[string]*core.NamespaceDefinition, len(foundDefs))
+	for name, nsDef := range foundDefs {
+		mappedNamespaces[name] = nsDef
 	}
 
 	for _, toCheck := range checks {
@@ -108,12 +113,16 @@ func CheckNamespaceAndRelation(
 	namespace string,
 	relation string,
 	allowEllipsis bool,
-	ds datastore.Reader,
+	sr datalayer.SchemaReader,
 ) error {
-	config, _, err := ds.ReadNamespaceByName(ctx, namespace)
+	revDef, found, err := sr.LookupTypeDefByName(ctx, namespace)
 	if err != nil {
 		return err
 	}
+	if !found {
+		return datastore.NewNamespaceNotFoundErr(namespace)
+	}
+	config := revDef.Definition
 
 	if allowEllipsis && relation == datastore.Ellipsis {
 		return nil

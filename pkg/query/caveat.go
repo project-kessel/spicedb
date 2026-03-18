@@ -11,8 +11,9 @@ import (
 // It checks caveat conditions on relationships during iteration and only yields
 // relationships that satisfy the caveat constraints.
 type CaveatIterator struct {
-	subiterator Iterator
-	caveat      *core.ContextualizedCaveat
+	subiterator  Iterator
+	caveat       *core.ContextualizedCaveat
+	canonicalKey CanonicalKey
 }
 
 var _ Iterator = &CaveatIterator{}
@@ -34,16 +35,16 @@ func (c *CaveatIterator) CheckImpl(ctx *Context, resources []Object, subject Obj
 	return c.runCaveats(ctx, subSeq)
 }
 
-func (c *CaveatIterator) IterSubjectsImpl(ctx *Context, resource Object) (PathSeq, error) {
-	subSeq, err := ctx.IterSubjects(c.subiterator, resource)
+func (c *CaveatIterator) IterSubjectsImpl(ctx *Context, resource Object, filterSubjectType ObjectType) (PathSeq, error) {
+	subSeq, err := ctx.IterSubjects(c.subiterator, resource, filterSubjectType)
 	if err != nil {
 		return nil, err
 	}
 	return c.runCaveats(ctx, subSeq)
 }
 
-func (c *CaveatIterator) IterResourcesImpl(ctx *Context, subject ObjectAndRelation) (PathSeq, error) {
-	subSeq, err := ctx.IterResources(c.subiterator, subject)
+func (c *CaveatIterator) IterResourcesImpl(ctx *Context, subject ObjectAndRelation, filterResourceType ObjectType) (PathSeq, error) {
+	subSeq, err := ctx.IterResources(c.subiterator, subject, filterResourceType)
 	if err != nil {
 		return nil, err
 	}
@@ -126,12 +127,16 @@ func (c *CaveatIterator) simplifyCaveat(ctx *Context, path Path) (*core.CaveatEx
 	}
 
 	// Use the SimplifyCaveatExpression function to properly handle AND/OR logic
+	sr, err := ctx.Reader.ReadSchema()
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to get schema reader: %w", err)
+	}
 	simplified, passes, err := SimplifyCaveatExpression(
 		ctx,
 		ctx.CaveatRunner,
 		path.Caveat,
 		ctx.CaveatContext,
-		ctx.Reader,
+		sr,
 	)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to simplify caveat: %w", err)
@@ -176,8 +181,9 @@ func (c *CaveatIterator) containsCaveatName(expr *core.CaveatExpression, expecte
 
 func (c *CaveatIterator) Clone() Iterator {
 	return &CaveatIterator{
-		subiterator: c.subiterator.Clone(),
-		caveat:      c.caveat.CloneVT(),
+		canonicalKey: c.canonicalKey,
+		subiterator:  c.subiterator.Clone(),
+		caveat:       c.caveat.CloneVT(),
 	}
 }
 
@@ -196,7 +202,21 @@ func (c *CaveatIterator) Subiterators() []Iterator {
 }
 
 func (c *CaveatIterator) ReplaceSubiterators(newSubs []Iterator) (Iterator, error) {
-	return &CaveatIterator{subiterator: newSubs[0], caveat: c.caveat}, nil
+	return &CaveatIterator{canonicalKey: c.canonicalKey, subiterator: newSubs[0], caveat: c.caveat}, nil
+}
+
+func (c *CaveatIterator) CanonicalKey() CanonicalKey {
+	return c.canonicalKey
+}
+
+func (c *CaveatIterator) ResourceType() ([]ObjectType, error) {
+	// Delegate to the wrapped iterator
+	return c.subiterator.ResourceType()
+}
+
+func (c *CaveatIterator) SubjectTypes() ([]ObjectType, error) {
+	// Delegate to the wrapped iterator
+	return c.subiterator.SubjectTypes()
 }
 
 // buildExplainInfo creates detailed explanation information for the caveat iterator

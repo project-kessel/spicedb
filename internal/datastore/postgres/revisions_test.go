@@ -30,7 +30,6 @@ func TestRevisionOrdering(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(fmt.Sprintf("%s:%s", tc.lhsSnapshot, tc.rhsSnapshot), func(t *testing.T) {
 			require := require.New(t)
 
@@ -76,14 +75,13 @@ func TestRevisionSerDe(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.snapshot.String(), func(t *testing.T) {
 			require := require.New(t)
 
 			rev := postgresRevision{
-				snapshot:               tc.snapshot,
-				optionalTxID:           xid8{Uint64: tc.optionalTxID, Valid: tc.optionalTxID > 0},
-				optionalNanosTimestamp: tc.optionalNanoTS,
+				snapshot:                      tc.snapshot,
+				optionalTxID:                  xid8{Uint64: tc.optionalTxID, Valid: tc.optionalTxID > 0},
+				optionalInexactNanosTimestamp: tc.optionalNanoTS,
 			}
 			serialized := rev.String()
 			require.Equal(tc.expectedStr, serialized)
@@ -99,7 +97,7 @@ func TestTxIDTimestampAvailable(t *testing.T) {
 	// Timestamps should be non-negative
 	testTimestamp := safecast.RequireConvert[uint64](t, time.Now().Unix())
 	snapshot := snap(0, 5, 1)
-	pgr := postgresRevision{snapshot: snapshot, optionalTxID: NewXid8(1), optionalNanosTimestamp: testTimestamp}
+	pgr := postgresRevision{snapshot: snapshot, optionalTxID: NewXid8(1), optionalInexactNanosTimestamp: testTimestamp}
 	receivedTimestamp, ok := pgr.OptionalNanosTimestamp()
 	require.True(t, ok)
 	require.Equal(t, receivedTimestamp, testTimestamp)
@@ -138,7 +136,6 @@ func TestRevisionParseOldDecimalFormat(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.snapshot.String(), func(t *testing.T) {
 			require := require.New(t)
 
@@ -180,7 +177,6 @@ func TestCombinedRevisionParsing(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.snapshot.String(), func(t *testing.T) {
 			require := require.New(t)
 

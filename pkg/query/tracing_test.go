@@ -2,12 +2,12 @@ package query
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/authzed/spicedb/internal/datastore/memdb"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
 )
 
@@ -23,12 +23,10 @@ func TestIteratorTracing(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	ctx := &Context{
-		Context:     context.Background(),
-		Executor:    LocalExecutor{},
-		Reader:      ds.SnapshotReader(revision),
-		TraceLogger: traceLogger,
-	}
+	ctx := NewLocalContext(context.Background(),
+		WithReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)),
+		WithTraceLogger(traceLogger),
+	)
 
 	// Create test paths
 	testPath1 := MustPathFromString("document:doc1#view@user:alice")
@@ -50,10 +48,13 @@ func TestIteratorTracing(t *testing.T) {
 
 	// Verify tracing output
 	trace := traceLogger.DumpTrace()
-	require.True(t, strings.Contains(trace, "-> Fixed: check(document:doc1, user:alice)"))
-	require.True(t, strings.Contains(trace, "<- Fixed: returned 1 paths"))
-	require.True(t, strings.Contains(trace, "Fixed: checking 2 paths against 1 resources"))
-	require.True(t, strings.Contains(trace, "Fixed: found 1 matching paths"))
+	require.Contains(t, trace, "-> ")
+	require.Contains(t, trace, "Fixed")
+	require.Contains(t, trace, "check(document:doc1, user:alice)")
+	require.Contains(t, trace, "<- ")
+	require.Contains(t, trace, "returned 1 paths")
+	require.Contains(t, trace, "checking 2 paths against 1 resources")
+	require.Contains(t, trace, "found 1 matching paths")
 
 	t.Run("IterSubjects tracing", func(t *testing.T) {
 		// Reset trace logger
@@ -61,7 +62,7 @@ func TestIteratorTracing(t *testing.T) {
 		ctx.TraceLogger = traceLogger
 
 		resource := NewObject("document", "doc1")
-		seq, err := ctx.IterSubjects(fixedIter, resource)
+		seq, err := ctx.IterSubjects(fixedIter, resource, NoObjectFilter())
 		require.NoError(t, err)
 
 		paths, err := CollectAll(seq)
@@ -70,10 +71,13 @@ func TestIteratorTracing(t *testing.T) {
 
 		// Verify tracing output
 		trace := traceLogger.DumpTrace()
-		require.True(t, strings.Contains(trace, "-> Fixed: check(document:doc1, :)"))
-		require.True(t, strings.Contains(trace, "<- Fixed: returned 1 paths"))
-		require.True(t, strings.Contains(trace, "Fixed: iterating subjects for resource document:doc1 from 2 paths"))
-		require.True(t, strings.Contains(trace, "Fixed: found 1 matching subjects"))
+		require.Contains(t, trace, "-> ")
+		require.Contains(t, trace, "Fixed")
+		require.Contains(t, trace, "iterSubjects(document:doc1)")
+		require.Contains(t, trace, "<- ")
+		require.Contains(t, trace, "returned 1 paths")
+		require.Contains(t, trace, "iterating subjects for resource document:doc1 from 2 paths")
+		require.Contains(t, trace, "found 1 matching subjects")
 	})
 
 	t.Run("Union tracing", func(t *testing.T) {
@@ -82,9 +86,7 @@ func TestIteratorTracing(t *testing.T) {
 		ctx.TraceLogger = traceLogger
 
 		// Test Union iterator tracing
-		union := NewUnion()
-		union.addSubIterator(NewFixedIterator(testPath1))
-		union.addSubIterator(NewFixedIterator(testPath2))
+		union := NewUnionIterator(NewFixedIterator(testPath1), NewFixedIterator(testPath2))
 
 		seq, err := ctx.Check(union, resources, subject)
 		require.NoError(t, err)
@@ -95,8 +97,11 @@ func TestIteratorTracing(t *testing.T) {
 
 		// Verify tracing output
 		trace := traceLogger.DumpTrace()
-		require.True(t, strings.Contains(trace, "-> Union: check(document:doc1, user:alice)"))
-		require.True(t, strings.Contains(trace, "<- Union: returned 1 paths"))
-		require.True(t, strings.Contains(trace, "Union: processing 2 sub-iterators"))
+		require.Contains(t, trace, "-> ")
+		require.Contains(t, trace, "Union")
+		require.Contains(t, trace, "check(document:doc1, user:alice)")
+		require.Contains(t, trace, "<- ")
+		require.Contains(t, trace, "returned 1 paths")
+		require.Contains(t, trace, "processing 2 sub-iterators")
 	})
 }

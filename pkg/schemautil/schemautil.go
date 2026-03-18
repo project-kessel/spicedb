@@ -5,15 +5,15 @@ import (
 
 	"github.com/authzed/spicedb/internal/services/shared"
 	caveattypes "github.com/authzed/spicedb/pkg/caveats/types"
-	"github.com/authzed/spicedb/pkg/datastore"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	"github.com/authzed/spicedb/pkg/schemadsl/compiler"
 )
 
 // ValidateSchemaChanges validates the schema found in the compiled schema and returns a
 // ValidatedSchemaChanges, if fully validated.
-func ValidateSchemaChanges(ctx context.Context, compiled *compiler.CompiledSchema, isAdditiveOnly bool) (*shared.ValidatedSchemaChanges, error) {
-	return ValidateSchemaChangesWithCaveatTypeSet(ctx, compiled, caveattypes.Default.TypeSet, isAdditiveOnly)
+func ValidateSchemaChanges(ctx context.Context, compiled *compiler.CompiledSchema, isAdditiveOnly bool, schemaText string) (*shared.ValidatedSchemaChanges, error) {
+	return ValidateSchemaChangesWithCaveatTypeSet(ctx, compiled, caveattypes.Default.TypeSet, isAdditiveOnly, schemaText)
 }
 
 func ValidateSchemaChangesWithCaveatTypeSet(
@@ -21,8 +21,9 @@ func ValidateSchemaChangesWithCaveatTypeSet(
 	compiled *compiler.CompiledSchema,
 	caveatTypeSet *caveattypes.TypeSet,
 	isAdditiveOnly bool,
+	schemaText string,
 ) (*shared.ValidatedSchemaChanges, error) {
-	return shared.ValidateSchemaChanges(ctx, compiled, caveatTypeSet, isAdditiveOnly)
+	return shared.ValidateSchemaChanges(ctx, compiled, caveatTypeSet, isAdditiveOnly, schemaText)
 }
 
 // ApplySchemaChanges applies schema changes found in the validated changes struct, via the specified
@@ -30,7 +31,7 @@ func ValidateSchemaChangesWithCaveatTypeSet(
 // and the error itself (if any).
 func ApplySchemaChanges(
 	ctx context.Context,
-	rwt datastore.ReadWriteTransaction,
+	rwt datalayer.ReadWriteTransaction,
 	validated *shared.ValidatedSchemaChanges,
 	existingCaveats []*core.CaveatDefinition,
 	existingObjectDefs []*core.NamespaceDefinition,
@@ -47,7 +48,7 @@ func ApplySchemaChanges(
 
 func ApplySchemaChangesWithCaveatTypeSet(
 	ctx context.Context,
-	rwt datastore.ReadWriteTransaction,
+	rwt datalayer.ReadWriteTransaction,
 	validated *shared.ValidatedSchemaChanges,
 	caveatTypeSet *caveattypes.TypeSet,
 	existingCaveats []*core.CaveatDefinition,

@@ -6,26 +6,22 @@ import (
 	"strings"
 
 	grpcvalidate "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/validator"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 
 	log "github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/internal/middleware"
-	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/middleware/perfinsights"
 	"github.com/authzed/spicedb/internal/middleware/usagemetrics"
 	"github.com/authzed/spicedb/internal/services/shared"
 	caveattypes "github.com/authzed/spicedb/pkg/caveats/types"
-	"github.com/authzed/spicedb/pkg/datastore"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/genutil"
 	"github.com/authzed/spicedb/pkg/middleware/consistency"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	dispatchv1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
 	"github.com/authzed/spicedb/pkg/schema"
 	"github.com/authzed/spicedb/pkg/schemadsl/compiler"
-	"github.com/authzed/spicedb/pkg/schemadsl/generator"
 	"github.com/authzed/spicedb/pkg/schemadsl/input"
 	"github.com/authzed/spicedb/pkg/tuple"
 	"github.com/authzed/spicedb/pkg/zedtoken"
@@ -84,52 +80,29 @@ func (ss *schemaServer) ReadSchema(ctx context.Context, _ *v1.ReadSchemaRequest)
 	perfinsights.SetInContext(ctx, perfinsights.NoLabels)
 
 	// Schema is always read from the head revision.
-	ds := datastoremw.MustFromContext(ctx)
-	headRevision, err := ds.HeadRevision(ctx)
+	dl := datalayer.MustFromContext(ctx)
+	headRevision, err := dl.HeadRevision(ctx)
 	if err != nil {
 		return nil, ss.rewriteError(ctx, err)
 	}
 
-	reader := ds.SnapshotReader(headRevision)
+	reader := dl.SnapshotReader(headRevision)
 
-	nsDefs, err := reader.ListAllNamespaces(ctx)
+	sr, err := reader.ReadSchema()
 	if err != nil {
 		return nil, ss.rewriteError(ctx, err)
 	}
 
-	caveatDefs, err := reader.ListAllCaveats(ctx)
-	if err != nil {
-		return nil, ss.rewriteError(ctx, err)
-	}
-
-	if len(nsDefs) == 0 {
-		return nil, status.Errorf(codes.NotFound, "No schema has been defined; please call WriteSchema to start")
-	}
-
-	schemaDefinitions := make([]compiler.SchemaDefinition, 0, len(nsDefs)+len(caveatDefs))
-	for _, caveatDef := range caveatDefs {
-		schemaDefinitions = append(schemaDefinitions, caveatDef.Definition)
-	}
-
-	for _, nsDef := range nsDefs {
-		schemaDefinitions = append(schemaDefinitions, nsDef.Definition)
-	}
-
-	schemaText, _, err := generator.GenerateSchema(schemaDefinitions)
-	if err != nil {
-		return nil, ss.rewriteError(ctx, err)
-	}
-
-	dispatchCount, err := genutil.EnsureUInt32(len(nsDefs) + len(caveatDefs))
+	schemaText, err := sr.SchemaText()
 	if err != nil {
 		return nil, ss.rewriteError(ctx, err)
 	}
 
 	usagemetrics.SetInContext(ctx, &dispatchv1.ResponseMeta{
-		DispatchCount: dispatchCount,
+		DispatchCount: 1,
 	})
 
-	zedToken, err := zedtoken.NewFromRevision(ctx, headRevision, ds)
+	zedToken, err := zedtoken.NewFromRevision(ctx, headRevision, dl)
 	if err != nil {
 		return nil, ss.rewriteError(ctx, err)
 	}
@@ -145,7 +118,7 @@ func (ss *schemaServer) WriteSchema(ctx context.Context, in *v1.WriteSchemaReque
 
 	log.Ctx(ctx).Trace().Str("schema", in.GetSchema()).Msg("requested Schema to be written")
 
-	ds := datastoremw.MustFromContext(ctx)
+	dl := datalayer.MustFromContext(ctx)
 
 	// Compile the schema into the namespace definitions.
 	opts := make([]compiler.Option, 0, 3)
@@ -154,6 +127,9 @@ func (ss *schemaServer) WriteSchema(ctx context.Context, in *v1.WriteSchemaReque
 	}
 
 	opts = append(opts, compiler.CaveatTypeSet(ss.caveatTypeSet))
+	// Imports don't make sense in a schema written directly to SpiceDB;
+	// the user must first compile them with `zed`
+	opts = append(opts, compiler.DisallowImportFlag())
 
 	compiled, err := compiler.Compile(compiler.InputSchema{
 		Source:       input.Source("schema"),
@@ -165,13 +141,12 @@ func (ss *schemaServer) WriteSchema(ctx context.Context, in *v1.WriteSchemaReque
 	log.Ctx(ctx).Trace().Int("objectDefinitions", len(compiled.ObjectDefinitions)).Int("caveatDefinitions", len(compiled.CaveatDefinitions)).Msg("compiled namespace definitions")
 
 	// Do as much validation as we can before talking to the datastore.
-	validated, err := shared.ValidateSchemaChanges(ctx, compiled, ss.caveatTypeSet, ss.additiveOnly)
+	validated, err := shared.ValidateSchemaChanges(ctx, compiled, ss.caveatTypeSet, ss.additiveOnly, in.GetSchema())
 	if err != nil {
 		return nil, ss.rewriteError(ctx, err)
 	}
 
-	// Update the schema.
-	revision, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
+	revision, err := dl.ReadWriteTx(ctx, func(ctx context.Context, rwt datalayer.ReadWriteTransaction) error {
 		applied, err := shared.ApplySchemaChanges(ctx, rwt, ss.caveatTypeSet, validated)
 		if err != nil {
 			return err
@@ -191,7 +166,7 @@ func (ss *schemaServer) WriteSchema(ctx context.Context, in *v1.WriteSchemaReque
 		return nil, ss.rewriteError(ctx, err)
 	}
 
-	zedToken, err := zedtoken.NewFromRevision(ctx, revision, ds)
+	zedToken, err := zedtoken.NewFromRevision(ctx, revision, dl)
 	if err != nil {
 		return nil, ss.rewriteError(ctx, err)
 	}
@@ -243,8 +218,8 @@ func (ss *schemaServer) ReflectSchema(ctx context.Context, req *v1.ReflectSchema
 		}
 	}
 
-	ds := datastoremw.MustFromContext(ctx)
-	zedToken, err := zedtoken.NewFromRevision(ctx, atRevision, ds)
+	dl := datalayer.MustFromContext(ctx)
+	zedToken, err := zedtoken.NewFromRevision(ctx, atRevision, dl)
 	if err != nil {
 		return nil, shared.RewriteErrorWithoutConfig(ctx, err)
 	}
@@ -291,8 +266,12 @@ func (ss *schemaServer) ComputablePermissions(ctx context.Context, req *v1.Compu
 		return nil, shared.RewriteErrorWithoutConfig(ctx, err)
 	}
 
-	ds := datastoremw.MustFromContext(ctx).SnapshotReader(atRevision)
-	ts := schema.NewTypeSystem(schema.ResolverForDatastoreReader(ds))
+	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision)
+	sr, err := dl.ReadSchema()
+	if err != nil {
+		return nil, shared.RewriteErrorWithoutConfig(ctx, err)
+	}
+	ts := schema.NewTypeSystem(schema.ResolverFor(sr))
 	vdef, err := ts.GetValidatedDefinition(ctx, req.DefinitionName)
 	if err != nil {
 		return nil, shared.RewriteErrorWithoutConfig(ctx, err)
@@ -307,17 +286,17 @@ func (ss *schemaServer) ComputablePermissions(ctx context.Context, req *v1.Compu
 		}
 	}
 
-	allNamespaces, err := ds.ListAllNamespaces(ctx)
+	typeDefs, err := sr.ListAllTypeDefinitions(ctx)
 	if err != nil {
 		return nil, shared.RewriteErrorWithoutConfig(ctx, err)
 	}
 
-	allDefinitions := make([]*core.NamespaceDefinition, 0, len(allNamespaces))
-	for _, ns := range allNamespaces {
-		allDefinitions = append(allDefinitions, ns.Definition)
+	allDefinitions := make([]*core.NamespaceDefinition, 0, len(typeDefs))
+	for _, typeDef := range typeDefs {
+		allDefinitions = append(allDefinitions, typeDef.Definition)
 	}
 
-	rg := vdef.Reachability()
+	rg := vdef.Reachability(ts)
 	rr, err := rg.RelationsEncounteredForSubject(ctx, allDefinitions, &core.RelationReference{
 		Namespace: req.DefinitionName,
 		Relation:  relationName,
@@ -374,8 +353,12 @@ func (ss *schemaServer) DependentRelations(ctx context.Context, req *v1.Dependen
 		return nil, shared.RewriteErrorWithoutConfig(ctx, err)
 	}
 
-	ds := datastoremw.MustFromContext(ctx).SnapshotReader(atRevision)
-	ts := schema.NewTypeSystem(schema.ResolverForDatastoreReader(ds))
+	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision)
+	sr2, err := dl.ReadSchema()
+	if err != nil {
+		return nil, shared.RewriteErrorWithoutConfig(ctx, err)
+	}
+	ts := schema.NewTypeSystem(schema.ResolverFor(sr2))
 	vdef, err := ts.GetValidatedDefinition(ctx, req.DefinitionName)
 	if err != nil {
 		return nil, shared.RewriteErrorWithoutConfig(ctx, err)
@@ -390,7 +373,7 @@ func (ss *schemaServer) DependentRelations(ctx context.Context, req *v1.Dependen
 		return nil, shared.RewriteErrorWithoutConfig(ctx, NewNotAPermissionError(req.PermissionName))
 	}
 
-	rg := vdef.Reachability()
+	rg := vdef.Reachability(ts)
 	rr, err := rg.RelationsEncounteredForResource(ctx, &core.RelationReference{
 		Namespace: req.DefinitionName,
 		Relation:  req.PermissionName,

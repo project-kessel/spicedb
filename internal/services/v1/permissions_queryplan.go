@@ -6,7 +6,7 @@ import (
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 
 	caveatsimpl "github.com/authzed/spicedb/internal/caveats"
-	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/middleware/consistency"
 	"github.com/authzed/spicedb/pkg/query"
@@ -21,17 +21,22 @@ func (ps *permissionServer) checkPermissionWithQueryPlan(ctx context.Context, re
 		return nil, ps.rewriteError(ctx, err)
 	}
 
-	ds := datastoremw.MustFromContext(ctx)
-	reader := ds.SnapshotReader(atRevision)
+	dl := datalayer.MustFromContext(ctx)
+	reader := dl.SnapshotReader(atRevision)
 
 	// Load all namespace and caveat definitions to build the schema
 	// TODO: Better schema caching
-	namespaces, err := reader.ListAllNamespaces(ctx)
+	sr, err := reader.ReadSchema()
 	if err != nil {
 		return nil, ps.rewriteError(ctx, err)
 	}
 
-	caveats, err := reader.ListAllCaveats(ctx)
+	namespaces, err := sr.ListAllTypeDefinitions(ctx)
+	if err != nil {
+		return nil, ps.rewriteError(ctx, err)
+	}
+
+	caveats, err := sr.ListAllCaveatDefinitions(ctx)
 	if err != nil {
 		return nil, ps.rewriteError(ctx, err)
 	}
@@ -48,6 +53,12 @@ func (ps *permissionServer) checkPermissionWithQueryPlan(ctx context.Context, re
 	// Build iterator tree from schema
 	// TODO: Better iterator caching
 	it, err := query.BuildIteratorFromSchema(fullSchema, req.Resource.ObjectType, req.Permission)
+	if err != nil {
+		return nil, ps.rewriteError(ctx, err)
+	}
+
+	// Apply basic optimizations to the iterator tree
+	it, _, err = query.ApplyOptimizations(it, query.StaticOptimizations)
 	if err != nil {
 		return nil, ps.rewriteError(ctx, err)
 	}

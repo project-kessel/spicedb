@@ -10,24 +10,23 @@ import (
 
 	"github.com/ccoveille/go-safecast/v2"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/goleak"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/authzed/spicedb/internal/datastore/dsfortesting"
 	"github.com/authzed/spicedb/internal/datastore/memdb"
 	"github.com/authzed/spicedb/internal/dispatch"
-	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/testfixtures"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/datastore/options"
 	"github.com/authzed/spicedb/pkg/genutil/mapz"
 	v1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
-	"github.com/authzed/spicedb/pkg/testutil"
 	"github.com/authzed/spicedb/pkg/tuple"
 )
 
 func TestSimpleLookupResources2(t *testing.T) {
-	// FIXME marking this parallel makes goleak detect a leaked goroutine
+	t.Parallel()
+
 	testCases := []struct {
 		start                 tuple.RelationReference
 		target                tuple.ObjectAndRelation
@@ -101,7 +100,7 @@ func TestSimpleLookupResources2(t *testing.T) {
 
 		tc := tc
 		t.Run(name, func(t *testing.T) {
-			defer goleak.VerifyNone(t, append(testutil.GoLeakIgnores(), goleak.IgnoreCurrent())...)
+			t.Parallel()
 
 			require := require.New(t)
 			ctx, dispatcher, revision := newLocalDispatcher(t)
@@ -182,7 +181,6 @@ func TestSimpleLookupResourcesWithCursor2(t *testing.T) {
 			expectedSecond: []string{"companyplan", "masterplan"},
 		},
 	} {
-		tc := tc
 		t.Run(tc.subject, func(t *testing.T) {
 			t.Parallel()
 
@@ -296,11 +294,12 @@ func TestLookupResourcesCursorStability2(t *testing.T) {
 }
 
 func processResults2(stream *dispatch.CollectingDispatchStream[*v1.DispatchLookupResources2Response]) ([]*v1.PossibleResource, uint32, uint32, uint32) {
-	foundResources := []*v1.PossibleResource{}
+	streamResults := stream.Results()
+	foundResources := make([]*v1.PossibleResource, 0, len(streamResults))
 	var maxDepthRequired uint32
 	var maxDispatchCount uint32
 	var maxCachedDispatchCount uint32
-	for _, result := range stream.Results() {
+	for _, result := range streamResults {
 		result.Resource.ForSubjectIds = nil
 		foundResources = append(foundResources, result.Resource)
 		maxDepthRequired = max(maxDepthRequired, result.Metadata.DepthRequired)
@@ -314,7 +313,7 @@ func TestMaxDepthLookup2(t *testing.T) {
 	t.Parallel()
 	require := require.New(t)
 
-	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
 
 	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require)
@@ -323,8 +322,8 @@ func TestMaxDepthLookup2(t *testing.T) {
 	require.NoError(err)
 	defer dispatcher.Close()
 
-	ctx := datastoremw.ContextWithHandle(t.Context())
-	require.NoError(datastoremw.SetInContext(ctx, ds))
+	ctx := datalayer.ContextWithHandle(t.Context())
+	require.NoError(datalayer.SetInContext(ctx, datalayer.NewDataLayer(ds)))
 	stream := dispatch.NewCollectingDispatchStream[*v1.DispatchLookupResources2Response](ctx)
 
 	err = dispatcher.DispatchLookupResources2(&v1.DispatchLookupResources2Request{
@@ -748,25 +747,26 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			for _, pageSize := range []int{0, 104, 1023} {
-				pageSize := pageSize
 				t.Run(fmt.Sprintf("ps-%d_", pageSize), func(t *testing.T) {
 					t.Parallel()
 					require := require.New(t)
 
 					dispatcher, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
 					require.NoError(err)
+					t.Cleanup(func() {
+						dispatcher.Close()
+					})
 
-					ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+					ds, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 					require.NoError(err)
 
 					ds, revision := testfixtures.DatastoreFromSchemaAndTestRelationships(ds, tc.schema, tc.relationships, require)
 
-					ctx := datastoremw.ContextWithHandle(t.Context())
-					require.NoError(datastoremw.SetInContext(ctx, ds))
+					ctx := datalayer.ContextWithHandle(t.Context())
+					require.NoError(datalayer.SetInContext(ctx, datalayer.NewDataLayer(ds)))
 
 					var currentCursor *v1.Cursor
 					foundResourceIDs := mapz.NewSet[string]()
@@ -836,7 +836,7 @@ func TestLookupResources2ImmediateTimeout(t *testing.T) {
 
 	require := require.New(t)
 
-	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
 
 	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require)
@@ -845,11 +845,11 @@ func TestLookupResources2ImmediateTimeout(t *testing.T) {
 	require.NoError(err)
 	defer dispatcher.Close()
 
-	ctx := datastoremw.ContextWithHandle(t.Context())
+	ctx := datalayer.ContextWithHandle(t.Context())
 	cctx, cancel := context.WithTimeout(ctx, 1*time.Nanosecond)
 	defer cancel()
 
-	require.NoError(datastoremw.SetInContext(cctx, ds))
+	require.NoError(datalayer.SetInContext(cctx, datalayer.NewDataLayer(ds)))
 	stream := dispatch.NewCollectingDispatchStream[*v1.DispatchLookupResources2Response](cctx)
 
 	err = dispatcher.DispatchLookupResources2(&v1.DispatchLookupResources2Request{
@@ -872,7 +872,7 @@ func TestLookupResources2WithError(t *testing.T) {
 
 	require := require.New(t)
 
-	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
 
 	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require)
@@ -881,11 +881,11 @@ func TestLookupResources2WithError(t *testing.T) {
 	require.NoError(err)
 	defer dispatcher.Close()
 
-	ctx := datastoremw.ContextWithHandle(t.Context())
+	ctx := datalayer.ContextWithHandle(t.Context())
 	cctx, cancel := context.WithTimeout(ctx, 1*time.Nanosecond)
 	defer cancel()
 
-	require.NoError(datastoremw.SetInContext(cctx, ds))
+	require.NoError(datalayer.SetInContext(cctx, datalayer.NewDataLayer(ds)))
 	stream := dispatch.NewCollectingDispatchStream[*v1.DispatchLookupResources2Response](cctx)
 
 	err = dispatcher.DispatchLookupResources2(&v1.DispatchLookupResources2Request{
@@ -1345,13 +1345,12 @@ func TestLookupResources2EnsureCheckHints(t *testing.T) {
 	}
 
 	for _, tc := range tcs {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
 			require := require.New(t)
 
-			rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+			rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 			require.NoError(err)
 
 			ds, revision := testfixtures.DatastoreFromSchemaAndTestRelationships(rawDS, tc.schema, tc.relationships, require)
@@ -1362,11 +1361,11 @@ func TestLookupResources2EnsureCheckHints(t *testing.T) {
 			require.NoError(err)
 			defer dispatcher.Close()
 
-			ctx := datastoremw.ContextWithHandle(t.Context())
+			ctx := datalayer.ContextWithHandle(t.Context())
 			cctx, cancel := context.WithTimeout(ctx, 1*time.Minute)
 			defer cancel()
 
-			require.NoError(datastoremw.SetInContext(cctx, checkingDS))
+			require.NoError(datalayer.SetInContext(cctx, datalayer.NewDataLayer(checkingDS)))
 			stream := dispatch.NewCollectingDispatchStream[*v1.DispatchLookupResources2Response](cctx)
 
 			err = dispatcher.DispatchLookupResources2(&v1.DispatchLookupResources2Request{
@@ -1457,7 +1456,7 @@ func genRels(resourceName string, relation string, subjectName string, subjectID
 
 func genSubjectRels(resourceName string, relation string, subjectName string, subjectRelation string, number int) []tuple.Relationship {
 	rels := make([]tuple.Relationship, 0, number)
-	for i := 0; i < number; i++ {
+	for i := range number {
 		rel := tuple.Relationship{
 			RelationshipReference: tuple.RelationshipReference{
 				Resource: ONR(resourceName, fmt.Sprintf("%s-%d", resourceName, i), relation),
@@ -1476,7 +1475,7 @@ func genRelsWithCaveat(resourceName string, relation string, subjectName string,
 
 func genRelsWithCaveatAndSubjectRelation(resourceName string, relation string, subjectName string, subjectID string, subjectRelation string, caveatName string, context map[string]any, offset int, number int) []tuple.Relationship {
 	rels := make([]tuple.Relationship, 0, number)
-	for i := 0; i < number; i++ {
+	for i := range number {
 		rel := tuple.Relationship{
 			RelationshipReference: tuple.RelationshipReference{
 				Resource: ONR(resourceName, fmt.Sprintf("%s-%d", resourceName, i+offset), relation),
@@ -1494,18 +1493,19 @@ func genRelsWithCaveatAndSubjectRelation(resourceName string, relation string, s
 
 func genResourceIds(resourceName string, number int) []string {
 	resourceIDs := make([]string, 0, number)
-	for i := 0; i < number; i++ {
+	for i := range number {
 		resourceIDs = append(resourceIDs, fmt.Sprintf("%s-%d", resourceName, i))
 	}
 	return resourceIDs
 }
 
 func processResults(stream *dispatch.CollectingDispatchStream[*v1.DispatchLookupResources2Response]) ([]*v1.PossibleResource, uint32, uint32, uint32) {
-	foundResources := []*v1.PossibleResource{}
+	streamResults := stream.Results()
+	foundResources := make([]*v1.PossibleResource, 0, len(streamResults))
 	var maxDepthRequired uint32
 	var maxDispatchCount uint32
 	var maxCachedDispatchCount uint32
-	for _, result := range stream.Results() {
+	for _, result := range streamResults {
 		foundResources = append(foundResources, result.Resource)
 		maxDepthRequired = max(maxDepthRequired, result.Metadata.DepthRequired)
 		maxDispatchCount = max(maxDispatchCount, result.Metadata.DispatchCount)

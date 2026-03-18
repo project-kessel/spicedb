@@ -28,7 +28,11 @@ import (
 )
 
 const (
-	queryChangefeed       = "CREATE CHANGEFEED FOR %s WITH updated, cursor = '%s', resolved = '%s', min_checkpoint_frequency = '0';"
+	// cursor: the revision before which we want to start the changefeed
+	// resolved: the minimum duration between "resolved" checkpoint messages
+	// min_checkpoint_frequency: how frequently CRDB will attempt to produce a checkpoint. the docs say that this can be 0,
+	// but that doesn't seem to be true for 26.1, so we set it to 1ms, which is still short but seems to work.
+	queryChangefeed       = "CREATE CHANGEFEED FOR %s WITH updated, cursor = '%s', resolved = '%s', min_checkpoint_frequency = '1ms';"
 	queryChangefeedPreV25 = "EXPERIMENTAL CHANGEFEED FOR %s WITH updated, cursor = '%s', resolved = '%s', min_checkpoint_frequency = '0';"
 	queryChangefeedPreV22 = "EXPERIMENTAL CHANGEFEED FOR %s WITH updated, cursor = '%s', resolved = '%s';"
 )
@@ -64,13 +68,13 @@ type changeDetails struct {
 		IntegrityHashAsHex *string `json:"integrity_hash"`
 		TimestampAsString  *string `json:"timestamp"`
 
-		Metadata map[string]any `json:"metadata"`
+		Metadata common.TransactionMetadata `json:"metadata"`
 	}
 }
 
 func (cds *crdbDatastore) Watch(ctx context.Context, afterRevision datastore.Revision, options datastore.WatchOptions) (<-chan datastore.RevisionChanges, <-chan error) {
 	watchBufferLength := options.WatchBufferLength
-	if watchBufferLength <= 0 {
+	if watchBufferLength == 0 {
 		watchBufferLength = cds.watchBufferLength
 	}
 
@@ -232,7 +236,7 @@ type changeTracker[R datastore.Revision, K comparable] interface {
 	AddChangedDefinition(ctx context.Context, rev R, def datastore.SchemaDefinition) error
 	AddDeletedNamespace(ctx context.Context, rev R, namespaceName string) error
 	AddDeletedCaveat(ctx context.Context, rev R, caveatName string) error
-	AddRevisionMetadata(ctx context.Context, rev R, metadata map[string]any) error
+	AddRevisionMetadata(ctx context.Context, rev R, metadata common.TransactionMetadata) error
 }
 
 // streamingChangeProvider is a changeTracker that streams changes as they are processed. Instead of accumulating
@@ -312,7 +316,7 @@ func (s streamingChangeProvider) AddDeletedCaveat(_ context.Context, rev revisio
 	return s.sendChange(changes)
 }
 
-func (s streamingChangeProvider) AddRevisionMetadata(_ context.Context, rev revisions.HLCRevision, metadata map[string]any) error {
+func (s streamingChangeProvider) AddRevisionMetadata(_ context.Context, rev revisions.HLCRevision, metadata common.TransactionMetadata) error {
 	if len(metadata) > 0 {
 		parsedMetadata, err := structpb.NewStruct(metadata)
 		if err != nil {
@@ -344,7 +348,12 @@ func (cds *crdbDatastore) processChanges(ctx context.Context, changes pgx.Rows, 
 			content:    opts.Content,
 		}
 	} else {
-		tracked = common.NewChanges(revisions.HLCKeyFunc, opts.Content, opts.MaximumBufferedChangesByteSize)
+		watchBufferSize := opts.MaximumBufferedChangesByteSize
+		if watchBufferSize == 0 {
+			watchBufferSize = cds.watchChangeBufferMaximumSize
+		}
+
+		tracked = common.NewChanges(revisions.HLCKeyFunc, opts.Content, watchBufferSize)
 	}
 
 	for changes.Next() {
@@ -380,8 +389,6 @@ func (cds *crdbDatastore) processChanges(ctx context.Context, changes pgx.Rows, 
 			}
 
 			for _, revChange := range filtered {
-				revChange := revChange
-
 				// TODO(jschorr): Change this to a new event type if/when we decide to report these
 				// row GCs.
 

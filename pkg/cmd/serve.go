@@ -3,6 +3,8 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/fatih/color"
@@ -74,7 +76,7 @@ func RegisterServeFlags(cmd *cobra.Command, config *server.Config) error {
 	// Flags for the gRPC API server
 	util.RegisterGRPCServerFlags(grpcFlagSet, &config.GRPCServer, "grpc", "gRPC", ":50051", true)
 	grpcFlagSet.StringSliceVar(&config.PresharedSecureKey, PresharedKeyFlag, []string{}, "(required) preshared key(s) that must be provided by clients to authenticate requests")
-	grpcFlagSet.DurationVar(&config.ShutdownGracePeriod, "grpc-shutdown-grace-period", 0*time.Second, "amount of time after receiving sigint to continue serving")
+	grpcFlagSet.DurationVar(&config.ShutdownGracePeriod, "grpc-shutdown-grace-period", 5*time.Second, "time limit given to the server to shutdown gracefully after it receives SIGINT or SIGTERM. A value of zero means no limit")
 	if err := cobra.MarkFlagRequired(grpcFlagSet, PresharedKeyFlag); err != nil {
 		return fmt.Errorf("failed to mark flag as required: %w", err)
 	}
@@ -117,10 +119,10 @@ func RegisterServeFlags(cmd *cobra.Command, config *server.Config) error {
 	apiFlags.Uint32Var(&config.MaxDeleteRelationshipsLimit, "max-delete-relationships-limit", 1000, "maximum number of relationships that can be deleted in a single request")
 	apiFlags.Uint32Var(&config.MaxLookupResourcesLimit, "max-lookup-resources-limit", 1000, "maximum number of resources that can be looked up in a single request")
 	apiFlags.Uint32Var(&config.MaxBulkExportRelationshipsLimit, "max-bulk-export-relationships-limit", 10_000, "maximum number of relationships that can be exported in a single request")
-	apiFlags.BoolVar(&config.EnableRevisionHeartbeat, "enable-revision-heartbeat", true, "enables support for revision heartbeat, used to create a synthetic revision on an interval defined by the quantization window (postgres only)")
+	apiFlags.BoolVar(&config.EnableRevisionHeartbeat, "enable-revision-heartbeat", true, "enables support for revision heartbeat, used to create a synthetic revision on an interval defined by the quantization window (Postgres driver only)")
 	apiFlags.BoolVar(&config.EnablePerformanceInsightMetrics, "enable-performance-insight-metrics", false, "enables performance insight metrics, which are used to track the latency of API calls by shape")
 	apiFlags.StringVar(&config.MismatchZedTokenBehavior, "mismatch-zed-token-behavior", "full-consistency", "behavior to enforce when an API call receives a zedtoken that was originally intended for a different kind of datastore. One of: full-consistency (treat as a full-consistency call, ignoring the zedtoken), min-latency (treat as a min-latency call, ignoring the zedtoken), error (return an error). defaults to full-consistency for safety.")
-
+	apiFlags.BoolVar(&config.EnableMemoryProtectionMiddleware, "enable-memory-protection-middleware", true, "enables middleware that does a best effort at preventing OOM (Out of Memory) if the server's memory usage is too high by returning ResourceExhausted on incoming requests")
 	datastoreFlags := nfs.FlagSet(BoldBlue("Datastore"))
 	// Flags for the datastore
 	if err := datastore.RegisterDatastoreFlags(datastoreFlags, &config.DatastoreConfig); err != nil {
@@ -135,13 +137,22 @@ func RegisterServeFlags(cmd *cobra.Command, config *server.Config) error {
 		return fmt.Errorf("failed to mark flag as hidden: %w", err)
 	}
 	namespaceCacheFlags.DurationVar(&config.SchemaWatchHeartbeat, "datastore-schema-watch-heartbeat", 1*time.Second, "heartbeat time on the schema watch in the datastore (if supported). 0 means to default to the datastore's minimum.")
-	server.MustRegisterCacheFlags(namespaceCacheFlags, "ns-cache", &config.NamespaceCacheConfig, namespaceCacheDefaults)
+	err := server.RegisterCacheFlags(namespaceCacheFlags, "ns-cache", "schema", &config.NamespaceCacheConfig, namespaceCacheDefaults)
+	if err != nil {
+		return fmt.Errorf("could not register namespace cache flags: %w", err)
+	}
 
 	dispatchFlags := nfs.FlagSet(BoldBlue("Dispatch"))
 	// Flags for configuring the dispatch server
 	util.RegisterGRPCServerFlags(dispatchFlags, &config.DispatchServer, "dispatch-cluster", "dispatch", ":50053", false)
-	server.MustRegisterCacheFlags(dispatchFlags, "dispatch-cache", &config.DispatchCacheConfig, dispatchCacheDefaults)
-	server.MustRegisterCacheFlags(dispatchFlags, "dispatch-cluster-cache", &config.ClusterDispatchCacheConfig, dispatchClusterCacheDefaults)
+	err = server.RegisterCacheFlags(dispatchFlags, "dispatch-cache", "dispatch calls this server makes to other servers", &config.DispatchCacheConfig, dispatchCacheDefaults)
+	if err != nil {
+		return fmt.Errorf("could not register dispatch cache flags: %w", err)
+	}
+	err = server.RegisterCacheFlags(dispatchFlags, "dispatch-cluster-cache", "dispatch calls this server receives from other servers", &config.ClusterDispatchCacheConfig, dispatchClusterCacheDefaults)
+	if err != nil {
+		return fmt.Errorf("could not register dispatch cluster cache flags: %w", err)
+	}
 
 	// Flags for configuring dispatch requests
 	dispatchFlags.Uint16Var(&config.DispatchChunkSize, "dispatch-chunk-size", 100, "maximum number of object IDs in a dispatched request")
@@ -168,9 +179,6 @@ func RegisterServeFlags(cmd *cobra.Command, config *server.Config) error {
 	experimentalFlags := nfs.FlagSet(BoldBlue("Experimental"))
 	// Flags for experimental features
 	experimentalFlags.StringVar(&config.ExperimentalQueryPlan, "experimental-query-plan", "", "if non-empty, the version of the experimental query plan to use: `check` or empty")
-	if err := experimentalFlags.MarkHidden("experimental-query-plan"); err != nil {
-		return fmt.Errorf("failed to mark flag as hidden: %w", err)
-	}
 	experimentalFlags.StringVar(&config.ExperimentalLookupResourcesVersion, "experimental-lookup-resources-version", "", "if non-empty, the version of the experimental lookup resources API to use: `lr3` or empty")
 	experimentalFlags.BoolVar(&config.EnableRelationshipExpiration, "enable-experimental-relationship-expiration", true, "enables experimental support for relationship expiration")
 	if err := experimentalFlags.MarkHidden("enable-experimental-relationship-expiration"); err != nil {
@@ -191,7 +199,10 @@ func RegisterServeFlags(cmd *cobra.Command, config *server.Config) error {
 		return fmt.Errorf("failed to mark flag as deprecated: %w", err)
 	}
 
-	server.MustRegisterCacheFlags(experimentalFlags, "lookup-resources-chunk-cache", &config.LR3ResourceChunkCacheConfig, lr3ChunkCacheDefaults)
+	err = server.RegisterCacheFlags(experimentalFlags, "lookup-resources-chunk-cache", "LookupResources3 chunks", &config.LR3ResourceChunkCacheConfig, lr3ChunkCacheDefaults)
+	if err != nil {
+		return fmt.Errorf("could not register lookup resources chunk cache flags: %w", err)
+	}
 
 	tracingFlags := nfs.FlagSet(BoldBlue("Tracing"))
 	// Flags for tracing
@@ -243,10 +254,9 @@ func NewServeCommand(programName string, config *server.Config) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			signalctx := SignalContextWithGracePeriod(
-				context.Background(),
-				config.ShutdownGracePeriod,
-			)
+			signalctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
 			return server.Run(signalctx)
 		}),
 		Example: server.ServeExample(programName),

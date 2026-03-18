@@ -58,7 +58,7 @@ var expiredKeyForTesting = KeyConfig{
 }
 
 func TestWriteWithPredefinedIntegrity(t *testing.T) {
-	ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 5*time.Second, 1*time.Hour)
+	ds, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 5*time.Second, 1*time.Hour)
 	require.NoError(t, err)
 
 	pds, err := NewRelationshipIntegrityProxy(ds, DefaultKeyForTesting, nil)
@@ -76,7 +76,7 @@ func TestWriteWithPredefinedIntegrity(t *testing.T) {
 }
 
 func TestReadWithMissingIntegrity(t *testing.T) {
-	ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 5*time.Second, 1*time.Hour)
+	ds, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 5*time.Second, 1*time.Hour)
 	require.NoError(t, err)
 
 	// Write a relationship to the underlying datastore without integrity information.
@@ -108,7 +108,7 @@ func TestReadWithMissingIntegrity(t *testing.T) {
 }
 
 func TestBasicIntegrityFailureDueToInvalidHashVersion(t *testing.T) {
-	ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 5*time.Second, 1*time.Hour)
+	ds, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 5*time.Second, 1*time.Hour)
 	require.NoError(t, err)
 
 	pds, err := NewRelationshipIntegrityProxy(ds, DefaultKeyForTesting, nil)
@@ -157,7 +157,7 @@ func TestBasicIntegrityFailureDueToInvalidHashVersion(t *testing.T) {
 }
 
 func TestBasicIntegrityFailureDueToInvalidHashSignature(t *testing.T) {
-	ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 5*time.Second, 1*time.Hour)
+	ds, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 5*time.Second, 1*time.Hour)
 	require.NoError(t, err)
 
 	pds, err := NewRelationshipIntegrityProxy(ds, DefaultKeyForTesting, nil)
@@ -206,7 +206,7 @@ func TestBasicIntegrityFailureDueToInvalidHashSignature(t *testing.T) {
 }
 
 func TestBasicIntegrityFailureDueToWriteWithExpiredKey(t *testing.T) {
-	ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 5*time.Second, 1*time.Hour)
+	ds, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 5*time.Second, 1*time.Hour)
 	require.NoError(t, err)
 
 	// Create a proxy with the to-be-expired key and write some relationships.
@@ -245,7 +245,9 @@ func TestBasicIntegrityFailureDueToWriteWithExpiredKey(t *testing.T) {
 }
 
 func TestWatchIntegrityFailureDueToInvalidHashSignature(t *testing.T) {
-	ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 5*time.Second, 1*time.Hour)
+	t.Parallel()
+
+	ds, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 5*time.Second, 1*time.Hour)
 	require.NoError(t, err)
 
 	headRev, err := ds.HeadRevision(t.Context())
@@ -272,10 +274,9 @@ func TestWatchIntegrityFailureDueToInvalidHashSignature(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Ensure a watch error is raised.
 	select {
-	case <-watchEvents:
-		require.Fail(t, "watch event received")
+	case _, ok := <-watchEvents:
+		require.False(t, ok, "expected immediate channel closure")
 
 	case err := <-errChan:
 		require.Error(t, err)
@@ -289,14 +290,14 @@ func TestWatchIntegrityFailureDueToInvalidHashSignature(t *testing.T) {
 func BenchmarkQueryRelsWithIntegrity(b *testing.B) {
 	for _, withIntegrity := range []bool{true, false} {
 		b.Run(fmt.Sprintf("withIntegrity=%t", withIntegrity), func(b *testing.B) {
-			ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 5*time.Second, 1*time.Hour)
+			ds, err := dsfortesting.NewMemDBDatastoreForTesting(b, 0, 5*time.Second, 1*time.Hour)
 			require.NoError(b, err)
 
 			pds, err := NewRelationshipIntegrityProxy(ds, DefaultKeyForTesting, nil)
 			require.NoError(b, err)
 
 			_, err = pds.ReadWriteTx(b.Context(), func(ctx context.Context, tx datastore.ReadWriteTransaction) error {
-				for i := 0; i < 1000; i++ {
+				for i := range 1000 {
 					rel := tuple.MustParse(fmt.Sprintf("resource:foo#viewer@user:user-%d", i))
 					if err := tx.WriteRelationships(b.Context(), []tuple.RelationshipUpdate{
 						tuple.Create(rel),

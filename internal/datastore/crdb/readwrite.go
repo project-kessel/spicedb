@@ -56,7 +56,7 @@ type crdbReadWriteTXN struct {
 
 var (
 	upsertTupleSuffixWithoutIntegrity = fmt.Sprintf(
-		"ON CONFLICT (%s,%s,%s,%s,%s,%s) DO UPDATE SET %s = now(), %s = excluded.%s, %s = excluded.%s, %s = excluded.%s WHERE (relation_tuple.%s <> excluded.%s OR relation_tuple.%s <> excluded.%s OR relation_tuple.%s <> excluded.%s)",
+		"ON CONFLICT (%s,%s,%s,%s,%s,%s) DO UPDATE SET %s = now(), %s = excluded.%s, %s = excluded.%s, %s = excluded.%s WHERE (relation_tuple.%s <> excluded.%s OR relation_tuple.%s <> excluded.%s OR relation_tuple.%s IS DISTINCT FROM excluded.%s)",
 		schema.ColNamespace,
 		schema.ColObjectID,
 		schema.ColRelation,
@@ -79,7 +79,7 @@ var (
 	)
 
 	upsertTupleSuffixWithIntegrity = fmt.Sprintf(
-		"ON CONFLICT (%s,%s,%s,%s,%s,%s) DO UPDATE SET %s = now(), %s = excluded.%s, %s = excluded.%s, %s = excluded.%s, %s = excluded.%s, %s = excluded.%s WHERE (relation_tuple_with_integrity.%s <> excluded.%s OR relation_tuple_with_integrity.%s <> excluded.%s OR relation_tuple_with_integrity.%s <> excluded.%s)",
+		"ON CONFLICT (%s,%s,%s,%s,%s,%s) DO UPDATE SET %s = now(), %s = excluded.%s, %s = excluded.%s, %s = excluded.%s, %s = excluded.%s, %s = excluded.%s WHERE (relation_tuple_with_integrity.%s <> excluded.%s OR relation_tuple_with_integrity.%s <> excluded.%s OR relation_tuple_with_integrity.%s IS DISTINCT FROM excluded.%s)",
 		schema.ColNamespace,
 		schema.ColObjectID,
 		schema.ColRelation,
@@ -481,7 +481,7 @@ func (rwt *crdbReadWriteTXN) DeleteRelationships(ctx context.Context, filter *v1
 	return rowsAffected, false, nil
 }
 
-func (rwt *crdbReadWriteTXN) WriteNamespaces(ctx context.Context, newConfigs ...*core.NamespaceDefinition) error {
+func (rwt *crdbReadWriteTXN) LegacyWriteNamespaces(ctx context.Context, newConfigs ...*core.NamespaceDefinition) error {
 	rwt.hasNonExpiredDeletionChange = true
 
 	query := queryWriteNamespace
@@ -508,7 +508,7 @@ func (rwt *crdbReadWriteTXN) WriteNamespaces(ctx context.Context, newConfigs ...
 	return nil
 }
 
-func (rwt *crdbReadWriteTXN) DeleteNamespaces(ctx context.Context, nsNames []string, delOption datastore.DeleteNamespacesRelationshipsOption) error {
+func (rwt *crdbReadWriteTXN) LegacyDeleteNamespaces(ctx context.Context, nsNames []string, delOption datastore.DeleteNamespacesRelationshipsOption) error {
 	if len(nsNames) == 0 {
 		return nil
 	}

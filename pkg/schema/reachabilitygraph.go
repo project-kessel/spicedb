@@ -22,14 +22,15 @@ import (
 // for a subject of a particular type into a schema, for the purpose of walking from the subject
 // to a specific resource relation.
 type DefinitionReachability struct {
+	ts                          *TypeSystem
 	def                         *Definition
 	cachedGraphs                sync.Map
 	hasOptimizedEntrypointCache sync.Map
 }
 
 // Reachability returns a reachability graph for the given namespace.
-func (def *Definition) Reachability() *DefinitionReachability {
-	return &DefinitionReachability{def, sync.Map{}, sync.Map{}}
+func (def *Definition) Reachability(ts *TypeSystem) *DefinitionReachability {
+	return &DefinitionReachability{ts, def, sync.Map{}, sync.Map{}}
 }
 
 // RelationsEncounteredForResource returns all relations that are encountered when walking outward from a resource+relation.
@@ -44,7 +45,10 @@ func (rg *DefinitionReachability) RelationsEncounteredForResource(
 
 	relationRefs := make([]*core.RelationReference, 0, len(relationNames))
 	for _, relationName := range relationNames {
-		namespace, relation := tuple.MustSplitRelRef(relationName)
+		namespace, relation, err := tuple.SplitRelRef(relationName)
+		if err != nil {
+			return nil, err
+		}
 		relationRefs = append(relationRefs, &core.RelationReference{
 			Namespace: namespace,
 			Relation:  relation,
@@ -72,12 +76,12 @@ func (rg *DefinitionReachability) RelationsEncounteredForSubject(
 	for len(subjectTypesToCheck) != 0 {
 		collected := &[]ReachabilityEntrypoint{}
 		for _, nsDef := range allDefinitions {
-			nts, err := rg.def.ts.GetDefinition(ctx, nsDef.Name)
+			nts, err := rg.ts.GetDefinition(ctx, nsDef.Name)
 			if err != nil {
 				return nil, err
 			}
 
-			nrg := nts.Reachability()
+			nrg := nts.Reachability(rg.ts)
 
 			for _, relation := range nsDef.Relation {
 				for _, subjectType := range subjectTypesToCheck {
@@ -113,7 +117,10 @@ func (rg *DefinitionReachability) RelationsEncounteredForSubject(
 
 	relationRefs := make([]*core.RelationReference, 0, allRelationNames.Len())
 	for _, relationName := range allRelationNames.AsSlice() {
-		namespace, relation := tuple.MustSplitRelRef(relationName)
+		namespace, relation, err := tuple.SplitRelRef(relationName)
+		if err != nil {
+			return nil, err
+		}
 		relationRefs = append(relationRefs, &core.RelationReference{
 			Namespace: namespace,
 			Relation:  relation,
@@ -238,12 +245,12 @@ func (rg *DefinitionReachability) getOrBuildGraph(ctx context.Context, resourceT
 	}
 
 	// Load the type system for the target resource relation.
-	tdef, err := rg.def.ts.GetDefinition(ctx, resourceType.Namespace)
+	tdef, err := rg.ts.GetDefinition(ctx, resourceType.Namespace)
 	if err != nil {
 		return nil, err
 	}
 
-	rrg, err := computeReachability(ctx, tdef, resourceType.Relation, reachabilityOption)
+	rrg, err := computeReachability(ctx, rg.ts, tdef, resourceType.Relation, reachabilityOption)
 	if err != nil {
 		return nil, err
 	}
@@ -397,6 +404,15 @@ func (re ReachabilityEntrypoint) ComputedUsersetRelation() (string, error) {
 	return re.re.ComputedUsersetRelation, nil
 }
 
+// SelfRelation returns the relation for the type referenced by the self entrypoint.
+func (re ReachabilityEntrypoint) SelfRelation() (*core.RelationReference, error) {
+	if re.EntrypointKind() != core.ReachabilityEntrypoint_SELF_ENTRYPOINT {
+		return nil, fmt.Errorf("cannot call SelfRelation for kind %v", re.EntrypointKind())
+	}
+
+	return re.re.TargetRelation, nil
+}
+
 // TuplesetRelation returns the tupleset relation of the TTU, if a TUPLESET_TO_USERSET_ENTRYPOINT.
 func (re ReachabilityEntrypoint) TuplesetRelation() (string, error) {
 	if re.EntrypointKind() != core.ReachabilityEntrypoint_TUPLESET_TO_USERSET_ENTRYPOINT {
@@ -464,6 +480,9 @@ func (re ReachabilityEntrypoint) DebugString() (string, error) {
 
 	case core.ReachabilityEntrypoint_COMPUTED_USERSET_ENTRYPOINT:
 		return "computed-userset-entrypoint: " + re.re.TargetRelation.Namespace + "#" + re.re.TargetRelation.Relation, nil
+
+	case core.ReachabilityEntrypoint_SELF_ENTRYPOINT:
+		return fmt.Sprintf("self-entrypoint: %s#...", re.re.TargetRelation.Relation), nil
 
 	default:
 		return "", fmt.Errorf("unknown entrypoint kind %v", re.EntrypointKind())

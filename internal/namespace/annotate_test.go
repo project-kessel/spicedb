@@ -15,7 +15,7 @@ import (
 func TestAnnotateNamespace(t *testing.T) {
 	require := require.New(t)
 
-	ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
+	ds, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
 
 	compiled, err := compiler.Compile(compiler.InputSchema{
@@ -37,11 +37,11 @@ func TestAnnotateNamespace(t *testing.T) {
 
 	ts := schema.NewTypeSystem(schema.ResolverForDatastoreReader(ds.SnapshotReader(lastRevision)))
 
-	def, err := schema.NewDefinition(ts, compiled.ObjectDefinitions[0])
+	def, err := schema.NewDefinition(compiled.ObjectDefinitions[0])
 	require.NoError(err)
 
 	ctx := t.Context()
-	vdef, terr := def.Validate(ctx)
+	vdef, terr := ts.Validate(ctx, def)
 	require.NoError(terr)
 
 	aerr := AnnotateNamespace(vdef)

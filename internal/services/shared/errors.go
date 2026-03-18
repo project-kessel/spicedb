@@ -135,7 +135,7 @@ func RewriteError(ctx context.Context, err error, config *ConfigForErrors) error
 	return rerr
 }
 
-func rewriteError(ctx context.Context, err error, config *ConfigForErrors) error {
+func rewriteError(ctx context.Context, err error, _ *ConfigForErrors) error {
 	// Check if the error can be directly used.
 	if _, ok := status.FromError(err); ok {
 		return err
@@ -171,6 +171,8 @@ func rewriteError(ctx context.Context, err error, config *ConfigForErrors) error
 		return status.Errorf(codes.OutOfRange, "invalid zedtoken: %s", err)
 	case errors.As(err, &datastore.CaveatNameNotFoundError{}):
 		return spiceerrors.WithCodeAndReason(err, codes.FailedPrecondition, v1.ErrorReason_ERROR_REASON_UNKNOWN_CAVEAT)
+	case errors.As(err, &datastore.SchemaNotDefinedError{}):
+		return status.Errorf(codes.NotFound, "%s", err)
 	case errors.As(err, &datastore.WatchDisabledError{}):
 		return status.Errorf(codes.FailedPrecondition, "%s", err)
 	case errors.As(err, &datastore.WatchCanceledError{}):

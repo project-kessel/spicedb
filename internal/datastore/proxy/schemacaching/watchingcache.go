@@ -95,10 +95,10 @@ func createWatchingCacheProxy(delegate datastore.Datastore, c cache.Cache[cache.
 			"namespace",
 			datastore.NewNamespaceNotFoundErr,
 			func(ctx context.Context, name string, revision datastore.Revision) (*core.NamespaceDefinition, datastore.Revision, error) {
-				return fallbackCache.SnapshotReader(revision).ReadNamespaceByName(ctx, name)
+				return fallbackCache.SnapshotReader(revision).LegacyReadNamespaceByName(ctx, name)
 			},
 			func(ctx context.Context, names []string, revision datastore.Revision) ([]datastore.RevisionedDefinition[*core.NamespaceDefinition], error) {
-				return fallbackCache.SnapshotReader(revision).LookupNamespacesWithNames(ctx, names)
+				return fallbackCache.SnapshotReader(revision).LegacyLookupNamespacesWithNames(ctx, names)
 			},
 			definitionsReadCachedCounter,
 			definitionsReadTotalCounter,
@@ -108,10 +108,10 @@ func createWatchingCacheProxy(delegate datastore.Datastore, c cache.Cache[cache.
 			"caveat",
 			datastore.NewCaveatNameNotFoundErr,
 			func(ctx context.Context, name string, revision datastore.Revision) (*core.CaveatDefinition, datastore.Revision, error) {
-				return fallbackCache.SnapshotReader(revision).ReadCaveatByName(ctx, name)
+				return fallbackCache.SnapshotReader(revision).LegacyReadCaveatByName(ctx, name)
 			},
 			func(ctx context.Context, names []string, revision datastore.Revision) ([]datastore.RevisionedDefinition[*core.CaveatDefinition], error) {
-				return fallbackCache.SnapshotReader(revision).LookupCaveatsWithNames(ctx, names)
+				return fallbackCache.SnapshotReader(revision).LegacyLookupCaveatsWithNames(ctx, names)
 			},
 			definitionsReadCachedCounter,
 			definitionsReadTotalCounter,
@@ -136,8 +136,9 @@ func (p *watchingCachingProxy) ReadWriteTx(
 	return p.fallbackCache.ReadWriteTx(ctx, f, opts...)
 }
 
+// Start is async so that prepopulating doesn't block the server start.
+// The caller must cancel the context before calling Close.
 func (p *watchingCachingProxy) Start(ctx context.Context) error {
-	// Start async so that prepopulating doesn't block the server start.
 	go func() {
 		_ = p.startSync(ctx)
 	}()
@@ -195,7 +196,7 @@ func (p *watchingCachingProxy) startSync(ctx context.Context) error {
 
 			// Populate the cache with all definitions at the head revision.
 			log.Info().Str("revision", headRev.String()).Msg("prepopulating namespace watching cache")
-			namespaces, err := reader.ListAllNamespaces(ctx)
+			namespaces, err := reader.LegacyListAllNamespaces(ctx)
 			if err != nil {
 				p.namespaceCache.setFallbackMode()
 				p.caveatCache.setFallbackMode()
@@ -217,7 +218,7 @@ func (p *watchingCachingProxy) startSync(ctx context.Context) error {
 			log.Info().Str("revision", headRev.String()).Int("count", len(namespaces)).Msg("populated namespace watching cache")
 
 			log.Info().Str("revision", headRev.String()).Msg("prepopulating caveat watching cache")
-			caveats, err := reader.ListAllCaveats(ctx)
+			caveats, err := reader.LegacyListAllCaveats(ctx)
 			if err != nil {
 				p.namespaceCache.setFallbackMode()
 				p.caveatCache.setFallbackMode()
@@ -263,7 +264,10 @@ func (p *watchingCachingProxy) startSync(ctx context.Context) error {
 					log.Debug().Msg("schema watch closed")
 					return
 
-				case ss := <-ssc:
+				case ss, ok := <-ssc:
+					if !ok {
+						return
+					}
 					log.Trace().
 						Bool("is-checkpoint", ss.IsCheckpoint).
 						Int("changed-definition-count", len(ss.ChangedDefinitions)).
@@ -347,6 +351,8 @@ func (p *watchingCachingProxy) startSync(ctx context.Context) error {
 	return nil
 }
 
+// Close stops all resources.
+// The caller must have canceled the context passed to Start.
 func (p *watchingCachingProxy) Close() error {
 	p.caveatCache.setFallbackMode()
 	p.namespaceCache.setFallbackMode()
@@ -597,30 +603,30 @@ type watchingCachingReader struct {
 	p   *watchingCachingProxy
 }
 
-func (r *watchingCachingReader) ReadNamespaceByName(
+func (w *watchingCachingReader) LegacyReadNamespaceByName(
 	ctx context.Context,
 	name string,
 ) (*core.NamespaceDefinition, datastore.Revision, error) {
-	return r.p.namespaceCache.readDefinitionByName(ctx, name, r.rev)
+	return w.p.namespaceCache.readDefinitionByName(ctx, name, w.rev)
 }
 
-func (r *watchingCachingReader) LookupNamespacesWithNames(
+func (w *watchingCachingReader) LegacyLookupNamespacesWithNames(
 	ctx context.Context,
 	nsNames []string,
 ) ([]datastore.RevisionedNamespace, error) {
-	return r.p.namespaceCache.readDefinitionsWithNames(ctx, nsNames, r.rev)
+	return w.p.namespaceCache.readDefinitionsWithNames(ctx, nsNames, w.rev)
 }
 
-func (r *watchingCachingReader) ReadCaveatByName(
+func (w *watchingCachingReader) LegacyReadCaveatByName(
 	ctx context.Context,
 	name string,
 ) (*core.CaveatDefinition, datastore.Revision, error) {
-	return r.p.caveatCache.readDefinitionByName(ctx, name, r.rev)
+	return w.p.caveatCache.readDefinitionByName(ctx, name, w.rev)
 }
 
-func (r *watchingCachingReader) LookupCaveatsWithNames(
+func (w *watchingCachingReader) LegacyLookupCaveatsWithNames(
 	ctx context.Context,
 	caveatNames []string,
 ) ([]datastore.RevisionedCaveat, error) {
-	return r.p.caveatCache.readDefinitionsWithNames(ctx, caveatNames, r.rev)
+	return w.p.caveatCache.readDefinitionsWithNames(ctx, caveatNames, w.rev)
 }

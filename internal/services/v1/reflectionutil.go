@@ -3,8 +3,8 @@ package v1
 import (
 	"context"
 
-	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	caveattypes "github.com/authzed/spicedb/pkg/caveats/types"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/diff"
 	"github.com/authzed/spicedb/pkg/middleware/consistency"
@@ -14,21 +14,26 @@ import (
 )
 
 func loadCurrentSchema(ctx context.Context) (*diff.DiffableSchema, datastore.Revision, error) {
-	ds := datastoremw.MustFromContext(ctx)
+	dl := datalayer.MustFromContext(ctx)
 
 	atRevision, _, err := consistency.RevisionFromContext(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	reader := ds.SnapshotReader(atRevision)
+	reader := dl.SnapshotReader(atRevision)
 
-	namespacesAndRevs, err := reader.ListAllNamespaces(ctx)
+	sr, err := reader.ReadSchema()
 	if err != nil {
 		return nil, atRevision, err
 	}
 
-	caveatsAndRevs, err := reader.ListAllCaveats(ctx)
+	namespacesAndRevs, err := sr.ListAllTypeDefinitions(ctx)
+	if err != nil {
+		return nil, atRevision, err
+	}
+
+	caveatsAndRevs, err := sr.ListAllCaveatDefinitions(ctx)
 	if err != nil {
 		return nil, atRevision, err
 	}

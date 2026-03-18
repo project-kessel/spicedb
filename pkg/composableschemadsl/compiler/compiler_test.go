@@ -1254,17 +1254,23 @@ func TestCompile(t *testing.T) {
 			},
 		},
 		{
-			"duplicate use pragmas",
+			"wildcard relation with expiration trait",
 			withTenantPrefix,
-			`
-			use expiration
-			use expiration
-
+			`use expiration
+			
 			definition simple {
-				relation viewer: user with expiration
+				relation viewer: user:* with expiration
 			}`,
-			`found duplicate use flag`,
-			[]SchemaDefinition{},
+			"",
+			[]SchemaDefinition{
+				namespace.Namespace("sometenant/simple",
+					namespace.MustRelation("viewer", nil,
+						namespace.WithExpiration(
+							namespace.AllowedPublicNamespace("sometenant/user"),
+						),
+					),
+				),
+			},
 		},
 		{
 			"expiration use without use expiration",
@@ -1293,10 +1299,121 @@ func TestCompile(t *testing.T) {
 				),
 			},
 		},
+		{
+			"self is allowed when used in arrow and interpreted as relation name",
+			withTenantPrefix,
+			`definition expressioned {
+				permission foos = (arel->self) + brel
+			}`,
+			"",
+			[]SchemaDefinition{
+				namespace.Namespace("sometenant/expressioned",
+					namespace.MustRelation("foos",
+						namespace.Union(
+							namespace.TupleToUserset("arel", "self"),
+							namespace.ComputedUserset("brel"),
+						),
+					),
+				),
+			},
+		},
+		{
+			"self is allowed when used in union and interpreted as relation name",
+			withTenantPrefix,
+			`definition expressioned {
+				permission foos = (arel->brel) + self
+			}`,
+			"",
+			[]SchemaDefinition{
+				namespace.Namespace("sometenant/expressioned",
+					namespace.MustRelation("foos",
+						namespace.Union(
+							namespace.TupleToUserset("arel", "brel"),
+							namespace.ComputedUserset("self"),
+						),
+					),
+				),
+			},
+		},
+		{
+			"self without use self is allowed when used in permission name",
+			withTenantPrefix,
+			`definition expressioned {
+				permission self = (arel->brel) - drel
+			}`,
+			"",
+			[]SchemaDefinition{
+				namespace.Namespace("sometenant/expressioned",
+					namespace.MustRelation("self",
+						namespace.Exclusion(
+							namespace.TupleToUserset("arel", "brel"),
+							namespace.ComputedUserset("drel"),
+						),
+					),
+				),
+			},
+		},
+		{
+			"self with use self is allowed when used in permission expression",
+			withTenantPrefix,
+			`use self
+			definition expressioned {
+				permission foos = self
+			}`,
+			"",
+			[]SchemaDefinition{
+				namespace.Namespace("sometenant/expressioned",
+					namespace.MustRelation("foos",
+						namespace.Union(
+							namespace.Self(),
+						),
+					),
+				),
+			},
+		},
+		{
+			"duplicate use of expiration pragmas is allowed",
+			withTenantPrefix,
+			`
+			use expiration
+			use expiration
+
+			definition simple {
+				relation viewer: user with expiration
+			}`,
+			``,
+			[]SchemaDefinition{
+				namespace.Namespace("sometenant/simple",
+					namespace.MustRelation("viewer", nil,
+						namespace.AllowedRelationWithExpiration("sometenant/user", "..."),
+					),
+				),
+			},
+		},
+		{
+			"duplicate use of self pragmas is allowed",
+			withTenantPrefix,
+			`
+			use self
+			use self
+
+			definition expressioned {
+				permission foos = self
+			}`,
+			``,
+			[]SchemaDefinition{
+				namespace.Namespace("sometenant/expressioned",
+					namespace.MustRelation("foos",
+						namespace.Union(
+							namespace.Self(),
+						),
+					),
+				),
+			},
+		},
 	}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			require := require.New(t)

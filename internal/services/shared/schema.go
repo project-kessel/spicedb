@@ -7,6 +7,7 @@ import (
 	log "github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/internal/namespace"
 	caveattypes "github.com/authzed/spicedb/pkg/caveats/types"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/datastore/options"
 	"github.com/authzed/spicedb/pkg/datastore/queryshape"
@@ -23,15 +24,18 @@ import (
 // ValidatedSchemaChanges is a set of validated schema changes that can be applied to the datastore.
 type ValidatedSchemaChanges struct {
 	compiled             *compiler.CompiledSchema
-	validatedTypeSystems map[string]*schema.ValidatedDefinition
+	validatedDefinitions map[string]*schema.ValidatedDefinition
 	newCaveatDefNames    *mapz.Set[string]
 	newObjectDefNames    *mapz.Set[string]
-	additiveOnly         bool
+	// additiveOnly indicates whether all operations should be applied
+	// or only those operations which are additive (i.e. not changes or deletions)
+	additiveOnly bool
+	schemaText   string
 }
 
 // ValidateSchemaChanges validates the schema found in the compiled schema and returns a
 // ValidatedSchemaChanges, if fully validated.
-func ValidateSchemaChanges(ctx context.Context, compiled *compiler.CompiledSchema, caveatTypeSet *caveattypes.TypeSet, additiveOnly bool) (*ValidatedSchemaChanges, error) {
+func ValidateSchemaChanges(ctx context.Context, compiled *compiler.CompiledSchema, caveatTypeSet *caveattypes.TypeSet, additiveOnly bool, schemaText string) (*ValidatedSchemaChanges, error) {
 	// 1) Validate the caveats defined.
 	newCaveatDefNames := mapz.NewSet[string]()
 	for _, caveatDef := range compiled.CaveatDefinitions {
@@ -42,13 +46,10 @@ func ValidateSchemaChanges(ctx context.Context, compiled *compiler.CompiledSchem
 		newCaveatDefNames.Insert(caveatDef.Name)
 	}
 
-	// 2) Validate the namespaces defined.
+	// 2) Validate the type definitions.
 	newObjectDefNames := mapz.NewSet[string]()
-	validatedTypeSystems := make(map[string]*schema.ValidatedDefinition, len(compiled.ObjectDefinitions))
-	res := schema.ResolverForPredefinedDefinitions(schema.PredefinedElements{
-		Definitions: compiled.ObjectDefinitions,
-		Caveats:     compiled.CaveatDefinitions,
-	})
+	validatedDefinitions := make(map[string]*schema.ValidatedDefinition, len(compiled.ObjectDefinitions))
+	res := schema.ResolverForSchema(compiled)
 	ts := schema.NewTypeSystem(res)
 
 	for _, nsdef := range compiled.ObjectDefinitions {
@@ -57,16 +58,17 @@ func ValidateSchemaChanges(ctx context.Context, compiled *compiler.CompiledSchem
 			return nil, err
 		}
 
-		validatedTypeSystems[nsdef.Name] = vts
+		validatedDefinitions[nsdef.Name] = vts
 		newObjectDefNames.Insert(nsdef.Name)
 	}
 
 	return &ValidatedSchemaChanges{
 		compiled:             compiled,
-		validatedTypeSystems: validatedTypeSystems,
+		validatedDefinitions: validatedDefinitions,
 		newCaveatDefNames:    newCaveatDefNames,
 		newObjectDefNames:    newObjectDefNames,
 		additiveOnly:         additiveOnly,
+		schemaText:           schemaText,
 	}, nil
 }
 
@@ -91,25 +93,40 @@ type AppliedSchemaChanges struct {
 
 // ApplySchemaChanges applies schema changes found in the validated changes struct, via the specified
 // ReadWriteTransaction.
-func ApplySchemaChanges(ctx context.Context, rwt datastore.ReadWriteTransaction, caveatTypeSet *caveattypes.TypeSet, validated *ValidatedSchemaChanges) (*AppliedSchemaChanges, error) {
-	existingCaveats, err := rwt.ListAllCaveats(ctx)
+func ApplySchemaChanges(ctx context.Context, rwt datalayer.ReadWriteTransaction, caveatTypeSet *caveattypes.TypeSet, validated *ValidatedSchemaChanges) (*AppliedSchemaChanges, error) {
+	sr, err := rwt.ReadSchema()
 	if err != nil {
 		return nil, err
 	}
 
-	existingObjectDefs, err := rwt.ListAllNamespaces(ctx)
+	existingCaveatDefs, err := sr.ListAllCaveatDefinitions(ctx)
 	if err != nil {
 		return nil, err
 	}
+	existingCaveats := make([]*core.CaveatDefinition, 0, len(existingCaveatDefs))
+	for _, caveatDef := range existingCaveatDefs {
+		existingCaveats = append(existingCaveats, caveatDef.Definition)
+	}
 
-	return ApplySchemaChangesOverExisting(ctx, rwt, caveatTypeSet, validated, datastore.DefinitionsOf(existingCaveats), datastore.DefinitionsOf(existingObjectDefs))
+	existingTypeDefs, err := sr.ListAllTypeDefinitions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	existingObjectDefs := make([]*core.NamespaceDefinition, 0, len(existingTypeDefs))
+	for _, typeDef := range existingTypeDefs {
+		existingObjectDefs = append(existingObjectDefs, typeDef.Definition)
+	}
+
+	return ApplySchemaChangesOverExisting(ctx, rwt, caveatTypeSet, validated, existingCaveats, existingObjectDefs)
 }
 
 // ApplySchemaChangesOverExisting applies schema changes found in the validated changes struct, against
 // existing caveat and object definitions given.
+// The idea is that the given schema will be diffed against the existing objects given, and any
+// objects not named in one of those two which are present in the datastore will be preserved.
 func ApplySchemaChangesOverExisting(
 	ctx context.Context,
-	rwt datastore.ReadWriteTransaction,
+	rwt datalayer.ReadWriteTransaction,
 	caveatTypeSet *caveattypes.TypeSet,
 	validated *ValidatedSchemaChanges,
 	existingCaveats []*core.CaveatDefinition,
@@ -159,7 +176,7 @@ func ApplySchemaChangesOverExisting(
 		if len(diff.Deltas()) > 0 {
 			objectDefsWithChanges = append(objectDefsWithChanges, nsdef)
 
-			vts, ok := validated.validatedTypeSystems[nsdef.Name]
+			vts, ok := validated.validatedDefinitions[nsdef.Name]
 			if !ok {
 				return nil, spiceerrors.MustBugf("validated type system not found for namespace `%s`", nsdef.Name)
 			}
@@ -190,34 +207,69 @@ func ApplySchemaChangesOverExisting(
 		}
 	}
 
-	// Write the new/changes caveats.
-	if len(caveatDefsWithChanges) > 0 {
-		if err := rwt.WriteCaveats(ctx, caveatDefsWithChanges); err != nil {
-			return nil, err
-		}
-	}
+	if validated.additiveOnly {
+		// DEPRECATED: Use of legacy methods for additive-only schema changes is deprecated.
+		// This path is maintained for backwards compatibility but will be removed in a future version.
+		lw := rwt.LegacySchemaWriter()
 
-	// Write the new/changed namespaces.
-	if len(objectDefsWithChanges) > 0 {
-		if err := rwt.WriteNamespaces(ctx, objectDefsWithChanges...); err != nil {
-			return nil, err
-		}
-	}
-
-	if !validated.additiveOnly {
-		// Delete the removed namespaces. Note that we don't need to delete relationships here,
-		// as that is handled by the ensureNoRelationshipsExistWithResourceType call above.
-		if removedObjectDefNames.Len() > 0 {
-			if err := rwt.DeleteNamespaces(ctx, removedObjectDefNames.AsSlice(), datastore.DeleteNamespacesOnly); err != nil {
+		// Write the new/changes caveats.
+		if len(caveatDefsWithChanges) > 0 {
+			if err := lw.LegacyWriteCaveats(ctx, caveatDefsWithChanges); err != nil {
 				return nil, err
 			}
 		}
 
-		// Delete the removed caveats.
-		if !removedCaveatDefNames.IsEmpty() {
-			if err := rwt.DeleteCaveats(ctx, removedCaveatDefNames.AsSlice()); err != nil {
+		// Write the new/changed namespaces.
+		if len(objectDefsWithChanges) > 0 {
+			if err := lw.LegacyWriteNamespaces(ctx, objectDefsWithChanges...); err != nil {
 				return nil, err
 			}
+		}
+	} else {
+		// Use the WriteSchema method for non-additive changes, which handles
+		// writing and deleting in a single operation.
+
+		// Get the list of extant definitions so that we can add them to the
+		// list of definitions that should be written in the single shot
+		sr, err := rwt.ReadSchema()
+		if err != nil {
+			return nil, err
+		}
+		allExtantDefinitions, err := sr.ListAllSchemaDefinitions(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		writtenDefinitionNames := mapz.NewSet[string]()
+		for _, def := range validated.compiled.CaveatDefinitions {
+			writtenDefinitionNames.Add(def.Name)
+		}
+		for _, def := range validated.compiled.ObjectDefinitions {
+			writtenDefinitionNames.Add(def.Name)
+		}
+
+		changedDefinitionNames := writtenDefinitionNames.Union(removedObjectDefNames).Union(removedCaveatDefNames)
+
+		unchangedDefinitions := make([]datastore.SchemaDefinition, 0)
+		for _, def := range allExtantDefinitions {
+			if !changedDefinitionNames.Has(def.GetName()) {
+				unchangedDefinitions = append(unchangedDefinitions, def)
+			}
+		}
+
+		// Build the full list of schema definitions to write
+		definitions := make([]datastore.SchemaDefinition, 0, len(validated.compiled.ObjectDefinitions)+len(validated.compiled.CaveatDefinitions)+len(unchangedDefinitions))
+		for _, caveatDef := range validated.compiled.CaveatDefinitions {
+			definitions = append(definitions, caveatDef)
+		}
+		for _, objectDef := range validated.compiled.ObjectDefinitions {
+			definitions = append(definitions, objectDef)
+		}
+		definitions = append(definitions, unchangedDefinitions...)
+
+		// WriteSchema will handle writing new/changed definitions and deleting removed ones
+		if err := rwt.WriteSchema(ctx, definitions, validated.schemaText, caveatTypeSet); err != nil {
+			return nil, err
 		}
 	}
 
@@ -243,7 +295,7 @@ func ApplySchemaChangesOverExisting(
 // the types of the parameters that may already exist on relationships.
 func sanityCheckCaveatChanges(
 	_ context.Context,
-	_ datastore.ReadWriteTransaction,
+	_ datalayer.ReadWriteTransaction,
 	caveatTypeSet *caveattypes.TypeSet,
 	caveatDef *core.CaveatDefinition,
 	existingDefs map[string]*core.CaveatDefinition,
@@ -278,7 +330,7 @@ func sanityCheckCaveatChanges(
 
 // ensureNoRelationshipsExistWithResourceType ensures that no relationships exist within the namespace with the given name as a resource type.
 // NOTE: this does *not* check for use of the namespace as a subject type, as that should be handled by the caller.
-func ensureNoRelationshipsExistWithResourceType(ctx context.Context, rwt datastore.ReadWriteTransaction, namespaceName string) error {
+func ensureNoRelationshipsExistWithResourceType(ctx context.Context, rwt datalayer.ReadWriteTransaction, namespaceName string) error {
 	qy, qyErr := rwt.QueryRelationships(
 		ctx,
 		datastore.RelationshipsFilter{OptionalResourceType: namespaceName},
@@ -304,7 +356,7 @@ func ensureNoRelationshipsExistWithResourceType(ctx context.Context, rwt datasto
 // and relations.
 func sanityCheckNamespaceChanges(
 	ctx context.Context,
-	rwt datastore.ReadWriteTransaction,
+	rwt datalayer.ReadWriteTransaction,
 	nsdef *core.NamespaceDefinition,
 	existingDefs map[string]*core.NamespaceDefinition,
 ) (*nsdiff.Diff, error) {

@@ -7,7 +7,6 @@ import (
 	"os"
 	"regexp"
 	"strconv"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -22,6 +21,10 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
+	"go.opentelemetry.io/otel/sdk/metric"
+	otelres "go.opentelemetry.io/otel/sdk/resource"
+	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
@@ -86,21 +89,22 @@ type spannerDatastore struct {
 	revisions.CommonDecoder
 	*common.MigrationValidator
 
-	watchBufferLength       uint16
-	watchBufferWriteTimeout time.Duration
-	watchEnabled            bool
+	watchBufferLength            uint16
+	watchChangeBufferMaximumSize uint64
+	watchBufferWriteTimeout      time.Duration
+	watchEnabled                 bool
 
 	client   *spanner.Client
 	config   spannerOptions
 	database string
 	schema   common.SchemaInformation
 
-	cachedEstimatedBytesPerRelationshipLock sync.RWMutex
-	cachedEstimatedBytesPerRelationship     uint64 // GUARDED_BY(cachedEstimatedBytesPerRelationshipLock)
+	cachedEstimatedBytesPerRelationship atomic.Uint64
 
 	tableSizesStatsTable string
 	filterMaximumIDCount uint16
 	uniqueID             atomic.Pointer[string]
+	meterProvider        *metric.MeterProvider
 }
 
 // NewSpannerDatastore returns a datastore backed by cloud spanner
@@ -125,13 +129,27 @@ func NewSpannerDatastore(ctx context.Context, database string, opts ...Option) (
 		log.Info().Str("spanner-emulator-host", os.Getenv("SPANNER_EMULATOR_HOST")).Msg("running against spanner emulator")
 	}
 
+	var meterProvider *metric.MeterProvider
 	if config.datastoreMetricsOption == DatastoreMetricsOptionOpenTelemetry {
 		log.Info().Msg("enabling OpenTelemetry metrics for Spanner datastore")
 		spanner.EnableOpenTelemetryMetrics()
+
+		res, err := otelres.Merge(otelres.Default(),
+			otelres.NewWithAttributes(semconv.SchemaURL,
+				semconv.ServiceName("spicedb"),
+			))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create otel metrics resource: %w", err)
+		}
+
+		meterProvider, err = getMeterProviderWithPromExporter(res)
+		if err != nil {
+			return nil, fmt.Errorf("failed to enable Spanner prometheus metrics: %w", err)
+		}
 	}
 
 	if config.datastoreMetricsOption == DatastoreMetricsOptionLegacyPrometheus {
-		log.Info().Msg("enabling legacy Prometheus metrics for Spanner datastore")
+		log.Warn().Msg("DEPRECATED: please set --datastore-spanner-metrics=otel. Note that the name of these metrics have changed.")
 		err = spanner.EnableStatViews() // nolint: staticcheck
 		if err != nil {
 			return nil, fmt.Errorf("failed to enable spanner session metrics: %w", err)
@@ -140,19 +158,19 @@ func NewSpannerDatastore(ctx context.Context, database string, opts ...Option) (
 		if err != nil {
 			return nil, fmt.Errorf("failed to enable spanner GFE metrics: %w", err)
 		}
-	}
 
-	// Register Spanner client gRPC metrics (include round-trip latency, received/sent bytes...)
-	if err := view.Register(ocgrpc.DefaultClientViews...); err != nil {
-		return nil, fmt.Errorf("failed to enable gRPC metrics for Spanner client: %w", err)
-	}
+		// Register Spanner client gRPC metrics (include round-trip latency, received/sent bytes...)
+		if err := view.Register(ocgrpc.DefaultClientViews...); err != nil {
+			return nil, fmt.Errorf("failed to enable gRPC metrics for Spanner client: %w", err)
+		}
 
-	_, err = ocprom.NewExporter(ocprom.Options{
-		Namespace:  "spicedb",
-		Registerer: prometheus.DefaultRegisterer,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to enable spanner GFE latency stats: %w", err)
+		_, err = ocprom.NewExporter(ocprom.Options{
+			Namespace:  "spicedb",
+			Registerer: prometheus.DefaultRegisterer,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create exporter for spanner metrics: %w", err)
+		}
 	}
 
 	cfg := spanner.DefaultSessionPoolConfig
@@ -174,15 +192,14 @@ func NewSpannerDatastore(ctx context.Context, database string, opts ...Option) (
 		option.WithLogger(slogger),
 	)
 
-	client, err := spanner.NewClientWithConfig(
-		context.Background(),
-		database,
-		spanner.ClientConfig{
-			SessionPoolConfig:    cfg,
-			DisableNativeMetrics: config.datastoreMetricsOption != DatastoreMetricsOptionNative,
-		},
-		spannerOpts...,
-	)
+	clientConfig := spanner.ClientConfig{
+		SessionPoolConfig:    cfg,
+		DisableNativeMetrics: config.datastoreMetricsOption != DatastoreMetricsOptionNative,
+	}
+	if meterProvider != nil {
+		clientConfig.OpenTelemetryMeterProvider = meterProvider
+	}
+	client, err := spanner.NewClientWithConfig(context.Background(), database, clientConfig, spannerOpts...)
 	if err != nil {
 		return nil, common.RedactAndLogSensitiveConnString(ctx, errUnableToInstantiate, err, database)
 	}
@@ -234,18 +251,19 @@ func NewSpannerDatastore(ctx context.Context, database string, opts ...Option) (
 		CommonDecoder: revisions.CommonDecoder{
 			Kind: revisions.Timestamp,
 		},
-		MigrationValidator:                      common.NewMigrationValidator(headMigration, config.allowedMigrations),
-		client:                                  client,
-		config:                                  config,
-		database:                                database,
-		watchBufferWriteTimeout:                 config.watchBufferWriteTimeout,
-		watchBufferLength:                       config.watchBufferLength,
-		watchEnabled:                            !config.watchDisabled,
-		cachedEstimatedBytesPerRelationship:     0,
-		cachedEstimatedBytesPerRelationshipLock: sync.RWMutex{},
-		tableSizesStatsTable:                    tableSizesStatsTable,
-		filterMaximumIDCount:                    config.filterMaximumIDCount,
-		schema:                                  *schema,
+		MigrationValidator:                  common.NewMigrationValidator(headMigration, config.allowedMigrations),
+		client:                              client,
+		config:                              config,
+		database:                            database,
+		watchBufferWriteTimeout:             config.watchBufferWriteTimeout,
+		watchChangeBufferMaximumSize:        config.watchChangeBufferMaximumSize,
+		watchBufferLength:                   config.watchBufferLength,
+		watchEnabled:                        !config.watchDisabled,
+		cachedEstimatedBytesPerRelationship: atomic.Uint64{},
+		tableSizesStatsTable:                tableSizesStatsTable,
+		filterMaximumIDCount:                config.filterMaximumIDCount,
+		schema:                              *schema,
+		meterProvider:                       meterProvider,
 	}
 	// Optimized revision and revision checking use a stale read for the
 	// current timestamp.
@@ -254,6 +272,20 @@ func NewSpannerDatastore(ctx context.Context, database string, opts ...Option) (
 	ds.SetNowFunc(ds.staleHeadRevision)
 
 	return ds, nil
+}
+
+func getMeterProviderWithPromExporter(res *otelres.Resource) (*metric.MeterProvider, error) {
+	exporter, err := otelprom.New()
+	if err != nil {
+		return nil, err
+	}
+
+	meterProvider := metric.NewMeterProvider(
+		metric.WithResource(res),
+		metric.WithReader(exporter),
+	)
+
+	return meterProvider, nil
 }
 
 type traceableRTX struct {
@@ -294,30 +326,36 @@ func (sd *spannerDatastore) SnapshotReader(revisionRaw datastore.Revision) datas
 		return &traceableRTX{delegate: sd.client.Single().WithTimestampBound(spanner.ReadTimestamp(r.Time()))}
 	}
 	executor := common.QueryRelationshipsExecutor{Executor: queryExecutor(txSource)}
-	return spannerReader{executor, txSource, sd.filterMaximumIDCount, sd.schema}
+	return &spannerReader{executor, txSource, sd.filterMaximumIDCount, sd.schema}
 }
 
 func (sd *spannerDatastore) MetricsID() (string, error) {
 	return sd.database, nil
 }
 
-type TransactionMetadata map[string]any
-
-func (sd *spannerDatastore) readTransactionMetadata(ctx context.Context, transactionTag string) (TransactionMetadata, error) {
+func (sd *spannerDatastore) readTransactionMetadata(ctx context.Context, transactionTag string) (common.TransactionMetadata, error) {
 	row, err := sd.client.Single().ReadRow(ctx, tableTransactionMetadata, spanner.Key{transactionTag}, []string{colMetadata})
 	if err != nil {
 		if spanner.ErrCode(err) == codes.NotFound {
+			log.Err(err).Str("key", transactionTag).Send()
 			return map[string]any{}, nil
 		}
 
 		return nil, err
 	}
 
-	var metadata map[string]any
-	if err := row.Columns(&metadata); err != nil {
-		return nil, err
+	var metadataJSON spanner.NullJSON
+	if err := row.Columns(&metadataJSON); err != nil {
+		log.Err(err).Str("key", transactionTag).Msg("error unmarshaling transaction metadata json")
+		return map[string]any{}, nil
 	}
 
+	if !metadataJSON.Valid || metadataJSON.Value == nil {
+		log.Err(err).Str("key", transactionTag).Msg("error validating transaction metadata json")
+		return map[string]any{}, nil
+	}
+
+	metadata := metadataJSON.Value.(map[string]any)
 	return metadata, nil
 }
 
@@ -328,6 +366,7 @@ func (sd *spannerDatastore) ReadWriteTx(ctx context.Context, fn datastore.TxUser
 	defer span.End()
 
 	transactionTag := "sdb-rwt-" + uuid.NewString()
+	transactionTag = transactionTag[:36] // there is a column constraint on the length
 
 	ctx, cancel := context.WithCancel(ctx)
 	rs, err := sd.client.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, spannerRWT *spanner.ReadWriteTransaction) error {
@@ -339,7 +378,10 @@ func (sd *spannerDatastore) ReadWriteTx(ctx context.Context, fn datastore.TxUser
 			// Insert the metadata into the transaction metadata table.
 			mutation := spanner.Insert(tableTransactionMetadata,
 				[]string{colTransactionTag, colMetadata},
-				[]any{transactionTag, config.Metadata.AsMap()},
+				[]any{transactionTag, spanner.NullJSON{
+					Value: config.Metadata.AsMap(),
+					Valid: true,
+				}},
 			)
 
 			if err := spannerRWT.BufferWrite([]*spanner.Mutation{mutation}); err != nil {
@@ -348,7 +390,7 @@ func (sd *spannerDatastore) ReadWriteTx(ctx context.Context, fn datastore.TxUser
 		}
 
 		executor := common.QueryRelationshipsExecutor{Executor: queryExecutor(txSource)}
-		rwt := spannerReadWriteTXN{
+		rwt := &spannerReadWriteTXN{
 			spannerReader{executor, txSource, sd.filterMaximumIDCount, sd.schema},
 			spannerRWT,
 		}
@@ -415,6 +457,11 @@ func (sd *spannerDatastore) OfflineFeatures() (*datastore.Features, error) {
 
 func (sd *spannerDatastore) Close() error {
 	sd.client.Close()
+
+	if sd.meterProvider != nil {
+		return sd.meterProvider.ForceFlush(context.TODO())
+	}
+
 	return nil
 }
 

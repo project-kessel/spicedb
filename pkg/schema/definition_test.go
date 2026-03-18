@@ -1,17 +1,12 @@
 package schema
 
 import (
-	"context"
 	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/authzed/spicedb/internal/datastore/dsfortesting"
-	"github.com/authzed/spicedb/internal/datastore/memdb"
-	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/pkg/caveats"
-	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/genutil/mapz"
 	ns "github.com/authzed/spicedb/pkg/namespace"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
@@ -409,40 +404,62 @@ func TestDefinition(t *testing.T) {
 			},
 			"",
 		},
+		{
+			"self is valid if used as a relation that exists",
+			ns.Namespace(
+				"document",
+				ns.MustRelation("self", nil),
+				ns.MustRelation("editor", ns.Union(
+					ns.ComputedUserset("self"),
+				)),
+			),
+			[]*core.NamespaceDefinition{},
+			nil,
+			"",
+		},
+		{
+			"self is invalid if used as a relation that doesn't exist",
+			ns.Namespace(
+				"document",
+				ns.MustRelation("editor", ns.Union(
+					ns.ComputedUserset("self"),
+				)),
+			),
+			[]*core.NamespaceDefinition{},
+			nil,
+			"relation/permission `self` not found under definition `document`",
+		},
+		{
+			"self is valid if used as a keyword",
+			ns.Namespace(
+				"document",
+				ns.MustRelation("editor", ns.Union(
+					ns.Self(),
+				)),
+			),
+			[]*core.NamespaceDefinition{},
+			nil,
+			"",
+		},
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			require := require.New(t)
 
-			ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
-			require.NoError(err)
-
 			ctx := t.Context()
 
-			lastRevision, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-				err := rwt.WriteNamespaces(ctx, tc.toCheck)
-				if err != nil {
-					return err
-				}
-				for _, otherNS := range tc.otherNamespaces {
-					if err := rwt.WriteNamespaces(ctx, otherNS); err != nil {
-						return err
-					}
-				}
-				cw := rwt.(datastore.CaveatStorer)
-				return cw.WriteCaveats(ctx, tc.caveats)
-			})
-			require.NoError(err)
-			resolver := ResolverForDatastoreReader(ds.SnapshotReader(lastRevision))
+			predefinedNamespaces := make([]*core.NamespaceDefinition, 0, 1+len(tc.otherNamespaces))
+			predefinedNamespaces = append(predefinedNamespaces, tc.toCheck)
+			predefinedNamespaces = append(predefinedNamespaces, tc.otherNamespaces...)
+			resolver := ResolverForPredefinedDefinitions(PredefinedElements{Definitions: predefinedNamespaces, Caveats: tc.caveats})
 
 			ts := NewTypeSystem(resolver)
 
 			def, gerr := ts.GetDefinition(ctx, tc.toCheck.GetName())
 			require.NoError(gerr)
 
-			_, verr := def.Validate(ctx)
+			_, verr := ts.Validate(ctx, def)
 			if tc.expectedError == "" {
 				require.NoError(verr)
 			} else {
@@ -585,7 +602,6 @@ func TestTraitsUnion(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			require := require.New(t)
 			result := tc.traits1.union(tc.traits2)
@@ -1500,14 +1516,10 @@ func TestTypeSystemAccessors(t *testing.T) {
 	}
 
 	for _, tc := range tcs {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			require := require.New(t)
 
-			ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 0, memdb.DisableGC)
-			require.NoError(err)
-
-			ctx := datastoremw.ContextWithDatastore(t.Context(), ds)
+			ctx := t.Context()
 
 			compiled, err := compiler.Compile(compiler.InputSchema{
 				Source:       input.Source("schema"),
@@ -1515,14 +1527,7 @@ func TestTypeSystemAccessors(t *testing.T) {
 			}, compiler.AllowUnprefixedObjectType())
 			require.NoError(err)
 
-			lastRevision, err := ds.HeadRevision(t.Context())
-			require.NoError(err)
-
-			reader := ds.SnapshotReader(lastRevision)
-			resolver := ResolverForDatastoreReader(reader).WithPredefinedElements(PredefinedElements{
-				Definitions: compiled.ObjectDefinitions,
-				Caveats:     compiled.CaveatDefinitions,
-			})
+			resolver := ResolverForCompiledSchema(compiled)
 			ts := NewTypeSystem(resolver)
 			for _, nsDef := range compiled.ObjectDefinitions {
 				vts, err := ts.GetValidatedDefinition(ctx, nsDef.GetName())

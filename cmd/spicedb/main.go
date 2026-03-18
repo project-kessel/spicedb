@@ -3,12 +3,14 @@ package main
 import (
 	"errors"
 	"os"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/sercand/kuberesolver/v5"
 	"google.golang.org/grpc/balancer"
 	_ "google.golang.org/grpc/xds"
 
+	"github.com/authzed/spicedb/cmd/spicedb/memoryprotection"
 	log "github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/pkg/cmd"
 	cmdutil "github.com/authzed/spicedb/pkg/cmd/server"
@@ -17,8 +19,11 @@ import (
 )
 
 func main() {
+	memoryprotection.InitDefaultMemoryUsageProvider()
+
 	// Set up root logger
 	// This will typically be overwritten by the logging setup for a given command.
+	zerolog.TimeFieldFormat = time.RFC3339Nano
 	log.SetGlobalLogger(zerolog.New(os.Stderr).Level(zerolog.InfoLevel))
 
 	// Enable Kubernetes gRPC resolver

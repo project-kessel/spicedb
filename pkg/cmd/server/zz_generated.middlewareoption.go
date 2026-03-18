@@ -3,9 +3,9 @@ package server
 
 import (
 	dispatch "github.com/authzed/spicedb/internal/dispatch"
+	memoryprotection "github.com/authzed/spicedb/internal/middleware/memoryprotection"
 	consistency "github.com/authzed/spicedb/pkg/middleware/consistency"
 	defaults "github.com/creasty/defaults"
-	helpers "github.com/ecordell/optgen/helpers"
 	auth "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/auth"
 	zerolog "github.com/rs/zerolog"
 )
@@ -43,21 +43,45 @@ func (m *MiddlewareOption) ToOption() MiddlewareOptionOption {
 		to.DisableGRPCHistogram = m.DisableGRPCHistogram
 		to.MiddlewareServiceLabel = m.MiddlewareServiceLabel
 		to.MismatchingZedTokenOption = m.MismatchingZedTokenOption
-		to.unaryDatastoreMiddleware = m.unaryDatastoreMiddleware
-		to.streamDatastoreMiddleware = m.streamDatastoreMiddleware
+		to.MemoryUsageProvider = m.MemoryUsageProvider
 	}
 }
 
 // DebugMap returns a map form of MiddlewareOption for debugging
-func (m MiddlewareOption) DebugMap() map[string]any {
+func (m *MiddlewareOption) DebugMap() map[string]any {
 	debugMap := map[string]any{}
-	debugMap["EnableVersionResponse"] = helpers.DebugValue(m.EnableVersionResponse, false)
-	debugMap["EnableRequestLog"] = helpers.DebugValue(m.EnableRequestLog, false)
-	debugMap["EnableResponseLog"] = helpers.DebugValue(m.EnableResponseLog, false)
-	debugMap["DisableGRPCHistogram"] = helpers.DebugValue(m.DisableGRPCHistogram, false)
-	debugMap["MiddlewareServiceLabel"] = helpers.DebugValue(m.MiddlewareServiceLabel, false)
-	debugMap["MismatchingZedTokenOption"] = helpers.DebugValue(m.MismatchingZedTokenOption, false)
+	debugMap["EnableVersionResponse"] = m.EnableVersionResponse
+	debugMap["EnableRequestLog"] = m.EnableRequestLog
+	debugMap["EnableResponseLog"] = m.EnableResponseLog
+	debugMap["DisableGRPCHistogram"] = m.DisableGRPCHistogram
+	if m.MiddlewareServiceLabel == "" {
+		debugMap["MiddlewareServiceLabel"] = "(empty)"
+	} else {
+		debugMap["MiddlewareServiceLabel"] = m.MiddlewareServiceLabel
+	}
+	debugMap["MismatchingZedTokenOption"] = m.MismatchingZedTokenOption
 	return debugMap
+}
+
+// FlatDebugMap returns a flattened map form of MiddlewareOption for debugging
+// Nested maps are flattened using dot notation (e.g., "parent.child.field")
+func (m *MiddlewareOption) FlatDebugMap() map[string]any {
+	var flatten func(m map[string]any) map[string]any
+	flatten = func(m map[string]any) map[string]any {
+		result := make(map[string]any, len(m))
+		for key, value := range m {
+			childMap, ok := value.(map[string]any)
+			if ok {
+				for childKey, childValue := range flatten(childMap) {
+					result[key+"."+childKey] = childValue
+				}
+				continue
+			}
+			result[key] = value
+		}
+		return result
+	}
+	return flatten(m.DebugMap())
 }
 
 // MiddlewareOptionWithOptions configures an existing MiddlewareOption with the passed in options set
@@ -136,5 +160,12 @@ func WithMiddlewareServiceLabel(middlewareServiceLabel string) MiddlewareOptionO
 func WithMismatchingZedTokenOption(mismatchingZedTokenOption consistency.MismatchingTokenOption) MiddlewareOptionOption {
 	return func(m *MiddlewareOption) {
 		m.MismatchingZedTokenOption = mismatchingZedTokenOption
+	}
+}
+
+// WithMemoryUsageProvider returns an option that can set MemoryUsageProvider on a MiddlewareOption
+func WithMemoryUsageProvider(memoryUsageProvider memoryprotection.MemoryUsageProvider) MiddlewareOptionOption {
+	return func(m *MiddlewareOption) {
+		m.MemoryUsageProvider = memoryUsageProvider
 	}
 }

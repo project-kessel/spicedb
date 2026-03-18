@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
@@ -87,7 +88,6 @@ func TestMaxDepthCaching(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			require := require.New(t)
 
@@ -184,7 +184,7 @@ func TestConcurrentDebugInfoAccess(t *testing.T) {
 	errors := make(chan error, numGoroutines)
 
 	var wg sync.WaitGroup
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(goroutineID int) {
 			defer wg.Done()
@@ -206,7 +206,7 @@ func TestConcurrentDebugInfoAccess(t *testing.T) {
 				return
 			}
 
-			require.NotNil(resp.GetMetadata().GetDebugInfo().GetCheck().GetRequest())
+			assert.NotNil(t, resp.GetMetadata().GetDebugInfo().GetCheck().GetRequest())
 
 			// we mutate the response to prove that it's not shared across goroutines
 			resp.GetMetadata().GetDebugInfo().GetCheck().GetRequest().Subject.Relation = "modified"

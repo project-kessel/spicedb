@@ -3,15 +3,16 @@ package server
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.uber.org/goleak"
+	"go.uber.org/mock/gomock"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -22,19 +23,24 @@ import (
 	"github.com/authzed/grpcutil"
 
 	"github.com/authzed/spicedb/internal/datastore/dsfortesting"
+	dispatchmocks "github.com/authzed/spicedb/internal/dispatch/mocks"
 	"github.com/authzed/spicedb/internal/logging"
+	"github.com/authzed/spicedb/internal/middleware/memoryprotection"
 	"github.com/authzed/spicedb/pkg/cmd/datastore"
 	"github.com/authzed/spicedb/pkg/cmd/util"
+	dsmocks "github.com/authzed/spicedb/pkg/datastore/mocks"
 	"github.com/authzed/spicedb/pkg/middleware/consistency"
 	"github.com/authzed/spicedb/pkg/testutil"
 	"github.com/authzed/spicedb/pkg/tuple"
 )
 
 func TestServerGracefulTermination(t *testing.T) {
-	defer goleak.VerifyNone(t, append(testutil.GoLeakIgnores(), goleak.IgnoreCurrent())...)
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 1*time.Second, 10*time.Second)
+	ds, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 1*time.Second, 10*time.Second)
 	require.NoError(t, err)
 
 	c := ConfigWithOptions(
@@ -50,6 +56,7 @@ func TestServerGracefulTermination(t *testing.T) {
 		WithClusterDispatchCacheConfig(CacheConfig{Enabled: true}),
 		WithHTTPGateway(util.HTTPServerConfig{HTTPEnabled: true, HTTPAddress: ":"}),
 		WithMetricsAPI(util.HTTPServerConfig{HTTPEnabled: true, HTTPAddress: ":"}),
+		WithEnableMemoryProtectionMiddleware(false),
 	)
 	rs, err := c.Complete(ctx)
 	require.NoError(t, err)
@@ -83,9 +90,11 @@ func TestOTelReporting(t *testing.T) {
 
 	ds, err := datastore.NewDatastore(ctx,
 		datastore.DefaultDatastoreConfig().ToOption(),
-		datastore.WithRequestHedgingEnabled(false),
 	)
 	require.NoError(t, err, "unable to start memdb datastore")
+	t.Cleanup(func() {
+		ds.Close()
+	})
 
 	configOpts := []ConfigOption{
 		WithGRPCServer(util.GRPCServerConfig{
@@ -101,6 +110,7 @@ func TestOTelReporting(t *testing.T) {
 		WithNamespaceCacheConfig(CacheConfig{Enabled: false, Metrics: false}),
 		WithClusterDispatchCacheConfig(CacheConfig{Enabled: false, Metrics: false}),
 		WithDatastore(ds),
+		WithEnableMemoryProtectionMiddleware(false),
 	}
 
 	srv, err := NewConfigWithOptionsAndDefaults(configOpts...).Complete(ctx)
@@ -153,9 +163,11 @@ func TestDisableHealthCheckTracing(t *testing.T) {
 
 	ds, err := datastore.NewDatastore(ctx,
 		datastore.DefaultDatastoreConfig().ToOption(),
-		datastore.WithRequestHedgingEnabled(false),
 	)
 	require.NoError(t, err, "unable to start memdb datastore")
+	t.Cleanup(func() {
+		ds.Close()
+	})
 
 	configOpts := []ConfigOption{
 		WithGRPCServer(util.GRPCServerConfig{
@@ -181,7 +193,7 @@ func TestDisableHealthCheckTracing(t *testing.T) {
 	defer conn.Close()
 
 	go func() {
-		require.NoError(t, srv.Run(ctx))
+		assert.NoError(t, srv.Run(ctx))
 	}()
 
 	// Poll for gRPC server readiness instead of sleeping
@@ -219,7 +231,7 @@ func requireSpanExists(t *testing.T, spanrecorder *tracetest.SpanRecorder, spanN
 			}
 		}
 		return false
-	}, 2*time.Second, 10*time.Millisecond, fmt.Sprintf("missing span with name %q", spanName))
+	}, 2*time.Second, 10*time.Millisecond, "missing span with name %q", spanName)
 }
 
 func requireSpanDoesNotExist(t *testing.T, spanrecorder *tracetest.SpanRecorder, spanName string) {
@@ -265,18 +277,19 @@ func (m *countingInterceptor) unaryIntercept(ctx context.Context, req any, _ *gr
 // FAILED_PRECONDITION error from the WriteRelationships call.
 // This test is in place to make sure we don't regress this again by messing with grpc in our middlewares.
 func TestRetryPolicy(t *testing.T) {
-	defer goleak.VerifyNone(t, append(testutil.GoLeakIgnores(), goleak.IgnoreCurrent())...)
-
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
 
 	ds, err := datastore.NewDatastore(ctx,
 		datastore.DefaultDatastoreConfig().ToOption(),
-		datastore.WithRequestHedgingEnabled(false),
 	)
-	if err != nil {
-		t.Fatalf("unable to start memdb datastore: %s", err)
-	}
+	require.NoError(t, err, "unable to start memdb datastore")
+	t.Cleanup(func() {
+		ds.Close()
+	})
 
 	var interceptor countingInterceptor
 	configOpts := []ConfigOption{
@@ -293,6 +306,7 @@ func TestRetryPolicy(t *testing.T) {
 		WithNamespaceCacheConfig(CacheConfig{Enabled: false, Metrics: false}),
 		WithClusterDispatchCacheConfig(CacheConfig{Enabled: false, Metrics: false}),
 		WithDatastore(ds),
+		WithEnableMemoryProtectionMiddleware(false),
 		SetUnaryMiddlewareModification([]MiddlewareModification[grpc.UnaryServerInterceptor]{
 			{
 				Operation:                OperationAppend,
@@ -334,14 +348,14 @@ func TestRetryPolicy(t *testing.T) {
                   ]
                 }`))
 	require.NoError(t, err)
-	defer func() {
+	t.Cleanup(func() {
 		_ = conn.Close()
-	}()
-
+	})
 	schemaSrv := v1.NewSchemaServiceClient(conn)
 
+	errChan := make(chan error, 1)
 	go func() {
-		require.NoError(t, srv.Run(ctx))
+		errChan <- srv.Run(ctx)
 	}()
 
 	_, err = schemaSrv.WriteSchema(ctx, &v1.WriteSchemaRequest{
@@ -363,23 +377,26 @@ func TestRetryPolicy(t *testing.T) {
 
 	// validate that requestID was used, as it used to break retry policies before
 	require.Equal(t, 5, interceptor.val)
-	requestIDs := trailer.Get("io.spicedb.respmeta.requestid")
+	requestIDs := trailer.Get("x-request-id")
 	require.NotEmpty(t, requestIDs)
 	require.Contains(t, requestIDs, "foobar")
+
+	cancel()
+	require.NoError(t, <-errChan)
 }
 
 func TestServerGracefulTerminationOnError(t *testing.T) {
 	defer goleak.VerifyNone(t, append(testutil.GoLeakIgnores(), goleak.IgnoreCurrent())...)
 
 	ctx, cancel := context.WithCancel(t.Context())
-	ds, err := dsfortesting.NewMemDBDatastoreForTesting(0, 1*time.Second, 10*time.Second)
+	ds, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 1*time.Second, 10*time.Second)
 	require.NoError(t, err)
 
 	c := ConfigWithOptions(&Config{
 		GRPCServer: util.GRPCServerConfig{
 			Network: util.BufferedNetwork,
 		},
-	}, WithPresharedSecureKey("psk"), WithDatastore(ds))
+	}, WithPresharedSecureKey("psk"), WithDatastore(ds), WithEnableMemoryProtectionMiddleware(false))
 	cancel()
 	_, err = c.Complete(ctx)
 	require.NoError(t, err)
@@ -439,7 +456,7 @@ func TestModifyUnaryMiddleware(t *testing.T) {
 		},
 	}}
 
-	opt := MiddlewareOption{logging.Logger, nil, false, nil, false, false, false, "testing", consistency.TreatMismatchingTokensAsFullConsistency, nil, nil}
+	opt := MiddlewareOption{logging.Logger, nil, false, nil, false, false, false, "testing", consistency.TreatMismatchingTokensAsFullConsistency, memoryprotection.NewNoopMemoryUsageProvider(), nil, nil}
 	opt = opt.WithDatastore(nil)
 
 	defaultMw, err := DefaultUnaryMiddleware(opt)
@@ -467,7 +484,7 @@ func TestModifyStreamingMiddleware(t *testing.T) {
 		},
 	}}
 
-	opt := MiddlewareOption{logging.Logger, nil, false, nil, false, false, false, "testing", consistency.TreatMismatchingTokensAsFullConsistency, nil, nil}
+	opt := MiddlewareOption{logging.Logger, nil, false, nil, false, false, false, "testing", consistency.TreatMismatchingTokensAsFullConsistency, memoryprotection.NewNoopMemoryUsageProvider(), nil, nil}
 	opt = opt.WithDatastore(nil)
 
 	defaultMw, err := DefaultStreamingMiddleware(opt)
@@ -574,6 +591,49 @@ func TestSupportOldAndNewReadReplicaConnectionPoolFlags(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.opts.supportOldAndNewReadReplicaConnectionPoolFlags()
 			require.Equal(t, tt.expected, tt.opts.DatastoreConfig.ReadReplicaConnPool)
+		})
+	}
+}
+
+func TestBuildDispatchServer(t *testing.T) {
+	testcases := map[string]struct {
+		config                              *Config
+		expectedDispatchUnnaryMiddleware    int
+		expectedDispatchStreamingMiddleware int
+	}{
+		`auth:preshared key`: {
+			config: &Config{
+				PresharedSecureKey: []string{"securekey"},
+			},
+			expectedDispatchUnnaryMiddleware:    8,
+			expectedDispatchStreamingMiddleware: 6,
+		},
+		`auth:custom`: {
+			config: &Config{
+				GRPCAuthFunc: func(ctx context.Context) (context.Context, error) {
+					return ctx, nil
+				},
+			},
+			expectedDispatchUnnaryMiddleware:    8,
+			expectedDispatchStreamingMiddleware: 6,
+		},
+	}
+
+	for name, tc := range testcases {
+		t.Run(name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockDatastore := dsmocks.NewMockDatastore(ctrl)
+			mockDispatcher := dispatchmocks.NewMockDispatcher(ctrl)
+
+			sampler := memoryprotection.NewNoopMemoryUsageProvider()
+
+			srv, err := tc.config.buildDispatchServer(sampler, mockDatastore, mockDispatcher, nil)
+			require.NoError(t, err)
+			require.NotNil(t, srv)
+			require.Len(t, tc.config.DispatchUnaryMiddleware, tc.expectedDispatchUnnaryMiddleware)
+			require.Len(t, tc.config.DispatchStreamingMiddleware, tc.expectedDispatchStreamingMiddleware)
 		})
 	}
 }
