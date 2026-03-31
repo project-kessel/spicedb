@@ -6,19 +6,40 @@ This document captures all changes made by Red Hat that diverge from the upstrea
 
 ### Drift Tracking
 
-The table below captures high-level changes to our fork from upstream and the reason for these changes.
+The table below captures all changes to our fork from upstream. Each entry includes the affected files, what changed, why, and how to handle conflicts during upstream syncs.
 
-|Change|Reason|
-|------|------|
-|The `dependabot.yml` file has been removed to disable Dependabot|This better aligns with other Red Hat mandates to leverage Konflux|
-|Removes Authzed's `renovate.json` and replaces it with our own|This configures Mintmaker (part of Konflux) to prevent Go pkg update PRs and move to weekly updates for Dockerfile base image updates|
-|All active workflows defined by Authzed updated use the `ubuntu-latest` image for the runner|Authzed uses a custom self-hosted runner in their workflows which we don't have access to|
-|Non-critical workflows disabled or removed|Workflows that do not impact code functionality or Red Hat builds are disabled.<br><br> This includes:<br> * Benchmark, analyzer unit, WASM, and Steelthread tests<br> * Binary and image builds (using upstream Dockerfile)<br> * Datastore integration & consistency tests for MySQL, Spanner, and CockroachDB<br> * Documentation generation<br> * Lint checks<br> * License checks<br> * Release pipelines<br> * CodeQL and Trivy scanning<br> * WASM builds * Changelog workflow * Protobuf Generation|
-|Removed old versions of Postgres from Datastore integration/consistency workflows| Tests are isolated to version we currently use (16/17)|
-|Added the security scanning workflow|Required ConsoleDot platform security workflow to check for CVE's in code and images|
-|Added push/pull tekton pipelines|Used for Konflux PR and merge builds|
-|Added Dockerfile.fips|Dockerfile used by Konflux for building images, to comply with requirements of using UBI as the base image, and to ensure FIPS-compliant builds using Go Toolset|
-|Updated integration and unit test timeout values|Integration and unit tests were failing due to short timeouts, likely related to using smaller runners than Authzed may be using. These code changes can be found in the `magefiles/test.go` file|
+**Merge actions:**
+- **Keep ours**: always preserve the Red Hat version of this file
+- **Re-apply**: accept upstream changes, then re-apply our specific modifications
+- **Delete**: file should not exist in our fork; remove if upstream re-adds it
+- **Red Hat only**: file exists only in our fork; no upstream equivalent
+
+| File(s) | Change | Reason | Merge Action |
+|---------|--------|--------|-------------|
+| `.github/dependabot.yml` | Removed | Aligns with Red Hat mandates to leverage Konflux | Delete |
+| `.github/renovate.json` | Replaced with our own config | Configures Mintmaker (part of Konflux) to prevent Go pkg update PRs and move to weekly updates for Dockerfile base image updates | Keep ours |
+| Active workflows in `.github/workflows/` | Runner changed to `ubuntu-latest` | Authzed uses custom self-hosted runners (`depot-*`, `buildjet-*`) which we don't have access to | Re-apply |
+| `.github/workflows/build-test.yaml` | Disabled: build, steelthread, analyzer-unit, WASM, protobuf, benchmark jobs (`if: false`); disabled CockroachDB/MySQL/Spanner datastore tests; changed `Dockerfile` reference to `Dockerfile.fips`; limited Postgres versions to 16/17 | Non-critical to Red Hat builds or not applicable to our deployment targets | Re-apply |
+| `.github/workflows/benchmark.yaml` | Disabled (`if: false`) | Not critical to Red Hat builds | Re-apply |
+| `.github/workflows/commit-messages.yaml` | Disabled (`if: false`) | Not critical to Red Hat builds | Re-apply |
+| `.github/workflows/docs.yaml` | Disabled (`if: false`) | Not critical to Red Hat builds | Re-apply |
+| `.github/workflows/keep-a-changelog.yaml` | Disabled (`if: false`) | Not critical to Red Hat builds | Re-apply |
+| `.github/workflows/lint.yaml` | Disabled (`if: false`) | Not critical to Red Hat builds | Re-apply |
+| `.github/workflows/release-windows.yaml` | Disabled (`if: false`) | Not critical to Red Hat builds | Re-apply |
+| `.github/workflows/cla.yaml` | Removed | Not applicable to our fork | Delete |
+| `.github/workflows/labeler.yaml` | Removed | Not applicable to our fork | Delete |
+| `.github/workflows/nightly.yaml` | Removed | Not applicable to our fork | Delete |
+| `.github/workflows/release.yaml` | Removed | Not applicable to our fork | Delete |
+| `.github/workflows/security.yaml` | Removed | Replaced by our own security scanning workflow | Delete |
+| `.github/workflows/wasm.yaml` | Removed | Not applicable to our fork | Delete |
+| `.github/workflows/security-scanning.yml` | Added | Required ConsoleDot platform security workflow for CVE scanning | Red Hat only |
+| `.tekton/spicedb-pull-request.yaml`, `.tekton/spicedb-push.yaml` | Added | Konflux PR and merge build pipelines | Red Hat only |
+| `Dockerfile.fips` | Added | FIPS-compliant builds using UBI base image and Go Toolset for Konflux | Red Hat only |
+| `magefiles/test.go` | Increased timeouts (unit: 20m, integration: 30m, consistency: 20m) | Tests fail with short timeouts on smaller runners | Re-apply |
+| `scripts/redhat-diff.sh` | Added | Script to isolate Red Hat-specific changes from upstream sync PRs for easier code review | Red Hat only |
+| `README-redhat.md` | Added | Documents all Red Hat fork changes and rationale | Red Hat only |
+| `SYNC.md` | Added | Tracks the current upstream version synced to this fork | Red Hat only |
+| `.yamllint` | Added | YAML linting configuration | Red Hat only |
 
 &nbsp;
 
@@ -63,10 +84,12 @@ Update `SYNC.md` as part of any PR that merges changes from the upstream [authze
 
 If changes are made to our fork that diverge from upstream that are not captured in this README, make sure to update this file with any relevant changes. Be sure to capture the change and reason in the table above.
 
-An easy way to capture differences is to use `git diff` and compare your synced branch to the upstream tag branch to see all differences between upstream and the current state.
+An easy way to capture differences is to use `scripts/redhat-diff.sh` which compares the merge branch against the upstream tag and shows only Red Hat-specific changes:
 
 ```bash
-# assumes you have an `upstream` remote for the upstream source code
-git checkout -b upstream-<tag> tags/<tag>
-git diff upstream-<tag>..<your-synced-branch>
+# Show summary of Red Hat changes for this sync
+./scripts/redhat-diff.sh --stat
+
+# Show all cumulative Red Hat changes vs upstream
+./scripts/redhat-diff.sh --all --stat
 ```
