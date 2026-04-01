@@ -244,7 +244,7 @@ func (ce *ConcurrentExpander) expandComputedUserset(ctx context.Context, req Val
 
 	// Check if the target relation exists. If not, return nothing.
 	dl := datalayer.MustFromContext(ctx).SnapshotReader(req.Revision)
-	sr, err := dl.ReadSchema()
+	sr, err := dl.ReadSchema(ctx)
 	if err != nil {
 		return expandError(err)
 	}
@@ -353,7 +353,7 @@ func expandSetOperation(
 	for _, resultChan := range resultChans {
 		select {
 		case result := <-resultChan:
-			responseMetadata = combineResponseMetadata(ctx, responseMetadata, result.Resp.Metadata)
+			responseMetadata = combineResponseMetadata(responseMetadata, result.Resp.Metadata)
 			if result.Err != nil {
 				return expandResultError(result.Err, responseMetadata)
 			}

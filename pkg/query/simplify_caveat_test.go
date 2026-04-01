@@ -47,9 +47,7 @@ func TestSimplifyLeafCaveat(t *testing.T) {
 	})
 	require.NoError(err)
 
-	dl := datalayer.NewDataLayer(ds)
-	sr, srErr := dl.SnapshotReader(revision).ReadSchema()
-	require.NoError(srErr)
+	sr := caveatDefinitionLookupAdapter{NewQueryDatastoreReader(datalayer.NewDataLayer(ds).SnapshotReader(revision))}
 	runner := internalcaveats.NewCaveatRunner(caveattypes.Default.TypeSet)
 
 	// Create caveat expression without context
@@ -136,9 +134,7 @@ func TestSimplifyAndOperation(t *testing.T) {
 	})
 	require.NoError(err)
 
-	dl := datalayer.NewDataLayer(ds)
-	sr, srErr := dl.SnapshotReader(revision).ReadSchema()
-	require.NoError(srErr)
+	sr := caveatDefinitionLookupAdapter{NewQueryDatastoreReader(datalayer.NewDataLayer(ds).SnapshotReader(revision))}
 	runner := internalcaveats.NewCaveatRunner(caveattypes.Default.TypeSet)
 
 	// Create AND expression: caveat1 AND caveat2
@@ -242,9 +238,7 @@ func TestSimplifyOrOperation(t *testing.T) {
 	})
 	require.NoError(err)
 
-	dl := datalayer.NewDataLayer(ds)
-	sr, srErr := dl.SnapshotReader(revision).ReadSchema()
-	require.NoError(srErr)
+	sr := caveatDefinitionLookupAdapter{NewQueryDatastoreReader(datalayer.NewDataLayer(ds).SnapshotReader(revision))}
 	runner := internalcaveats.NewCaveatRunner(caveattypes.Default.TypeSet)
 
 	// Create OR expression: caveat1 OR caveat2
@@ -360,9 +354,7 @@ func TestSimplifyNestedOperations(t *testing.T) {
 	})
 	require.NoError(err)
 
-	dl := datalayer.NewDataLayer(ds)
-	sr, srErr := dl.SnapshotReader(revision).ReadSchema()
-	require.NoError(srErr)
+	sr := caveatDefinitionLookupAdapter{NewQueryDatastoreReader(datalayer.NewDataLayer(ds).SnapshotReader(revision))}
 	runner := internalcaveats.NewCaveatRunner(caveattypes.Default.TypeSet)
 
 	// Create nested expression: (caveat1 OR caveat2) AND caveat3
@@ -447,9 +439,7 @@ func TestSimplifyOrWithSameCaveatDifferentContexts(t *testing.T) {
 	})
 	require.NoError(err)
 
-	dl := datalayer.NewDataLayer(ds)
-	sr, srErr := dl.SnapshotReader(revision).ReadSchema()
-	require.NoError(srErr)
+	sr := caveatDefinitionLookupAdapter{NewQueryDatastoreReader(datalayer.NewDataLayer(ds).SnapshotReader(revision))}
 	runner := internalcaveats.NewCaveatRunner(caveattypes.Default.TypeSet)
 
 	// Create OR expression: write_limit(limit=2) OR write_limit(limit=4)
@@ -535,9 +525,7 @@ func TestSimplifyAndWithSameCaveatDifferentContexts(t *testing.T) {
 	})
 	require.NoError(err)
 
-	dl := datalayer.NewDataLayer(ds)
-	sr, srErr := dl.SnapshotReader(revision).ReadSchema()
-	require.NoError(srErr)
+	sr := caveatDefinitionLookupAdapter{NewQueryDatastoreReader(datalayer.NewDataLayer(ds).SnapshotReader(revision))}
 	runner := internalcaveats.NewCaveatRunner(caveattypes.Default.TypeSet)
 
 	// Create AND expression: write_limit(limit=2) AND write_limit(limit=4)
@@ -633,9 +621,7 @@ func TestSimplifyNotWithSameCaveatDifferentContexts(t *testing.T) {
 	})
 	require.NoError(err)
 
-	dl := datalayer.NewDataLayer(ds)
-	sr, srErr := dl.SnapshotReader(revision).ReadSchema()
-	require.NoError(srErr)
+	sr := caveatDefinitionLookupAdapter{NewQueryDatastoreReader(datalayer.NewDataLayer(ds).SnapshotReader(revision))}
 	runner := internalcaveats.NewCaveatRunner(caveattypes.Default.TypeSet)
 
 	// Create NOT expression: NOT write_limit(limit=4)
@@ -717,9 +703,7 @@ func TestSimplifyComplexNestedExpressions(t *testing.T) {
 	})
 	require.NoError(err)
 
-	dl := datalayer.NewDataLayer(ds)
-	sr, srErr := dl.SnapshotReader(revision).ReadSchema()
-	require.NoError(srErr)
+	sr := caveatDefinitionLookupAdapter{NewQueryDatastoreReader(datalayer.NewDataLayer(ds).SnapshotReader(revision))}
 	runner := internalcaveats.NewCaveatRunner(caveattypes.Default.TypeSet)
 
 	t.Run("OrOfAnds_ComplexNesting", func(t *testing.T) {
@@ -889,7 +873,6 @@ func mustToStruct(t *testing.T, data map[string]any) *structpb.Struct {
 // Additional tests for uncovered functions in simplify_caveat.go
 
 func TestMergeContextsForExpression(t *testing.T) {
-	t.Parallel()
 	require := require.New(t)
 
 	// Test merging contexts for complex expressions
@@ -899,7 +882,6 @@ func TestMergeContextsForExpression(t *testing.T) {
 	}
 
 	t.Run("Simple caveat expression", func(t *testing.T) {
-		t.Parallel()
 		// Create a simple caveat with relationship context
 		caveatExpr := &core.CaveatExpression{
 			OperationOrCaveat: &core.CaveatExpression_Caveat{
@@ -923,7 +905,6 @@ func TestMergeContextsForExpression(t *testing.T) {
 	})
 
 	t.Run("Complex AND expression", func(t *testing.T) {
-		t.Parallel()
 		// Create AND expression with multiple caveats
 		child1 := &core.CaveatExpression{
 			OperationOrCaveat: &core.CaveatExpression_Caveat{
@@ -962,7 +943,6 @@ func TestMergeContextsForExpression(t *testing.T) {
 	})
 
 	t.Run("Query context overrides relationship context", func(t *testing.T) {
-		t.Parallel()
 		// Test that query context takes precedence over relationship context
 		caveatExpr := &core.CaveatExpression{
 			OperationOrCaveat: &core.CaveatExpression_Caveat{
@@ -983,7 +963,6 @@ func TestMergeContextsForExpression(t *testing.T) {
 	})
 
 	t.Run("Empty expression", func(t *testing.T) {
-		t.Parallel()
 		result := mergeContextsForExpression(nil, queryContext)
 
 		// Should only have query context
@@ -994,18 +973,15 @@ func TestMergeContextsForExpression(t *testing.T) {
 }
 
 func TestCollectRelationshipContexts(t *testing.T) {
-	t.Parallel()
 	require := require.New(t)
 
 	t.Run("Nil expression", func(t *testing.T) {
-		t.Parallel()
 		contextMap := make(map[string]any)
 		collectRelationshipContexts(nil, contextMap)
 		require.Empty(contextMap)
 	})
 
 	t.Run("Simple caveat", func(t *testing.T) {
-		t.Parallel()
 		caveatExpr := &core.CaveatExpression{
 			OperationOrCaveat: &core.CaveatExpression_Caveat{
 				Caveat: &core.ContextualizedCaveat{
@@ -1024,7 +1000,6 @@ func TestCollectRelationshipContexts(t *testing.T) {
 	})
 
 	t.Run("Caveat without context", func(t *testing.T) {
-		t.Parallel()
 		caveatExpr := &core.CaveatExpression{
 			OperationOrCaveat: &core.CaveatExpression_Caveat{
 				Caveat: &core.ContextualizedCaveat{
@@ -1041,7 +1016,6 @@ func TestCollectRelationshipContexts(t *testing.T) {
 	})
 
 	t.Run("AND operation with multiple caveats", func(t *testing.T) {
-		t.Parallel()
 		child1 := &core.CaveatExpression{
 			OperationOrCaveat: &core.CaveatExpression_Caveat{
 				Caveat: &core.ContextualizedCaveat{
@@ -1077,7 +1051,6 @@ func TestCollectRelationshipContexts(t *testing.T) {
 	})
 
 	t.Run("Nested operations", func(t *testing.T) {
-		t.Parallel()
 		// Create OR( AND(caveat1, caveat2), caveat3 )
 		innerChild1 := &core.CaveatExpression{
 			OperationOrCaveat: &core.CaveatExpression_Caveat{
@@ -1131,7 +1104,6 @@ func TestCollectRelationshipContexts(t *testing.T) {
 	})
 
 	t.Run("Operation without children", func(t *testing.T) {
-		t.Parallel()
 		emptyOp := &core.CaveatExpression{
 			OperationOrCaveat: &core.CaveatExpression_Operation{
 				Operation: &core.CaveatOperation{
@@ -1186,9 +1158,7 @@ func TestSimplifyWithEmptyContext(t *testing.T) {
 	})
 	require.NoError(err)
 
-	dl := datalayer.NewDataLayer(ds)
-	sr, srErr := dl.SnapshotReader(revision).ReadSchema()
-	require.NoError(srErr)
+	sr := caveatDefinitionLookupAdapter{NewQueryDatastoreReader(datalayer.NewDataLayer(ds).SnapshotReader(revision))}
 	runner := internalcaveats.NewCaveatRunner(caveattypes.Default.TypeSet)
 
 	// Create nested expression: (caveat1 OR caveat2) AND caveat3
@@ -1238,7 +1208,6 @@ func TestSimplifyWithEmptyContext(t *testing.T) {
 }
 
 func TestSimplifyNotConditional(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	require := require.New(t)
 
@@ -1270,9 +1239,7 @@ func TestSimplifyNotConditional(t *testing.T) {
 	})
 	require.NoError(err)
 
-	dl := datalayer.NewDataLayer(ds)
-	sr, srErr := dl.SnapshotReader(revision).ReadSchema()
-	require.NoError(srErr)
+	sr := caveatDefinitionLookupAdapter{NewQueryDatastoreReader(datalayer.NewDataLayer(ds).SnapshotReader(revision))}
 	runner := internalcaveats.NewCaveatRunner(caveattypes.Default.TypeSet)
 
 	// Create NOT expression: NOT limit_check(limit=10)
@@ -1358,9 +1325,7 @@ func TestSimplifyDeeplyNestedCaveats(t *testing.T) {
 	})
 	require.NoError(err)
 
-	dl := datalayer.NewDataLayer(ds)
-	sr, srErr := dl.SnapshotReader(revision).ReadSchema()
-	require.NoError(srErr)
+	sr := caveatDefinitionLookupAdapter{NewQueryDatastoreReader(datalayer.NewDataLayer(ds).SnapshotReader(revision))}
 	runner := internalcaveats.NewCaveatRunner(caveattypes.Default.TypeSet)
 
 	// Helper to create caveat expressions
