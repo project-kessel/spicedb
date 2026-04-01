@@ -327,12 +327,6 @@ func loadCompiled(
 		}
 	}
 
-	if len(validDefs) > 0 {
-		if err := rwt.WriteSchema(ctx, validDefs, schemaText, caveattypes.Default.TypeSet); err != nil {
-			return errors, err
-		}
-	}
-
 	return errors, nil
 }
 

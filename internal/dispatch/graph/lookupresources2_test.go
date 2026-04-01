@@ -343,7 +343,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"basic union",
 			`definition user {}
-
+		
 		 	 definition document {
 				relation editor: user
 				relation viewer: user
@@ -362,7 +362,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"basic exclusion",
 			`definition user {}
-
+		
 		 	 definition document {
 				relation banned: user
 				relation viewer: user
@@ -378,7 +378,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"basic intersection",
 			`definition user {}
-
+		
 		 	 definition document {
 				relation editor: user
 				relation viewer: user
@@ -397,7 +397,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"union and excluded union",
 			`definition user {}
-
+		
 		 	 definition document {
 				relation editor: user
 				relation viewer: user
@@ -422,7 +422,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
  			 caveat somecaveat(somecondition int) {
 				somecondition == 42
 			 }
-
+		
 		 	 definition document {
 				relation viewer: user with somecaveat
 				permission view = viewer
@@ -437,7 +437,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"excluded items",
 			`definition user {}
-
+		
 		 	 definition document {
 				relation banned: user
 				relation viewer: user
@@ -460,7 +460,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
  			 caveat somecaveat(somecondition int) {
 				somecondition == 42
 			 }
-
+		
 		 	 definition document {
 				relation viewer: user with somecaveat
 				permission view = viewer
@@ -475,7 +475,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"larger arrow dispatch",
 			`definition user {}
-
+	
 			 definition folder {
 				relation viewer: user
 			 }
@@ -497,7 +497,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"big",
 			`definition user {}
-
+		
 		 	 definition document {
 				relation editor: user
 				relation viewer: user
@@ -516,7 +516,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"arrow under intersection",
 			`definition user {}
-
+		
 			 definition organization {
 				relation member: user
 			 }
@@ -542,7 +542,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"all arrow",
 			`definition user {}
-
+		
 			 definition folder {
 				relation viewer: user
 			 }
@@ -584,7 +584,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"indirect intersection and exclusion",
 			`definition user {}
-
+		
 		 	 definition document {
 				relation editor: user
 				relation viewer: user
@@ -606,7 +606,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"indirect intersections",
 			`definition user {}
-
+		
 			 definition folder {
 			 	relation viewer: user
 				permission view = viewer
@@ -636,7 +636,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"indirect over arrow",
 			`definition user {}
-
+		
 			 definition folder {
 			 	relation viewer: user
 				permission view = viewer
@@ -666,7 +666,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"root indirect with intermediate shearing",
 			`definition user {}
-
+		
 			 definition folder {
 			 	relation viewer: user
 				permission view = viewer
@@ -680,7 +680,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 				permission indirect_view = folder_view & editor
 				permission view = indirect_view
   			 }
-
+			 	
 			  definition document {
 			    relation viewer: middle#view
 				permission view = viewer
@@ -710,7 +710,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 			definition user {}
 
 			definition container {
-				relation access: user with somecaveat
+				relation access: user with somecaveat 
 				permission accesses = access
 			}
 

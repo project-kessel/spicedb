@@ -110,7 +110,7 @@ func TestCheckNamespaceAndRelations(t *testing.T) {
 		{
 			"valid",
 			`definition user {}
-
+			
 			definition resource {
 				relation viewer: user
 			}

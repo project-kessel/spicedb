@@ -141,7 +141,6 @@ func TestAcquireTimeoutReturnsErrAcquire(t *testing.T) {
 }
 
 func TestAcquireSucceedsButTopLevelContextCancelled(t *testing.T) {
-	t.Parallel()
 	testPool := NewTestPool()
 
 	retryPool := createTestRetryPool(testPool)
@@ -212,7 +211,6 @@ func TestAcquireSucceedsWithinTimeout(t *testing.T) {
 }
 
 func TestNoAcquireTimeoutUsesOriginalContext(t *testing.T) {
-	t.Parallel()
 	var acquireContext context.Context
 
 	testPool := NewTestPool()
@@ -289,7 +287,6 @@ func TestAcquireTimeoutContextCausePreserved(t *testing.T) {
 }
 
 func TestSuccessfulFunctionExecution(t *testing.T) {
-	t.Parallel()
 	testPool := NewTestPool()
 	testPool.acquireFunc = func(ctx context.Context) (*pgxpool.Conn, error) {
 		return &pgxpool.Conn{}, nil

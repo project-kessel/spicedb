@@ -3,8 +3,6 @@ package server
 
 import (
 	"fmt"
-	"time"
-
 	dispatch "github.com/authzed/spicedb/internal/dispatch"
 	graph "github.com/authzed/spicedb/internal/dispatch/graph"
 	datastore "github.com/authzed/spicedb/pkg/cmd/datastore"
@@ -13,6 +11,7 @@ import (
 	defaults "github.com/creasty/defaults"
 	auth "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/auth"
 	grpc "google.golang.org/grpc"
+	"time"
 )
 
 type ConfigOption func(c *Config)
