@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
+### Changed
+- Updated DevContext and LSP to support composable schemas (https://github.com/authzed/spicedb/pull/2965)
+
+### Fixed
+- Fix duplicate diagnostics in LSP server when VS Code pulls diagnostics (https://github.com/authzed/spicedb/pull/2977)
+- In DevContext's schema position mapper, only the first occurrence of a caveat parameter could be found (https://github.com/authzed/spicedb/pull/2972)
+- Fix increase in memory usage brought in v1.50.0 due to replacing `protoc-gen-validate` with `protovalidate` (https://github.com/authzed/spicedb/pull/2984)
+
+## [1.50.0] - 2026-03-19
+### Added
+- New `pkg/query/queryopt` package for building optimizations into the query plan
+
+### Changed
+- Updated CI so that Postgres tests run against v18 which is GA and not against v13 which is EOL (https://github.com/authzed/spicedb/pull/2926)
+- Added tracing to request validation (https://github.com/authzed/spicedb/pull/2950)
+- Query Planner optimization: in Check requests, prune branches that cannot lead to the subject type specified (https://github.com/authzed/spicedb/pull/2968)
+- Added `lr` and `ls` to `--experimental-query-plan` for those endpoints, as well as in-memory statistics for optimizing the plans (https://github.com/authzed/spicedb/pull/2929)
+- Use `protovalidate` instead of `protoc-gen-validate` for request validation (https://github.com/authzed/spicedb/pull/2863, https://github.com/authzed/spicedb/pull/2596, https://github.com/authzed/spicedb/pull/2959)
+
+### Fixed
+- Regression introduced in 1.49.2: missing spans in ReadSchema calls (https://github.com/authzed/spicedb/pull/2947)
+- Long standing bug in the way postgres revisions were being compared. Sometimes revisions that were actually overlapping were erroneously being ordered. (https://github.com/authzed/spicedb/pull/2958)
+- Prevent panics in schema compiler, which can reproduce if using the VSCode extension or zed (https://github.com/authzed/spicedb/pull/2971)
+
+## [1.49.2] - 2026-03-02
 ### Added
 - feat(query planner): add recursive direction strategies, and fix IS BFS (https://github.com/authzed/spicedb/pull/2891)
 - feat(query planner): introduce query plan outlines and canonicalization (https://github.com/authzed/spicedb/pull/2901)
@@ -13,8 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Begin deprecation of library "github.com/dlmiddlecote/sqlstats" (https://github.com/authzed/spicedb/pull/2904).
   NOTE: in a future release, MySQL metrics will change.
 - Add support for imports and partials to the schemadsl package that drives the LSP and development server (https://github.com/authzed/spicedb/pull/2919).
-- `DatastoreTester.New` now takes a `testing.TB` as its first argument, allowing per-test cleanup in datastore test suites (https://github.com/authzed/spicedb/pull/2925).
-- Added support for CRDB 26.1 by fixing how version information is read from the cluster
+- Added support for CRDB 26.1 by fixing how version information is read from the cluster (https://github.com/authzed/spicedb/pull/2907).
 
 ### Fixed
 - enforce graceful shutdown on serve and serve-testing (https://github.com/authzed/spicedb/pull/2888)
@@ -3529,7 +3553,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 [#2353]: https://github.com/authzed/spicedb/issues/2353
 
-[Unreleased]: https://github.com/authzed/spicedb/compare/v1.49.1...HEAD
+[Unreleased]: https://github.com/authzed/spicedb/compare/v1.50.0...HEAD
+[1.50.0]: https://github.com/authzed/spicedb/compare/v1.49.2...v1.50.0
+[1.49.2]: https://github.com/authzed/spicedb/compare/v1.49.1...v1.49.2
 [1.49.1]: https://github.com/authzed/spicedb/compare/v1.49.0...v1.49.1
 [1.49.0]: https://github.com/authzed/spicedb/compare/v1.48.0...v1.49.0
 [1.48.0]: https://github.com/authzed/spicedb/compare/v1.47.1...v1.48.0

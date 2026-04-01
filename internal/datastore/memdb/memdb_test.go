@@ -19,19 +19,19 @@ import (
 	"github.com/authzed/spicedb/pkg/tuple"
 )
 
+var memdbFactory = test.NewTesterFactory(ErrSerialization)
+
 type memDBTest struct{}
 
-func (mdbt memDBTest) New(_ testing.TB, revisionQuantization, _, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
+func (memDBTest) New(_ testing.TB, revisionQuantization, _, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
 	return NewMemdbDatastore(watchBufferLength, revisionQuantization, gcWindow)
 }
 
 func TestMemdbDatastore(t *testing.T) {
-	t.Parallel()
-	test.All(t, memDBTest{}, true)
+	test.All(t, memdbFactory.NewTester(memDBTest{}), true)
 }
 
 func TestConcurrentWritePanic(t *testing.T) {
-	t.Parallel()
 	require := require.New(t)
 
 	ds, err := NewMemdbDatastore(0, 1*time.Hour, 1*time.Hour)
@@ -83,7 +83,6 @@ func TestConcurrentWritePanic(t *testing.T) {
 }
 
 func TestConcurrentWriteRelsError(t *testing.T) {
-	t.Parallel()
 	require := require.New(t)
 
 	ds, err := NewMemdbDatastore(0, 1*time.Hour, 1*time.Hour)
@@ -114,7 +113,6 @@ func TestConcurrentWriteRelsError(t *testing.T) {
 }
 
 func TestAnythingAfterCloseDoesNotPanic(t *testing.T) {
-	t.Parallel()
 	require := require.New(t)
 
 	ds, err := NewMemdbDatastore(0, 1*time.Hour, 1*time.Hour)

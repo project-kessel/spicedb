@@ -25,8 +25,6 @@ import (
 )
 
 func TestSimpleLookupResources2(t *testing.T) {
-	t.Parallel()
-
 	testCases := []struct {
 		start                 tuple.RelationReference
 		target                tuple.ObjectAndRelation
@@ -100,8 +98,6 @@ func TestSimpleLookupResources2(t *testing.T) {
 
 		tc := tc
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
 			require := require.New(t)
 			ctx, dispatcher, revision := newLocalDispatcher(t)
 			defer dispatcher.Close()
@@ -158,8 +154,6 @@ func TestSimpleLookupResources2(t *testing.T) {
 }
 
 func TestSimpleLookupResourcesWithCursor2(t *testing.T) {
-	t.Parallel()
-
 	for _, tc := range []struct {
 		subject        string
 		expectedFirst  []string
@@ -182,8 +176,6 @@ func TestSimpleLookupResourcesWithCursor2(t *testing.T) {
 		},
 	} {
 		t.Run(tc.subject, func(t *testing.T) {
-			t.Parallel()
-
 			require := require.New(t)
 			ctx, dispatcher, revision := newLocalDispatcher(t)
 			defer dispatcher.Close()
@@ -242,8 +234,6 @@ func TestSimpleLookupResourcesWithCursor2(t *testing.T) {
 }
 
 func TestLookupResourcesCursorStability2(t *testing.T) {
-	t.Parallel()
-
 	require := require.New(t)
 	ctx, dispatcher, revision := newLocalDispatcher(t)
 	defer dispatcher.Close()
@@ -310,7 +300,6 @@ func processResults2(stream *dispatch.CollectingDispatchStream[*v1.DispatchLooku
 }
 
 func TestMaxDepthLookup2(t *testing.T) {
-	t.Parallel()
 	require := require.New(t)
 
 	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
@@ -341,7 +330,6 @@ func TestMaxDepthLookup2(t *testing.T) {
 }
 
 func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
-	t.Parallel()
 	testCases := []struct {
 		name                  string
 		schema                string
@@ -355,7 +343,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"basic union",
 			`definition user {}
-		
+
 		 	 definition document {
 				relation editor: user
 				relation viewer: user
@@ -374,7 +362,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"basic exclusion",
 			`definition user {}
-		
+
 		 	 definition document {
 				relation banned: user
 				relation viewer: user
@@ -390,7 +378,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"basic intersection",
 			`definition user {}
-		
+
 		 	 definition document {
 				relation editor: user
 				relation viewer: user
@@ -409,7 +397,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"union and excluded union",
 			`definition user {}
-		
+
 		 	 definition document {
 				relation editor: user
 				relation viewer: user
@@ -434,7 +422,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
  			 caveat somecaveat(somecondition int) {
 				somecondition == 42
 			 }
-		
+
 		 	 definition document {
 				relation viewer: user with somecaveat
 				permission view = viewer
@@ -449,7 +437,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"excluded items",
 			`definition user {}
-		
+
 		 	 definition document {
 				relation banned: user
 				relation viewer: user
@@ -472,7 +460,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
  			 caveat somecaveat(somecondition int) {
 				somecondition == 42
 			 }
-		
+
 		 	 definition document {
 				relation viewer: user with somecaveat
 				permission view = viewer
@@ -487,7 +475,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"larger arrow dispatch",
 			`definition user {}
-	
+
 			 definition folder {
 				relation viewer: user
 			 }
@@ -509,7 +497,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"big",
 			`definition user {}
-		
+
 		 	 definition document {
 				relation editor: user
 				relation viewer: user
@@ -528,7 +516,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"arrow under intersection",
 			`definition user {}
-		
+
 			 definition organization {
 				relation member: user
 			 }
@@ -554,7 +542,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"all arrow",
 			`definition user {}
-		
+
 			 definition folder {
 				relation viewer: user
 			 }
@@ -596,7 +584,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"indirect intersection and exclusion",
 			`definition user {}
-		
+
 		 	 definition document {
 				relation editor: user
 				relation viewer: user
@@ -618,7 +606,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"indirect intersections",
 			`definition user {}
-		
+
 			 definition folder {
 			 	relation viewer: user
 				permission view = viewer
@@ -648,7 +636,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"indirect over arrow",
 			`definition user {}
-		
+
 			 definition folder {
 			 	relation viewer: user
 				permission view = viewer
@@ -678,7 +666,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 		{
 			"root indirect with intermediate shearing",
 			`definition user {}
-		
+
 			 definition folder {
 			 	relation viewer: user
 				permission view = viewer
@@ -692,7 +680,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 				permission indirect_view = folder_view & editor
 				permission view = indirect_view
   			 }
-			 	
+
 			  definition document {
 			    relation viewer: middle#view
 				permission view = viewer
@@ -722,7 +710,7 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 			definition user {}
 
 			definition container {
-				relation access: user with somecaveat 
+				relation access: user with somecaveat
 				permission accesses = access
 			}
 
@@ -748,10 +736,8 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			for _, pageSize := range []int{0, 104, 1023} {
 				t.Run(fmt.Sprintf("ps-%d_", pageSize), func(t *testing.T) {
-					t.Parallel()
 					require := require.New(t)
 
 					dispatcher, err := NewLocalOnlyDispatcher(MustNewDefaultDispatcherParametersForTesting())
@@ -832,8 +818,6 @@ func TestLookupResources2OverSchemaWithCursors(t *testing.T) {
 }
 
 func TestLookupResources2ImmediateTimeout(t *testing.T) {
-	t.Parallel()
-
 	require := require.New(t)
 
 	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
@@ -868,8 +852,6 @@ func TestLookupResources2ImmediateTimeout(t *testing.T) {
 }
 
 func TestLookupResources2WithError(t *testing.T) {
-	t.Parallel()
-
 	require := require.New(t)
 
 	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
@@ -904,8 +886,6 @@ func TestLookupResources2WithError(t *testing.T) {
 }
 
 func TestLookupResources2EnsureCheckHints(t *testing.T) {
-	t.Parallel()
-
 	tcs := []struct {
 		name          string
 		schema        string
@@ -1346,8 +1326,6 @@ func TestLookupResources2EnsureCheckHints(t *testing.T) {
 
 	for _, tc := range tcs {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
 			require := require.New(t)
 
 			rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)

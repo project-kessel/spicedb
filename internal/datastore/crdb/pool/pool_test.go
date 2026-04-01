@@ -81,7 +81,6 @@ func createTestRetryPool(testPool *TestPool) *RetryPool {
 }
 
 func TestContextCancelledDuringBlockingAcquire(t *testing.T) {
-	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		testPool := NewTestPool()
 		testPool.acquireFunc = func(ctx context.Context) (*pgxpool.Conn, error) {
@@ -112,7 +111,6 @@ func TestContextCancelledDuringBlockingAcquire(t *testing.T) {
 }
 
 func TestAcquireTimeoutReturnsErrAcquire(t *testing.T) {
-	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		testPool := NewTestPool()
 		testPool.acquireFunc = func(ctx context.Context) (*pgxpool.Conn, error) {
@@ -160,7 +158,6 @@ func TestAcquireSucceedsButTopLevelContextCancelled(t *testing.T) {
 }
 
 func TestAcquireErrorWithConnectionReturned(t *testing.T) {
-	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		testPool := NewTestPool()
 		testPool.acquireFunc = func(ctx context.Context) (*pgxpool.Conn, error) {
@@ -185,7 +182,6 @@ func TestAcquireErrorWithConnectionReturned(t *testing.T) {
 }
 
 func TestAcquireSucceedsWithinTimeout(t *testing.T) {
-	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		testPool := NewTestPool()
 		testPool.acquireFunc = func(ctx context.Context) (*pgxpool.Conn, error) {
@@ -237,7 +233,6 @@ func TestNoAcquireTimeoutUsesOriginalContext(t *testing.T) {
 }
 
 func TestAcquireTimeoutCreatesSeparateContext(t *testing.T) {
-	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		var acquireContext context.Context
 
@@ -268,7 +263,6 @@ func TestAcquireTimeoutCreatesSeparateContext(t *testing.T) {
 }
 
 func TestAcquireTimeoutContextCausePreserved(t *testing.T) {
-	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		testPool := NewTestPool()
 		testPool.acquireFunc = func(ctx context.Context) (*pgxpool.Conn, error) {

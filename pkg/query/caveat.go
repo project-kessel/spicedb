@@ -1,9 +1,11 @@
 package query
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
+	"github.com/authzed/spicedb/pkg/datastore"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 )
 
@@ -136,7 +138,7 @@ func (c *CaveatIterator) simplifyCaveat(ctx *Context, path Path) (*core.CaveatEx
 		ctx.CaveatRunner,
 		path.Caveat,
 		ctx.CaveatContext,
-		sr,
+		caveatDefinitionLookupAdapter{ctx.Reader},
 	)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to simplify caveat: %w", err)
@@ -217,6 +219,26 @@ func (c *CaveatIterator) ResourceType() ([]ObjectType, error) {
 func (c *CaveatIterator) SubjectTypes() ([]ObjectType, error) {
 	// Delegate to the wrapped iterator
 	return c.subiterator.SubjectTypes()
+}
+
+// caveatDefinitionLookupAdapter wraps a QueryDatastoreReader to satisfy
+// caveats.CaveatDefinitionLookup (which takes a bulk name slice) by calling
+// LookupCaveatDefinition individually for each name.
+type caveatDefinitionLookupAdapter struct{ r QueryDatastoreReader }
+
+func (a caveatDefinitionLookupAdapter) LookupCaveatDefinitionsByNames(
+	ctx context.Context,
+	names []string,
+) (map[string]datastore.CaveatDefinition, error) {
+	out := make(map[string]datastore.CaveatDefinition, len(names))
+	for _, name := range names {
+		def, err := a.r.LookupCaveatDefinition(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		out[name] = def
+	}
+	return out, nil
 }
 
 // buildExplainInfo creates detailed explanation information for the caveat iterator
