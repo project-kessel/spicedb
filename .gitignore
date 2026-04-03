@@ -6,7 +6,7 @@ manpages/
 .env.local
 coverage*.txt
 .idea/
-.claude/
+.claude/settings.local.json
 e2e/newenemy/spicedb
 e2e/newenemy/cockroach
 e2e/newenemy/chaosd

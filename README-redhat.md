@@ -37,6 +37,8 @@ The table below captures all changes to our fork from upstream. Each entry inclu
 | `Dockerfile.fips` | Added | FIPS-compliant builds using UBI base image and Go Toolset for Konflux | Red Hat only |
 | `magefiles/test.go` | Increased timeouts (unit: 20m, integration: 30m, consistency: 20m) | Tests fail with short timeouts on smaller runners | Re-apply |
 | `scripts/redhat-diff.sh` | Added | Script to isolate Red Hat-specific changes from upstream sync PRs for easier code review | Red Hat only |
+| `CLAUDE.md` | Replaced with our own | Contains Red Hat-specific merge conflict resolution rules for upstream syncs | Keep ours |
+| `.claude/skills/sync-upstream/SKILL.md` | Added | Claude skill to handle the upstream syncing process | Red Hat only |
 | `README-redhat.md` | Added | Documents all Red Hat fork changes and rationale | Red Hat only |
 | `SYNC.md` | Added | Tracks the current upstream version synced to this fork | Red Hat only |
 | `.yamllint` | Added | YAML linting configuration | Red Hat only |
