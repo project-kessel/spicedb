@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"buf.build/go/protovalidate"
 	"github.com/stretchr/testify/require"
 
 	"github.com/authzed/spicedb/internal/datastore/common"
@@ -84,12 +85,12 @@ func RevisionSerializationTest(t *testing.T, tester DatastoreTester) {
 	})
 	require.NoError(err)
 
-	meta := dispatch.ResolverMeta{
+	meta := &dispatch.ResolverMeta{
 		AtRevision:     revToTest.String(),
 		DepthRemaining: 50,
 		TraversalBloom: dispatch.MustNewTraversalBloomFilter(50),
 	}
-	require.NoError(meta.Validate())
+	require.NoError(protovalidate.Validate(meta))
 }
 
 // GCProcessRunTest tests whether the custom GC process runs for the datastore.
@@ -122,7 +123,7 @@ func GCProcessRunTest(t *testing.T, tester DatastoreTester) {
 	})
 	require.NoError(err)
 
-	gcable, ok := ds.(common.GarbageCollectableDatastore)
+	gcable, ok := ds.(datastore.GarbageCollectableDatastore)
 	if !ok {
 		return
 	}
@@ -176,12 +177,12 @@ func RevisionGCTest(t *testing.T, tester DatastoreTester) {
 	// Sleep to ensure we're past the GC window.
 	time.Sleep(gcWindow)
 
-	gcable, ok := ds.(common.GarbageCollectableDatastore)
+	gcable, ok := ds.(datastore.GarbageCollectableDatastore)
 	// NOTE: CRDB and Spanner both do garbage collection with row-level TTLs
 	if ok {
 		// Run garbage collection.
 		gcable.ResetGCCompleted()
-		err := common.RunGarbageCollection(ctx, gcable, gcWindow)
+		err := datastore.RunGarbageCollection(ctx, gcable, gcWindow)
 		require.NoError(err)
 		require.True(gcable.HasGCRun(), "GC was never run as expected")
 	}

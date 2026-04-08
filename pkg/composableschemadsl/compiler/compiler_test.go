@@ -21,8 +21,6 @@ var (
 )
 
 func TestCompile(t *testing.T) {
-	t.Parallel()
-
 	type compileTest struct {
 		name          string
 		objectPrefix  ObjectPrefixOption
@@ -769,7 +767,7 @@ func TestCompile(t *testing.T) {
 			"invalid definition name",
 			nilPrefix,
 			`definition someTenant/fo {}`,
-			"parse error in `invalid definition name`, line 1, column 1: error in object definition someTenant/fo: invalid NamespaceDefinition.Name: value does not match regex pattern \"^([a-z][a-z0-9_]{1,62}[a-z0-9]/)*[a-z][a-z0-9_]{1,62}[a-z0-9]$\"",
+			"parse error in `invalid definition name`, line 1, column 1: error in object definition someTenant/fo: validation error: name: value does not match regex pattern `^([a-z][a-z0-9_]{1,62}[a-z0-9]/)*[a-z][a-z0-9_]{1,62}[a-z0-9]$`",
 			[]SchemaDefinition{},
 		},
 		{
@@ -778,7 +776,7 @@ func TestCompile(t *testing.T) {
 			`definition some_tenant/foos {
 				relation ab: some_tenant/foos
 			}`,
-			"parse error in `invalid relation name`, line 2, column 5: error in relation ab: invalid Relation.Name: value does not match regex pattern \"^[a-z][a-z0-9_]{1,62}[a-z0-9]$\"",
+			"parse error in `invalid relation name`, line 2, column 5: error in relation ab: validation error: name: value does not match regex pattern `^[a-z][a-z0-9_]{1,62}[a-z0-9]$`",
 			[]SchemaDefinition{},
 		},
 		{
@@ -1415,7 +1413,6 @@ func TestCompile(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			require := require.New(t)
 			compiled, err := Compile(InputSchema{
 				input.Source(test.name), test.input,
@@ -1494,8 +1491,6 @@ func filterSourcePositions(m protoreflect.Message) {
 }
 
 func TestSkipValidation(t *testing.T) {
-	t.Parallel()
-
 	_, err := Compile(InputSchema{"test", `definition a/def {}`}, AllowUnprefixedObjectType())
 	require.Error(t, err)
 
@@ -1504,8 +1499,6 @@ func TestSkipValidation(t *testing.T) {
 }
 
 func TestSuperLargeCaveatCompile(t *testing.T) {
-	t.Parallel()
-
 	b, err := os.ReadFile("../parser/tests/superlarge.zed")
 	if err != nil {
 		panic(err)

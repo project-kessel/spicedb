@@ -2,10 +2,10 @@ package query
 
 import (
 	"context"
+	"sync"
 
 	"github.com/authzed/spicedb/internal/caveats"
 	"github.com/authzed/spicedb/pkg/datalayer"
-	"github.com/authzed/spicedb/pkg/datastore/options"
 	"github.com/authzed/spicedb/pkg/spiceerrors"
 	"github.com/authzed/spicedb/pkg/tuple"
 )
@@ -17,7 +17,7 @@ import (
 type Context struct {
 	context.Context
 	Executor          Executor
-	Reader            datalayer.RevisionedReader // Datastore reader for this query at a specific revision
+	Reader            QueryDatastoreReader // Datastore reader for this query at a specific revision
 	CaveatContext     map[string]any
 	CaveatRunner      *caveats.CaveatRunner
 	TraceLogger       *TraceLogger // For debugging iterator execution (used by TraceStep calls inside iterators)
@@ -26,7 +26,6 @@ type Context struct {
 	// Pagination options for IterSubjects and IterResources
 	PaginationCursors map[string]*tuple.Relationship // Cursors for pagination, keyed by iterator ID
 	PaginationLimit   *uint64                        // Limit for pagination (max number of results to return)
-	PaginationSort    options.SortOrder              // Sort order for pagination
 
 	// observers holds the list of Observer implementations to notify during query execution.
 	observers []Observer
@@ -36,6 +35,12 @@ type Context struct {
 	// Value: collected Objects for the next frontier
 	// A non-nil entry for an ID enables collection mode for that RecursiveIterator.
 	recursiveFrontierCollectors map[uint64][]Object
+
+	// topLevelIterator is the iterator passed to the first IterResources or
+	// IterSubjects call on this context. Nil means not yet set.
+	// Used to wrap only the top-level call with DeduplicatePathSeq.
+	topLevelIterator Iterator
+	topLevelOnce     sync.Once
 }
 
 // NewLocalContext creates a new query execution context with a LocalExecutor.
@@ -55,8 +60,14 @@ func NewLocalContext(stdContext context.Context, opts ...ContextOption) *Context
 type ContextOption func(*Context)
 
 // WithReader sets the datastore reader for the context.
-func WithReader(reader datalayer.RevisionedReader) ContextOption {
+func WithReader(reader QueryDatastoreReader) ContextOption {
 	return func(ctx *Context) { ctx.Reader = reader }
+}
+
+// WithRevisionedReader wraps a datalayer.RevisionedReader as a QueryDatastoreReader
+// and sets it as the datastore reader for the context.
+func WithRevisionedReader(reader datalayer.RevisionedReader) ContextOption {
+	return func(ctx *Context) { ctx.Reader = NewQueryDatastoreReader(reader) }
 }
 
 // WithObserver adds an Observer to the context.
@@ -87,11 +98,6 @@ func WithMaxRecursionDepth(depth int) ContextOption {
 // WithPaginationLimit sets the pagination limit for the context.
 func WithPaginationLimit(limit uint64) ContextOption {
 	return func(ctx *Context) { ctx.PaginationLimit = &limit }
-}
-
-// WithPaginationSort sets the pagination sort order for the context.
-func WithPaginationSort(sort options.SortOrder) ContextOption {
-	return func(ctx *Context) { ctx.PaginationSort = sort }
 }
 
 // GetPaginationCursor retrieves the cursor for a specific iterator ID.
@@ -232,10 +238,18 @@ func (ctx *Context) Check(it Iterator, resources []Object, subject ObjectAndRela
 // IterSubjects returns a sequence of all the paths in this set that match the given resource.
 // The filterSubjectType parameter filters results to only include subjects matching the
 // specified ObjectType. If filterSubjectType.Type is empty, no filtering is applied.
+// The first call sets topLevelIteratorHash and wraps the result with DeduplicatePathSeq;
+// recursive sub-calls pass through unchanged.
 func (ctx *Context) IterSubjects(it Iterator, resource Object, filterSubjectType ObjectType) (PathSeq, error) {
 	if ctx.Executor == nil {
 		return nil, spiceerrors.MustBugf("no executor has been set")
 	}
+
+	isTopLevel := false
+	ctx.topLevelOnce.Do(func() {
+		ctx.topLevelIterator = it
+		isTopLevel = true
+	})
 
 	tracedIterator := ctx.traceEnterIfEnabled(it, iterSubjectsTraceString(resource, filterSubjectType))
 	key := it.CanonicalKey()
@@ -246,6 +260,10 @@ func (ctx *Context) IterSubjects(it Iterator, resource Object, filterSubjectType
 		return nil, err
 	}
 
+	if isTopLevel {
+		pathSeq = DeduplicatePathSeq(pathSeq)
+	}
+
 	pathSeq = ctx.wrapPathSeqForTracing(tracedIterator, pathSeq)
 	return ctx.wrapPathSeqWithObservers(IterSubjectsOperation, key, pathSeq), nil
 }
@@ -253,10 +271,18 @@ func (ctx *Context) IterSubjects(it Iterator, resource Object, filterSubjectType
 // IterResources returns a sequence of all the relations in this set that match the given subject.
 // The filterResourceType parameter filters results to only include resources matching the
 // specified ObjectType. If filterResourceType.Type is empty, no filtering is applied.
+// The first call sets topLevelIteratorHash and wraps the result with DeduplicatePathSeq;
+// recursive sub-calls pass through unchanged.
 func (ctx *Context) IterResources(it Iterator, subject ObjectAndRelation, filterResourceType ObjectType) (PathSeq, error) {
 	if ctx.Executor == nil {
 		return nil, spiceerrors.MustBugf("no executor has been set")
 	}
+
+	isTopLevel := false
+	ctx.topLevelOnce.Do(func() {
+		ctx.topLevelIterator = it
+		isTopLevel = true
+	})
 
 	tracedIterator := ctx.traceEnterIfEnabled(it, iterResourcesTraceString(subject, filterResourceType))
 	key := it.CanonicalKey()
@@ -265,6 +291,10 @@ func (ctx *Context) IterResources(it Iterator, subject ObjectAndRelation, filter
 	pathSeq, err := ctx.Executor.IterResources(ctx, it, subject, filterResourceType)
 	if err != nil {
 		return nil, err
+	}
+
+	if isTopLevel {
+		pathSeq = DeduplicatePathSeq(pathSeq)
 	}
 
 	pathSeq = ctx.wrapPathSeqForTracing(tracedIterator, pathSeq)

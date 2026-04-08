@@ -55,8 +55,6 @@ func (it *importerTest) writeExpected(schema string) {
 }
 
 func TestImporter(t *testing.T) {
-	t.Parallel()
-
 	workingDir, err := os.Getwd()
 	require.NoError(t, err)
 
@@ -73,8 +71,6 @@ func TestImporter(t *testing.T) {
 
 	for _, test := range importerTests {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-
 			sourceFolder := path.Join(workingDir, test.relativePath())
 
 			inputSchema := test.input()
@@ -86,7 +82,7 @@ func TestImporter(t *testing.T) {
 				compiler.SourceFolder(sourceFolder))
 			require.NoError(t, err)
 
-			generated, _, err := generator.GenerateSchema(compiled.OrderedDefinitions)
+			generated, _, err := generator.GenerateSchema(t.Context(), compiled.OrderedDefinitions)
 			require.NoError(t, err)
 
 			if os.Getenv("REGEN") == "true" {
@@ -99,8 +95,6 @@ func TestImporter(t *testing.T) {
 			}
 		})
 		t.Run("fs/"+test.name, func(t *testing.T) {
-			t.Parallel()
-
 			fsys, err := fs.Sub(testFS, filepath.Join("importer-test", test.folder))
 			require.NoError(t, err)
 
@@ -113,7 +107,7 @@ func TestImporter(t *testing.T) {
 				compiler.SourceFS(fsys))
 			require.NoError(t, err)
 
-			generated, _, err := generator.GenerateSchema(compiled.OrderedDefinitions)
+			generated, _, err := generator.GenerateSchema(t.Context(), compiled.OrderedDefinitions)
 			require.NoError(t, err)
 
 			if os.Getenv("REGEN") == "true" {
@@ -129,8 +123,6 @@ func TestImporter(t *testing.T) {
 }
 
 func TestImportCycleCausesError(t *testing.T) {
-	t.Parallel()
-
 	workingDir, err := os.Getwd()
 	require.NoError(t, err)
 	test := importerTest{"", "circular-import"}
@@ -149,8 +141,6 @@ func TestImportCycleCausesError(t *testing.T) {
 }
 
 func TestEscapeAttemptCausesError(t *testing.T) {
-	t.Parallel()
-
 	workingDir, err := os.Getwd()
 	require.NoError(t, err)
 	test := importerTest{"", "escape-attempt"}
@@ -169,8 +159,6 @@ func TestEscapeAttemptCausesError(t *testing.T) {
 }
 
 func TestConflictingDefinitionsCausesError(t *testing.T) {
-	t.Parallel()
-
 	workingDir, err := os.Getwd()
 	require.NoError(t, err)
 	test := importerTest{"", "conflicting-definitions"}
@@ -186,4 +174,29 @@ func TestConflictingDefinitionsCausesError(t *testing.T) {
 		compiler.SourceFolder(sourceFolder))
 
 	require.ErrorContains(t, err, "found name reused between multiple definitions and/or caveats")
+}
+
+func TestMissingImportErrorContainsSourceFile(t *testing.T) {
+	t.Parallel()
+
+	workingDir, err := os.Getwd()
+	require.NoError(t, err)
+	test := importerTest{"", "missing-import"}
+
+	sourceFolder := path.Join(workingDir, test.relativePath())
+
+	inputSchema := test.input()
+
+	_, err = compiler.Compile(compiler.InputSchema{
+		Source:       input.Source("root.zed"),
+		SchemaString: inputSchema,
+	}, compiler.AllowUnprefixedObjectType(),
+		compiler.SourceFolder(sourceFolder))
+
+	require.Error(t, err)
+	var contextErr compiler.WithContextError
+	require.ErrorAs(t, err, &contextErr)
+
+	t.Log(contextErr.Error())
+	require.Equal(t, "parse error in `root.zed`, line 5, column 1: failed to read import \"doesnotexist.zed\": open doesnotexist.zed: no such file or directory", contextErr.Error())
 }

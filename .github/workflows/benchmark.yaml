@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
 ---
 name: "Main"
 on: # yamllint disable-line rule:truthy
@@ -6,6 +7,10 @@ on: # yamllint disable-line rule:truthy
     branches:
       - "main"
 
+concurrency:
+  group: "spicedb-benchmark-${{ github.event.pull_request.number }}"
+  cancel-in-progress: true
+
 permissions:
   # permission to update benchmark contents in gh-pages branch
   contents: "write"
@@ -13,7 +18,7 @@ permissions:
 jobs:
   benchmarks:
     name: "Run Go benchmarks on Main"
-    runs-on: "depot-ubuntu-24.04-4"
+    runs-on: "depot-ubuntu-24.04-arm-8" # same as build-test.yaml
     if: false
     timeout-minutes: 15
     steps:
@@ -33,7 +38,7 @@ jobs:
           go run mage.go benchmark:all | tee bench_output.txt
 
       - name: "Get JSON for benchmark"
-        uses: "benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b" # v1.20.7
+        uses: "benchmark-action/github-action-benchmark@a7bc2366eda11037936ea57d811a43b3418d3073" # v1.21.0
         with:
           # What benchmark tool the output.txt came from
           tool: "go"
@@ -47,7 +52,7 @@ jobs:
           comment-on-alert: true
 
       - name: "Publish to gh-pages. See https://authzed.github.io/spicedb/dev/bench/"
-        uses: "benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b" # v1.20.7
+        uses: "benchmark-action/github-action-benchmark@a7bc2366eda11037936ea57d811a43b3418d3073" # v1.21.0
         with:
           # What benchmark tool the output.txt came from
           tool: "go"
