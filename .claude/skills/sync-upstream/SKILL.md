@@ -76,7 +76,7 @@ Otherwise, determine the latest supported SpiceDB version:
 `go.mod` at the target tag:
 ```bash
 git fetch upstream --tags
-git show tags/<tag>:go.mod | head -5
+git show tags/<tag>:go.mod | grep -E '^go '
 ```
 If the Go version exceeds our go-toolset version, stop and report the issue.
 The current go-toolset version constraint is documented in `README-redhat.md`.
