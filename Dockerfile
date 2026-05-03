@@ -16,7 +16,7 @@ RUN git checkout main
 RUN CGO_ENABLED=0 go install -a -tags netgo -ldflags=-w
 
 # use `docker buildx imagetools inspect <image>` to get the multi-platform sha256
-FROM cgr.dev/chainguard/static@sha256:99a5f826e71115aef9f63368120a6aa518323e052297718e9bf084fb84def93c
+FROM cgr.dev/chainguard/static@sha256:77d8b8925dc27970ec2f48243f44c7a260d52c49cd778288e4ee97566e0cb75b
 COPY --from=health-probe-builder /go/bin/grpc-health-probe /bin/grpc_health_probe
 COPY --from=spicedb-builder /go/src/app/spicedb /usr/local/bin/spicedb
 ENV PATH="$PATH:/usr/local/bin"
