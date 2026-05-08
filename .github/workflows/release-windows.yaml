@@ -22,7 +22,7 @@ jobs:
         id: "version"
         with:
           prefix: "v"
-      - uses: "authzed/actions/docker-login@11667c9b2e8b3649ad2af4d788e57d18f8e8eaf1" # main
+      - uses: "authzed/actions/docker-login@5ba7d89553d7459742a4ec364af2ad69ddd12979" # main
         with:
           quayio_token: "${{ secrets.QUAYIO_PASSWORD }}"
           github_token: "${{ secrets.GITHUB_TOKEN }}"

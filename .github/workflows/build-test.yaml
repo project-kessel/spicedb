@@ -57,7 +57,7 @@ jobs:
         with:
           username: "${{ env.DOCKERHUB_PUBLIC_USER }}"
           password: "${{ env.DOCKERHUB_PUBLIC_ACCESS_TOKEN }}"
-      - uses: "authzed/actions/go-build@70432bd54a9e690d7fe19817dda46d8e4c0a2c3a" # main
+      - uses: "authzed/actions/go-build@5ba7d89553d7459742a4ec364af2ad69ddd12979" # main
         with:
           ldflags: "-checklinkname=0"
       - name: "Image tests"
