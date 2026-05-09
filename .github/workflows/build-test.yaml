@@ -53,7 +53,7 @@ jobs:
     steps:
       - uses: "actions/checkout@v6"
       - uses: "authzed/actions/setup-go@main"
-      - uses: "docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9" # v3.7.0
+      - uses: "docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121" # v4.1.0
         with:
           username: "${{ env.DOCKERHUB_PUBLIC_USER }}"
           password: "${{ env.DOCKERHUB_PUBLIC_ACCESS_TOKEN }}"
@@ -101,7 +101,7 @@ jobs:
     steps:
       - uses: "actions/checkout@v6"
       - uses: "authzed/actions/setup-go@main"
-      - uses: "docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9" # v3.7.0
+      - uses: "docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121" # v4.1.0
         with:
           username: "${{ env.DOCKERHUB_PUBLIC_USER }}"
           password: "${{ env.DOCKERHUB_PUBLIC_ACCESS_TOKEN }}"
@@ -130,7 +130,7 @@ jobs:
       - uses: "authzed/actions/setup-go@main"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-      - uses: "docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9" # v3.7.0
+      - uses: "docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121" # v4.1.0
         if: |
           needs.paths-filter.outputs.codechange == 'true'
         with:
@@ -165,7 +165,7 @@ jobs:
       - uses: "authzed/actions/setup-go@main"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-      - uses: "docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9" # v3.7.0
+      - uses: "docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121" # v4.1.0
         if: |
           needs.paths-filter.outputs.codechange == 'true'
         with:
@@ -200,7 +200,7 @@ jobs:
       - uses: "authzed/actions/setup-go@main"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-      - uses: "docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9" # v3.7.0
+      - uses: "docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121" # v4.1.0
         if: |
           needs.paths-filter.outputs.codechange == 'true'
         with:
@@ -235,7 +235,7 @@ jobs:
       - uses: "authzed/actions/setup-go@main"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-      - uses: "docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9" # v3.7.0
+      - uses: "docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121" # v4.1.0
         if: |
           needs.paths-filter.outputs.codechange == 'true'
         with:
@@ -275,7 +275,7 @@ jobs:
       - uses: "authzed/actions/setup-go@main"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-      - uses: "docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9" # v3.7.0
+      - uses: "docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121" # v4.1.0
         if: |
           needs.paths-filter.outputs.codechange == 'true'
         with:
@@ -315,7 +315,7 @@ jobs:
       - uses: "authzed/actions/setup-go@main"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-      - uses: "docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9" # v3.7.0
+      - uses: "docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121" # v4.1.0
         if: |
           needs.paths-filter.outputs.codechange == 'true'
         with:
