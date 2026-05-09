@@ -75,7 +75,7 @@ jobs:
       - name: "Unit tests with coverage"
         run: "go run mage.go test:unitCover"
       - name: "Coverage"
-        uses: "codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de" # v5.5.2
+        uses: "codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe" # v5.5.4
         with:
           files: "./coverage.txt"
           token: "${{ secrets.CODECOV_TOKEN }}"
@@ -108,7 +108,7 @@ jobs:
       - name: "Integration tests with coverage"
         run: "go run mage.go test:integrationCover"
       - name: "Coverage"
-        uses: "codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de" # v5.5.2
+        uses: "codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe" # v5.5.4
         with:
           files: "./coverage.txt"
           token: "${{ secrets.CODECOV_TOKEN }}"
@@ -143,7 +143,7 @@ jobs:
       - name: "Coverage"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-        uses: "codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de" # v5.5.2
+        uses: "codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe" # v5.5.4
         with:
           files: "./coverage.txt"
           token: "${{ secrets.CODECOV_TOKEN }}"
@@ -178,7 +178,7 @@ jobs:
       - name: "Coverage"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-        uses: "codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de" # v5.5.2
+        uses: "codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe" # v5.5.4
         with:
           files: "./coverage.txt"
           token: "${{ secrets.CODECOV_TOKEN }}"
@@ -213,7 +213,7 @@ jobs:
       - name: "Coverage"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-        uses: "codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de" # v5.5.2
+        uses: "codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe" # v5.5.4
         with:
           files: "./coverage.txt"
           token: "${{ secrets.CODECOV_TOKEN }}"
@@ -248,7 +248,7 @@ jobs:
       - name: "Coverage"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-        uses: "codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de" # v5.5.2
+        uses: "codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe" # v5.5.4
         with:
           files: "./coverage.txt"
           token: "${{ secrets.CODECOV_TOKEN }}"
@@ -288,7 +288,7 @@ jobs:
       - name: "Coverage"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-        uses: "codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de" # v5.5.2
+        uses: "codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe" # v5.5.4
         with:
           files: "./coverage.txt"
           token: "${{ secrets.CODECOV_TOKEN }}"
@@ -328,7 +328,7 @@ jobs:
       - name: "Coverage"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-        uses: "codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de" # v5.5.2
+        uses: "codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe" # v5.5.4
         with:
           files: "./coverage.txt"
           token: "${{ secrets.CODECOV_TOKEN }}"
