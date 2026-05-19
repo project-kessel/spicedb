@@ -5,12 +5,15 @@ import (
 	"sort"
 	"strings"
 
-	grpcvalidate "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/validator"
+	"buf.build/go/protovalidate"
+	grpcvalidate "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/protovalidate"
+	"go.opentelemetry.io/otel"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 
 	log "github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/internal/middleware"
+	"github.com/authzed/spicedb/internal/middleware/interceptorwrapper"
 	"github.com/authzed/spicedb/internal/middleware/perfinsights"
 	"github.com/authzed/spicedb/internal/middleware/usagemetrics"
 	"github.com/authzed/spicedb/internal/services/shared"
@@ -27,6 +30,8 @@ import (
 	"github.com/authzed/spicedb/pkg/zedtoken"
 )
 
+var tracer = otel.Tracer("spicedb/internal/services/v1/schema")
+
 type SchemaServerConfig struct {
 	// CaveatTypeSet is the set of caveat types that are allowed in the schema.
 	CaveatTypeSet *caveattypes.TypeSet
@@ -42,17 +47,18 @@ type SchemaServerConfig struct {
 }
 
 // NewSchemaServer creates a SchemaServiceServer instance.
-func NewSchemaServer(config SchemaServerConfig) v1.SchemaServiceServer {
+func NewSchemaServer(config SchemaServerConfig, validator protovalidate.Validator) v1.SchemaServiceServer {
 	cts := caveattypes.TypeSetOrDefault(config.CaveatTypeSet)
+
 	return &schemaServer{
 		WithServiceSpecificInterceptors: shared.WithServiceSpecificInterceptors{
 			Unary: middleware.ChainUnaryServer(
-				grpcvalidate.UnaryServerInterceptor(),
+				interceptorwrapper.WrapUnaryServerInterceptorWithSpans(grpcvalidate.UnaryServerInterceptor(validator), "protovalidate"),
 				usagemetrics.UnaryServerInterceptor(),
 				perfinsights.UnaryServerInterceptor(config.PerformanceInsightMetricsEnabled),
 			),
 			Stream: middleware.ChainStreamServer(
-				grpcvalidate.StreamServerInterceptor(),
+				grpcvalidate.StreamServerInterceptor(validator),
 				usagemetrics.StreamServerInterceptor(),
 				perfinsights.StreamServerInterceptor(config.PerformanceInsightMetricsEnabled),
 			),
@@ -88,12 +94,12 @@ func (ss *schemaServer) ReadSchema(ctx context.Context, _ *v1.ReadSchemaRequest)
 
 	reader := dl.SnapshotReader(headRevision)
 
-	sr, err := reader.ReadSchema()
+	sr, err := reader.ReadSchema(ctx)
 	if err != nil {
 		return nil, ss.rewriteError(ctx, err)
 	}
 
-	schemaText, err := sr.SchemaText()
+	schemaText, err := sr.SchemaText(ctx)
 	if err != nil {
 		return nil, ss.rewriteError(ctx, err)
 	}
@@ -131,13 +137,16 @@ func (ss *schemaServer) WriteSchema(ctx context.Context, in *v1.WriteSchemaReque
 	// the user must first compile them with `zed`
 	opts = append(opts, compiler.DisallowImportFlag())
 
+	_, span := tracer.Start(ctx, "compile")
 	compiled, err := compiler.Compile(compiler.InputSchema{
 		Source:       input.Source("schema"),
 		SchemaString: in.GetSchema(),
 	}, compiler.AllowUnprefixedObjectType(), opts...)
 	if err != nil {
+		span.End()
 		return nil, ss.rewriteError(ctx, err)
 	}
+	span.End()
 	log.Ctx(ctx).Trace().Int("objectDefinitions", len(compiled.ObjectDefinitions)).Int("caveatDefinitions", len(compiled.CaveatDefinitions)).Msg("compiled namespace definitions")
 
 	// Do as much validation as we can before talking to the datastore.
@@ -267,7 +276,7 @@ func (ss *schemaServer) ComputablePermissions(ctx context.Context, req *v1.Compu
 	}
 
 	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision)
-	sr, err := dl.ReadSchema()
+	sr, err := dl.ReadSchema(ctx)
 	if err != nil {
 		return nil, shared.RewriteErrorWithoutConfig(ctx, err)
 	}
@@ -354,7 +363,7 @@ func (ss *schemaServer) DependentRelations(ctx context.Context, req *v1.Dependen
 	}
 
 	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision)
-	sr2, err := dl.ReadSchema()
+	sr2, err := dl.ReadSchema(ctx)
 	if err != nil {
 		return nil, shared.RewriteErrorWithoutConfig(ctx, err)
 	}

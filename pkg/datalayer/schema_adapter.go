@@ -30,9 +30,7 @@ type legacySchemaReaderAdapter struct {
 
 // SchemaText returns the schema text at the current revision by reading all namespaces and caveats
 // and generating the schema text from them.
-func (l *legacySchemaReaderAdapter) SchemaText() (string, error) {
-	ctx := context.Background()
-
+func (l *legacySchemaReaderAdapter) SchemaText(ctx context.Context) (string, error) {
 	// Read all namespaces
 	namespaces, err := l.ListAllTypeDefinitions(ctx)
 	if err != nil {
@@ -61,7 +59,7 @@ func (l *legacySchemaReaderAdapter) SchemaText() (string, error) {
 	}
 
 	// Generate schema text with proper use directives
-	schemaText, _, err := generator.GenerateSchemaWithCaveatTypeSet(definitions, caveatTypeSet)
+	schemaText, _, err := generator.GenerateSchemaWithCaveatTypeSet(ctx, definitions, caveatTypeSet)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate schema: %w", err)
 	}
@@ -207,7 +205,6 @@ var _ SchemaReader = (*legacySchemaReaderAdapter)(nil)
 // writeSchemaViaLegacy implements the WriteSchema logic using Legacy* methods.
 func writeSchemaViaLegacy(ctx context.Context, legacyWriter datastore.LegacySchemaWriter,
 	legacyReader datastore.LegacySchemaReader, definitions []datastore.SchemaDefinition,
-	schemaString string, caveatTypeSet *types.TypeSet,
 ) error {
 	// Validate that no definition names overlap
 	nameSet := mapz.NewSet[string]()

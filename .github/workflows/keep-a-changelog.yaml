@@ -15,10 +15,13 @@ on: # yamllint disable-line rule:truthy
 
 permissions:
   contents: "read"
+concurrency:
+  group: "spicedb-changelog-${{ github.event.pull_request.number }}"
+  cancel-in-progress: true
 
 jobs:
   changelog:
-    runs-on: "depot-ubuntu-24.04-small"
+    runs-on: "ubuntu-latest"
     if: false
     steps:
       - uses: "dangoslen/changelog-enforcer@ea6a56764870c323a4563f450c0a50c5f2d72cd6"

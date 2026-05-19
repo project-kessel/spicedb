@@ -1,3 +1,4 @@
+//go:generate go run go.uber.org/mock/mockgen -source datalayer.go -destination ./mocks/mock_datalayer.go
 package datalayer
 
 import (
@@ -51,7 +52,7 @@ type DataLayer interface {
 // SchemaReader groups schema read methods, accessed via RevisionedReader.ReadSchema().
 type SchemaReader interface {
 	// SchemaText returns the full schema text.
-	SchemaText() (string, error)
+	SchemaText(ctx context.Context) (string, error)
 
 	// LookupTypeDefByName looks up a type definition by name.
 	LookupTypeDefByName(ctx context.Context, name string) (datastore.RevisionedTypeDefinition, bool, error)
@@ -81,7 +82,7 @@ type SchemaReader interface {
 // RevisionedReader reads data at a specific revision.
 type RevisionedReader interface {
 	// ReadSchema returns a SchemaReader for organized schema operations.
-	ReadSchema() (SchemaReader, error)
+	ReadSchema(ctx context.Context) (SchemaReader, error)
 
 	// QueryRelationships reads relationships, starting from the resource side.
 	QueryRelationships(
