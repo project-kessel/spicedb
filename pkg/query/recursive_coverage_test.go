@@ -1,20 +1,14 @@
 package query
 
 import (
-	"context"
 	"testing"
 
 	"github.com/ccoveille/go-safecast/v2"
 	"github.com/stretchr/testify/require"
-
-	"github.com/authzed/spicedb/internal/datastore/memdb"
-	"github.com/authzed/spicedb/pkg/datalayer"
-	"github.com/authzed/spicedb/pkg/datastore"
 )
 
 // TestRecursiveIterator_CanonicalKey tests the CanonicalKey() method (currently 0% coverage)
 func TestRecursiveIterator_CanonicalKey(t *testing.T) {
-	t.Parallel()
 	require := require.New(t)
 
 	sentinel := NewRecursiveSentinelIterator("folder", "view", false)
@@ -29,7 +23,6 @@ func TestRecursiveIterator_CanonicalKey(t *testing.T) {
 
 // TestReplaceRecursiveSentinel_NonMatchingSentinel tests replacing sentinels that don't match
 func TestReplaceRecursiveSentinel_NonMatchingSentinel(t *testing.T) {
-	t.Parallel()
 	require := require.New(t)
 
 	// Create sentinels with different definitions/relations
@@ -67,7 +60,6 @@ func TestReplaceRecursiveSentinel_NonMatchingSentinel(t *testing.T) {
 
 // TestReplaceRecursiveSentinel_DeepNesting tests replacement in deeply nested trees
 func TestReplaceRecursiveSentinel_DeepNesting(t *testing.T) {
-	t.Parallel()
 	require := require.New(t)
 
 	sentinel := NewRecursiveSentinelIterator("folder", "view", false)
@@ -93,7 +85,6 @@ func TestReplaceRecursiveSentinel_DeepNesting(t *testing.T) {
 
 // TestBreadthFirstIterResources_MaxDepth tests that BFS respects max depth limit
 func TestBreadthFirstIterResources_MaxDepth(t *testing.T) {
-	t.Parallel()
 	require := require.New(t)
 
 	// Create an iterator that always returns new paths (infinite recursion)
@@ -106,12 +97,8 @@ func TestBreadthFirstIterResources_MaxDepth(t *testing.T) {
 	union := NewUnionIterator(infiniteIter, sentinel)
 	recursive := NewRecursiveIterator(union, "folder", "parent")
 
-	ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
-	require.NoError(err)
-
 	// Set a low max depth
-	ctx := NewLocalContext(context.Background(),
-		WithReader(datalayer.NewDataLayer(ds).SnapshotReader(datastore.NoRevision)),
+	ctx := NewLocalContext(t.Context(),
 		WithMaxRecursionDepth(3))
 
 	seq, err := recursive.IterResourcesImpl(ctx, ObjectAndRelation{ObjectType: "user", ObjectID: "alice", Relation: "..."}, NoObjectFilter())
@@ -127,10 +114,7 @@ func TestBreadthFirstIterResources_MaxDepth(t *testing.T) {
 
 // TestBreadthFirstIterResources_ErrorHandling tests error paths in BFS IterResources
 func TestBreadthFirstIterResources_ErrorHandling(t *testing.T) {
-	t.Parallel()
-
 	t.Run("ErrorDuringQuery", func(t *testing.T) {
-		t.Parallel()
 		require := require.New(t)
 
 		// Create a faulty iterator that fails during query
@@ -139,11 +123,7 @@ func TestBreadthFirstIterResources_ErrorHandling(t *testing.T) {
 		union := NewUnionIterator(faultyIter, sentinel)
 		recursive := NewRecursiveIterator(union, "folder", "parent")
 
-		ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
-		require.NoError(err)
-
-		ctx := NewLocalContext(context.Background(),
-			WithReader(datalayer.NewDataLayer(ds).SnapshotReader(datastore.NoRevision)))
+		ctx := NewTestContext(t)
 
 		seq, err := recursive.IterResourcesImpl(ctx, ObjectAndRelation{ObjectType: "user", ObjectID: "alice", Relation: "..."}, NoObjectFilter())
 		require.NoError(err)
@@ -155,7 +135,6 @@ func TestBreadthFirstIterResources_ErrorHandling(t *testing.T) {
 	})
 
 	t.Run("ErrorDuringCollection", func(t *testing.T) {
-		t.Parallel()
 		require := require.New(t)
 
 		// Create a faulty iterator that fails during collection
@@ -164,11 +143,7 @@ func TestBreadthFirstIterResources_ErrorHandling(t *testing.T) {
 		union := NewUnionIterator(faultyIter, sentinel)
 		recursive := NewRecursiveIterator(union, "folder", "parent")
 
-		ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
-		require.NoError(err)
-
-		ctx := NewLocalContext(context.Background(),
-			WithReader(datalayer.NewDataLayer(ds).SnapshotReader(datastore.NoRevision)))
+		ctx := NewTestContext(t)
 
 		seq, err := recursive.IterResourcesImpl(ctx, ObjectAndRelation{ObjectType: "user", ObjectID: "alice", Relation: "..."}, NoObjectFilter())
 		require.NoError(err)
@@ -182,7 +157,6 @@ func TestBreadthFirstIterResources_ErrorHandling(t *testing.T) {
 
 // TestBreadthFirstIterResources_MergeOrSemantics tests OR merging of duplicate paths
 func TestBreadthFirstIterResources_MergeOrSemantics(t *testing.T) {
-	t.Parallel()
 	require := require.New(t)
 
 	// Create an iterator that returns the same endpoint in different plies
@@ -198,11 +172,7 @@ func TestBreadthFirstIterResources_MergeOrSemantics(t *testing.T) {
 	union := NewUnionIterator(iter, sentinel)
 	recursive := NewRecursiveIterator(union, "folder", "parent")
 
-	ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
-	require.NoError(err)
-
-	ctx := NewLocalContext(context.Background(),
-		WithReader(datalayer.NewDataLayer(ds).SnapshotReader(datastore.NoRevision)),
+	ctx := NewLocalContext(t.Context(),
 		WithMaxRecursionDepth(5))
 
 	seq, err := recursive.IterResourcesImpl(ctx, ObjectAndRelation{ObjectType: "user", ObjectID: "alice", Relation: "..."}, NoObjectFilter())
@@ -218,19 +188,14 @@ func TestBreadthFirstIterResources_MergeOrSemantics(t *testing.T) {
 
 // TestIterativeDeepening_MaxDepth tests that iterative deepening respects max depth
 func TestIterativeDeepening_MaxDepth(t *testing.T) {
-	t.Parallel()
 	require := require.New(t)
 
 	// Create a simple iterator that always returns something at each depth
 	depthCounter := &depthCountingIterator{counter: 0}
 	recursive := NewRecursiveIterator(depthCounter, "folder", "view")
 
-	ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
-	require.NoError(err)
-
 	maxDepth := 5
-	ctx := NewLocalContext(context.Background(),
-		WithReader(datalayer.NewDataLayer(ds).SnapshotReader(datastore.NoRevision)),
+	ctx := NewLocalContext(t.Context(),
 		WithMaxRecursionDepth(maxDepth))
 
 	seq, err := recursive.CheckImpl(ctx, []Object{{ObjectType: "folder", ObjectID: "folder1"}}, ObjectAndRelation{ObjectType: "user", ObjectID: "alice", Relation: "..."})
@@ -245,7 +210,6 @@ func TestIterativeDeepening_MaxDepth(t *testing.T) {
 
 // TestUnwrapRecursiveIterators_NestedRecursion tests unwrapping nested RecursiveIterators
 func TestUnwrapRecursiveIterators_NestedRecursion(t *testing.T) {
-	t.Parallel()
 	require := require.New(t)
 
 	// Create nested recursive iterators

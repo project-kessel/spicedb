@@ -5,7 +5,8 @@ import (
 	"slices"
 	"time"
 
-	grpcvalidate "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/validator"
+	"buf.build/go/protovalidate"
+	grpcvalidate "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/protovalidate"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -30,10 +31,10 @@ type watchServer struct {
 }
 
 // NewWatchServer creates an instance of the watch server.
-func NewWatchServer(heartbeatDuration time.Duration) v1.WatchServiceServer {
+func NewWatchServer(heartbeatDuration time.Duration, validator protovalidate.Validator) v1.WatchServiceServer {
 	s := &watchServer{
 		WithStreamServiceSpecificInterceptor: shared.WithStreamServiceSpecificInterceptor{
-			Stream: grpcvalidate.StreamServerInterceptor(),
+			Stream: grpcvalidate.StreamServerInterceptor(validator),
 		},
 		heartbeatDuration: heartbeatDuration,
 	}
@@ -49,7 +50,7 @@ func (ws *watchServer) Watch(req *v1.WatchRequest, stream v1.WatchService_WatchS
 		}
 	}
 
-	objectTypes := mapz.NewSet[string](req.GetOptionalObjectTypes()...)
+	objectTypes := mapz.NewSet(req.GetOptionalObjectTypes()...)
 
 	ctx := stream.Context()
 	dl := datalayer.MustFromContext(ctx)
@@ -80,7 +81,7 @@ func (ws *watchServer) Watch(req *v1.WatchRequest, stream v1.WatchService_WatchS
 	}
 
 	reader := dl.SnapshotReader(afterRevision)
-	sr, err := reader.ReadSchema()
+	sr, err := reader.ReadSchema(ctx)
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to read schema: %s", err)
 	}

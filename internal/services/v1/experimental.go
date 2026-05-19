@@ -12,8 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"buf.build/go/protovalidate"
 	"github.com/ccoveille/go-safecast/v2"
-	grpcvalidate "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/validator"
+	grpcvalidate "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/protovalidate"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -24,6 +25,7 @@ import (
 	log "github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/internal/middleware"
 	"github.com/authzed/spicedb/internal/middleware/handwrittenvalidation"
+	"github.com/authzed/spicedb/internal/middleware/interceptorwrapper"
 	"github.com/authzed/spicedb/internal/middleware/perfinsights"
 	"github.com/authzed/spicedb/internal/middleware/streamtimeout"
 	"github.com/authzed/spicedb/internal/middleware/usagemetrics"
@@ -53,7 +55,7 @@ const (
 )
 
 // NewExperimentalServer creates a ExperimentalServiceServer instance.
-func NewExperimentalServer(dispatch dispatch.Dispatcher, permServerConfig PermissionsServerConfig, opts ...options.ExperimentalServerOptionsOption) v1.ExperimentalServiceServer {
+func NewExperimentalServer(dispatch dispatch.Dispatcher, permServerConfig PermissionsServerConfig, validator protovalidate.Validator, opts ...options.ExperimentalServerOptionsOption) v1.ExperimentalServiceServer {
 	config := options.NewExperimentalServerOptionsWithOptionsAndDefaults(opts...)
 	if config.DefaultExportBatchSize == 0 {
 		log.
@@ -96,13 +98,13 @@ func NewExperimentalServer(dispatch dispatch.Dispatcher, permServerConfig Permis
 	return &experimentalServer{
 		WithServiceSpecificInterceptors: shared.WithServiceSpecificInterceptors{
 			Unary: middleware.ChainUnaryServer(
-				grpcvalidate.UnaryServerInterceptor(),
+				interceptorwrapper.WrapUnaryServerInterceptorWithSpans(grpcvalidate.UnaryServerInterceptor(validator), "protovalidate"),
 				handwrittenvalidation.UnaryServerInterceptor,
 				usagemetrics.UnaryServerInterceptor(),
 				perfinsights.UnaryServerInterceptor(permServerConfig.PerformanceInsightMetricsEnabled),
 			),
 			Stream: middleware.ChainStreamServer(
-				grpcvalidate.StreamServerInterceptor(),
+				grpcvalidate.StreamServerInterceptor(validator),
 				handwrittenvalidation.StreamServerInterceptor,
 				usagemetrics.StreamServerInterceptor(),
 				streamtimeout.MustStreamServerInterceptor(config.StreamReadTimeout),
@@ -256,7 +258,7 @@ func (es *experimentalServer) BulkImportRelationships(stream v1.ExperimentalServ
 			caveat:                 core.ContextualizedCaveat{},
 			caveatTypeSet:          es.caveatTypeSet,
 		}
-		sr, err := rwt.ReadSchema()
+		sr, err := rwt.ReadSchema(ctx)
 		if err != nil {
 			return err
 		}
@@ -349,7 +351,7 @@ func BulkExport(ctx context.Context, dl datalayer.DataLayer, batchSize uint64, r
 
 	reader := dl.SnapshotReader(atRevision)
 
-	sr, err := reader.ReadSchema()
+	sr, err := reader.ReadSchema(ctx)
 	if err != nil {
 		return shared.RewriteErrorWithoutConfig(ctx, err)
 	}
@@ -600,7 +602,7 @@ func (es *experimentalServer) ExperimentalComputablePermissions(ctx context.Cont
 	}
 
 	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision)
-	sr, err := dl.ReadSchema()
+	sr, err := dl.ReadSchema(ctx)
 	if err != nil {
 		return nil, shared.RewriteErrorWithoutConfig(ctx, err)
 	}
@@ -687,7 +689,7 @@ func (es *experimentalServer) ExperimentalDependentRelations(ctx context.Context
 	}
 
 	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision)
-	sr, err := dl.ReadSchema()
+	sr, err := dl.ReadSchema(ctx)
 	if err != nil {
 		return nil, shared.RewriteErrorWithoutConfig(ctx, err)
 	}
@@ -761,7 +763,7 @@ func (es *experimentalServer) ExperimentalRegisterRelationshipCounter(ctx contex
 	}
 
 	_, err := dl.ReadWriteTx(ctx, func(ctx context.Context, rwt datalayer.ReadWriteTransaction) error {
-		sr, err := rwt.ReadSchema()
+		sr, err := rwt.ReadSchema(ctx)
 		if err != nil {
 			return err
 		}
