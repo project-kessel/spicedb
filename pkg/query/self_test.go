@@ -7,18 +7,10 @@ import (
 )
 
 func TestSelfIterator(t *testing.T) {
-	t.Parallel()
-
 	require := require.New(t)
 
-	// Create test context
-	ctx := &Context{
-		Context:  t.Context(),
-		Executor: LocalExecutor{},
-	}
 	t.Run("Check", func(t *testing.T) {
-		t.Parallel()
-
+		ctx := NewTestContext(t)
 		selfIt := NewSelfIterator("view", "user")
 
 		// Create a resource seq with both Alice and Bob
@@ -39,8 +31,7 @@ func TestSelfIterator(t *testing.T) {
 	})
 
 	t.Run("Check_EmptyResults", func(t *testing.T) {
-		t.Parallel()
-
+		ctx := NewTestContext(t)
 		selfIt := NewSelfIterator("view", "user")
 
 		// Only bob in the list now
@@ -53,8 +44,7 @@ func TestSelfIterator(t *testing.T) {
 	})
 
 	t.Run("IterResources", func(t *testing.T) {
-		t.Parallel()
-
+		ctx := NewTestContext(t)
 		selfIt := NewSelfIterator("view", "user")
 		pathSeq, err := ctx.IterResources(selfIt, NewObject("user", "alice").WithEllipses(), NoObjectFilter())
 		require.NoError(err)
@@ -73,8 +63,7 @@ func TestSelfIterator(t *testing.T) {
 	})
 
 	t.Run("IterSubjects", func(t *testing.T) {
-		t.Parallel()
-
+		ctx := NewTestContext(t)
 		selfIt := NewSelfIterator("view", "user")
 		pathSeq, err := ctx.IterSubjects(selfIt, NewObject("user", "alice"), NoObjectFilter())
 		require.NoError(err)
@@ -94,8 +83,6 @@ func TestSelfIterator(t *testing.T) {
 }
 
 func TestSelfIteratorClone(t *testing.T) {
-	t.Parallel()
-
 	require := require.New(t)
 
 	original := NewSelfIterator("original_relation", "user")
@@ -115,8 +102,6 @@ func TestSelfIteratorClone(t *testing.T) {
 }
 
 func TestSelfIteratorExplain(t *testing.T) {
-	t.Parallel()
-
 	require := require.New(t)
 
 	aliasIt := NewSelfIterator("some_relation", "user")
@@ -127,10 +112,7 @@ func TestSelfIteratorExplain(t *testing.T) {
 }
 
 func TestSelf_Types(t *testing.T) {
-	t.Parallel()
-
 	t.Run("ResourceType", func(t *testing.T) {
-		t.Parallel()
 		require := require.New(t)
 
 		selfIt := NewSelfIterator("view", "user")
@@ -142,7 +124,6 @@ func TestSelf_Types(t *testing.T) {
 	})
 
 	t.Run("SubjectTypes", func(t *testing.T) {
-		t.Parallel()
 		require := require.New(t)
 
 		selfIt := NewSelfIterator("view", "user")
@@ -154,7 +135,6 @@ func TestSelf_Types(t *testing.T) {
 	})
 
 	t.Run("SubjectTypes_SameAsResourceType", func(t *testing.T) {
-		t.Parallel()
 		require := require.New(t)
 
 		selfIt := NewSelfIterator("edit", "document")

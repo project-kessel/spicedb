@@ -23,8 +23,6 @@ import (
 // the wildcard branch should only enumerate subjects from its own relation, not
 // from other relations on the same resource.
 func TestIterSubjectsWildcardWithMultipleRelations(t *testing.T) {
-	t.Parallel()
-
 	require := require.New(t)
 	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
@@ -74,7 +72,6 @@ func TestIterSubjectsWildcardWithMultipleRelations(t *testing.T) {
 
 	// Test the wildcard branch for viewer
 	t.Run("WildcardBranchEnumeratesAllDefinedSubjects", func(t *testing.T) {
-		t.Parallel()
 		// The wildcard branch should enumerate ALL subjects of the appropriate type that are
 		// defined in the datastore, not just those with a relationship to this specific resource.
 		// This is the intended behavior: when a wildcard (e.g., user:*) exists on a relation,
@@ -82,7 +79,7 @@ func TestIterSubjectsWildcardWithMultipleRelations(t *testing.T) {
 		wildcardBranch := NewDatastoreIterator(viewerRel.BaseRelations()[1]) // user:* (wildcard)
 
 		queryCtx := NewLocalContext(ctx,
-			WithReader(datalayer.NewDataLayer(rawDS).SnapshotReader(revision)),
+			WithRevisionedReader(datalayer.NewDataLayer(rawDS).SnapshotReader(revision)),
 			WithTraceLogger(NewTraceLogger())) // Enable tracing for debugging
 		subjects, err := queryCtx.IterSubjects(wildcardBranch, NewObject("document", "publicdoc"), NoObjectFilter())
 		require.NoError(err)
@@ -106,7 +103,6 @@ func TestIterSubjectsWildcardWithMultipleRelations(t *testing.T) {
 
 	// Test the Union (combined behavior) - this is what happens in the actual query plan
 	t.Run("UnionDeduplicatesSubjects", func(t *testing.T) {
-		t.Parallel()
 		// The Union of both branches should return all subjects with deduplication
 		union := NewUnionIterator(
 			NewDatastoreIterator(viewerRel.BaseRelations()[0]), // user (non-wildcard)
@@ -114,7 +110,7 @@ func TestIterSubjectsWildcardWithMultipleRelations(t *testing.T) {
 		)
 
 		queryCtx := NewLocalContext(ctx,
-			WithReader(datalayer.NewDataLayer(rawDS).SnapshotReader(revision)),
+			WithRevisionedReader(datalayer.NewDataLayer(rawDS).SnapshotReader(revision)),
 			WithTraceLogger(NewTraceLogger())) // Enable tracing for debugging
 		subjects, err := queryCtx.IterSubjects(union, NewObject("document", "publicdoc"), NoObjectFilter())
 		require.NoError(err)

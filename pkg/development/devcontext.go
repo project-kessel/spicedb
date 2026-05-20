@@ -6,6 +6,7 @@ import (
 	"net"
 	"time"
 
+	"buf.build/go/protovalidate"
 	"github.com/ccoveille/go-safecast/v2"
 	humanize "github.com/dustin/go-humanize"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
@@ -30,6 +31,7 @@ import (
 	caveattypes "github.com/authzed/spicedb/pkg/caveats/types"
 	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
+	"github.com/authzed/spicedb/pkg/genutil"
 	"github.com/authzed/spicedb/pkg/middleware/consistency"
 	devinterface "github.com/authzed/spicedb/pkg/proto/developer/v1"
 	"github.com/authzed/spicedb/pkg/schema"
@@ -51,7 +53,7 @@ type DevContext struct {
 
 // NewDevContext creates a new DevContext from the specified request context, parsing and populating
 // the datastore as needed.
-func NewDevContext(ctx context.Context, requestContext *devinterface.RequestContext) (*DevContext, *devinterface.DeveloperErrors, error) {
+func NewDevContext(ctx context.Context, requestContext *devinterface.RequestContext, opts ...CompileOption) (*DevContext, *devinterface.DeveloperErrors, error) {
 	ds, err := memdb.NewMemdbDatastore(0, 0*time.Second, memdb.DisableGC)
 	if err != nil {
 		return nil, nil, err
@@ -59,7 +61,7 @@ func NewDevContext(ctx context.Context, requestContext *devinterface.RequestCont
 	dl := datalayer.NewDataLayer(ds)
 	ctx = datalayer.ContextWithDataLayer(ctx, dl)
 
-	dctx, devErrs, nerr := newDevContextWithDataLayer(ctx, requestContext, dl)
+	dctx, devErrs, nerr := newDevContextWithDataLayer(ctx, requestContext, dl, opts...)
 	if nerr != nil || devErrs != nil {
 		// If any form of error occurred, immediately close the data layer
 		derr := dl.Close()
@@ -73,9 +75,9 @@ func NewDevContext(ctx context.Context, requestContext *devinterface.RequestCont
 	return dctx, nil, nil
 }
 
-func newDevContextWithDataLayer(ctx context.Context, requestContext *devinterface.RequestContext, dl datalayer.DataLayer) (*DevContext, *devinterface.DeveloperErrors, error) {
+func newDevContextWithDataLayer(ctx context.Context, requestContext *devinterface.RequestContext, dl datalayer.DataLayer, opts ...CompileOption) (*DevContext, *devinterface.DeveloperErrors, error) {
 	// Compile the schema and load its caveats and namespaces into the datastore.
-	compiled, devError, err := CompileSchema(requestContext.Schema)
+	compiled, devError, err := CompileSchema(requestContext.Schema, opts...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -94,7 +96,7 @@ func newDevContextWithDataLayer(ctx context.Context, requestContext *devinterfac
 		// Load the test relationships into the datastore.
 		relationships := make([]tuple.Relationship, 0, len(requestContext.Relationships))
 		for _, rel := range requestContext.Relationships {
-			if err := rel.Validate(); err != nil {
+			if err := protovalidate.Validate(rel); err != nil {
 				inputErrors = append(inputErrors, &devinterface.DeveloperError{
 					Message: err.Error(),
 					Source:  devinterface.DeveloperError_RELATIONSHIP,
@@ -136,7 +138,7 @@ func newDevContextWithDataLayer(ctx context.Context, requestContext *devinterfac
 	// Sanity check: Make sure the request context for the developer is fully valid. We do this after
 	// the loading to ensure that any user-created errors are reported as developer errors,
 	// rather than internal errors.
-	verr := requestContext.Validate()
+	verr := protovalidate.Validate(requestContext)
 	if verr != nil {
 		return nil, nil, verr
 	}
@@ -179,6 +181,10 @@ func (dc *DevContext) RunV1InMemoryService() (*grpc.ClientConn, func(), error) {
 			consistency.StreamServerInterceptor("development", consistency.TreatMismatchingTokensAsError),
 		),
 	)
+	validator, err := genutil.NewProtoValidator()
+	if err != nil {
+		return nil, nil, err
+	}
 	ps := v1svc.NewPermissionsServer(dc.Dispatcher, v1svc.PermissionsServerConfig{
 		MaxUpdatesPerWrite:               50,
 		MaxPreconditionsCount:            50,
@@ -187,13 +193,13 @@ func (dc *DevContext) RunV1InMemoryService() (*grpc.ClientConn, func(), error) {
 		ExpiringRelationshipsEnabled:     true,
 		CaveatTypeSet:                    caveattypes.Default.TypeSet,
 		PerformanceInsightMetricsEnabled: false,
-	})
+	}, validator)
 	ss := v1svc.NewSchemaServer(v1svc.SchemaServerConfig{
 		CaveatTypeSet:                    caveattypes.Default.TypeSet,
 		AdditiveOnly:                     false,
 		ExpiringRelsEnabled:              true,
 		PerformanceInsightMetricsEnabled: false,
-	})
+	}, validator)
 
 	v1.RegisterPermissionsServiceServer(s, ps)
 	v1.RegisterSchemaServiceServer(s, ss)
@@ -240,7 +246,7 @@ func (dc *DevContext) Dispose() {
 func loadsRels(ctx context.Context, rels []tuple.Relationship, rwt datalayer.ReadWriteTransaction) ([]*devinterface.DeveloperError, error) {
 	devErrors := make([]*devinterface.DeveloperError, 0, len(rels))
 	updates := make([]tuple.RelationshipUpdate, 0, len(rels))
-	sr, srErr := rwt.ReadSchema()
+	sr, srErr := rwt.ReadSchema(ctx)
 	if srErr != nil {
 		return nil, srErr
 	}
@@ -268,6 +274,9 @@ func loadsRels(ctx context.Context, rels []tuple.Relationship, rwt datalayer.Rea
 	return devErrors, err
 }
 
+// loadCompiled validates the compiled schema and then writes it.
+// If validation fails, it returns the full list of validation errors
+// with the correct position.
 func loadCompiled(
 	ctx context.Context,
 	compiled *compiler.CompiledSchema,
@@ -286,66 +295,18 @@ func loadCompiled(
 			continue
 		}
 
-		errWithSource, ok := spiceerrors.AsWithSourceError(cverr)
-		if ok {
-			// NOTE: zeroes are fine here to mean "unknown"
-			lineNumber, err := safecast.Convert[uint32](errWithSource.LineNumber)
-			if err != nil {
-				log.Err(err).Msg("could not cast lineNumber to uint32")
-			}
-			columnPosition, err := safecast.Convert[uint32](errWithSource.ColumnPosition)
-			if err != nil {
-				log.Err(err).Msg("could not cast columnPosition to uint32")
-			}
-			errors = append(errors, &devinterface.DeveloperError{
-				Message: cverr.Error(),
-				Kind:    devinterface.DeveloperError_SCHEMA_ISSUE,
-				Source:  devinterface.DeveloperError_SCHEMA,
-				Context: errWithSource.SourceCodeString,
-				Line:    lineNumber,
-				Column:  columnPosition,
-			})
-		} else {
-			errors = append(errors, &devinterface.DeveloperError{
-				Message: cverr.Error(),
-				Kind:    devinterface.DeveloperError_SCHEMA_ISSUE,
-				Source:  devinterface.DeveloperError_SCHEMA,
-				Context: caveatDef.Name,
-			})
+		if e := getDevError(cverr, compiled, caveatDef); e != nil {
+			errors = append(errors, e)
 		}
 	}
 
 	for _, nsDef := range compiled.ObjectDefinitions {
 		def, terr := schema.NewDefinition(nsDef)
 		if terr != nil {
-			errWithSource, ok := spiceerrors.AsWithSourceError(terr)
-			// NOTE: zeroes are fine here to mean "unknown"
-			lineNumber, err := safecast.Convert[uint32](errWithSource.LineNumber)
-			if err != nil {
-				log.Err(err).Msg("could not cast lineNumber to uint32")
-			}
-			columnPosition, err := safecast.Convert[uint32](errWithSource.ColumnPosition)
-			if err != nil {
-				log.Err(err).Msg("could not cast columnPosition to uint32")
-			}
-			if ok {
-				errors = append(errors, &devinterface.DeveloperError{
-					Message: terr.Error(),
-					Kind:    devinterface.DeveloperError_SCHEMA_ISSUE,
-					Source:  devinterface.DeveloperError_SCHEMA,
-					Context: errWithSource.SourceCodeString,
-					Line:    lineNumber,
-					Column:  columnPosition,
-				})
-				continue
+			if e := getDevError(terr, compiled, nsDef); e != nil {
+				errors = append(errors, e)
 			}
 
-			errors = append(errors, &devinterface.DeveloperError{
-				Message: terr.Error(),
-				Kind:    devinterface.DeveloperError_SCHEMA_ISSUE,
-				Source:  devinterface.DeveloperError_SCHEMA,
-				Context: nsDef.Name,
-			})
 			continue
 		}
 
@@ -355,32 +316,8 @@ func loadCompiled(
 			continue
 		}
 
-		errWithSource, ok := spiceerrors.AsWithSourceError(tverr)
-		if ok {
-			// NOTE: zeroes are fine here to mean "unknown"
-			lineNumber, err := safecast.Convert[uint32](errWithSource.LineNumber)
-			if err != nil {
-				log.Err(err).Msg("could not cast lineNumber to uint32")
-			}
-			columnPosition, err := safecast.Convert[uint32](errWithSource.ColumnPosition)
-			if err != nil {
-				log.Err(err).Msg("could not cast columnPosition to uint32")
-			}
-			errors = append(errors, &devinterface.DeveloperError{
-				Message: tverr.Error(),
-				Kind:    devinterface.DeveloperError_SCHEMA_ISSUE,
-				Source:  devinterface.DeveloperError_SCHEMA,
-				Context: errWithSource.SourceCodeString,
-				Line:    lineNumber,
-				Column:  columnPosition,
-			})
-		} else {
-			errors = append(errors, &devinterface.DeveloperError{
-				Message: tverr.Error(),
-				Kind:    devinterface.DeveloperError_SCHEMA_ISSUE,
-				Source:  devinterface.DeveloperError_SCHEMA,
-				Context: nsDef.Name,
-			})
+		if e := getDevError(tverr, compiled, nsDef); e != nil {
+			errors = append(errors, e)
 		}
 	}
 
@@ -391,6 +328,42 @@ func loadCompiled(
 	}
 
 	return errors, nil
+}
+
+func getDevError(cverr error, compiled *compiler.CompiledSchema, definitionOrCaveat compiler.SchemaDefinition) *devinterface.DeveloperError {
+	if cverr == nil || compiled == nil || definitionOrCaveat == nil {
+		return nil
+	}
+	path := compiled.GetPathToDefinitionOrPartialOrCaveat(definitionOrCaveat.GetName())
+	errWithSource, ok := spiceerrors.AsWithSourceError(cverr)
+	if ok {
+		// NOTE: zeroes are fine here to mean "unknown"
+		// NOTE: positions given by errWithSource are 1-indexed
+		lineNumber, err := safecast.Convert[uint32](errWithSource.LineNumber)
+		if err != nil {
+			log.Err(err).Msg("could not cast lineNumber to uint32")
+		}
+		columnPosition, err := safecast.Convert[uint32](errWithSource.ColumnPosition)
+		if err != nil {
+			log.Err(err).Msg("could not cast columnPosition to uint32")
+		}
+		return &devinterface.DeveloperError{
+			Message: cverr.Error(),
+			Kind:    devinterface.DeveloperError_SCHEMA_ISSUE,
+			Source:  devinterface.DeveloperError_SCHEMA,
+			Context: errWithSource.SourceCodeString,
+			Line:    lineNumber,
+			Column:  columnPosition,
+			Path:    []string{path},
+		}
+	}
+	return &devinterface.DeveloperError{
+		Message: cverr.Error(),
+		Kind:    devinterface.DeveloperError_SCHEMA_ISSUE,
+		Source:  devinterface.DeveloperError_SCHEMA,
+		Context: definitionOrCaveat.GetName(),
+		Path:    []string{path},
+	}
 }
 
 // DistinguishGraphError turns an error from a dispatch call into either a user-facing

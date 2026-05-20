@@ -1,25 +1,17 @@
 package query
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/authzed/spicedb/internal/datastore/memdb"
-	"github.com/authzed/spicedb/pkg/datalayer"
-	"github.com/authzed/spicedb/pkg/datastore"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 )
 
 func TestIntersectionArrowIterator(t *testing.T) {
-	t.Parallel()
-
 	require := require.New(t)
 
 	t.Run("AllSubjectsSatisfyCondition", func(t *testing.T) {
-		t.Parallel()
-
 		// Left side: document has teams team1 and team2
 		leftPath1 := MustPathFromString("document:doc1#team@team:team1")
 		leftPath2 := MustPathFromString("document:doc1#team@team:team2")
@@ -33,15 +25,7 @@ func TestIntersectionArrowIterator(t *testing.T) {
 
 		intersectionArrow := NewIntersectionArrowIterator(leftIter, rightIter)
 
-		// Create test context
-		ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
-		require.NoError(err)
-
-		revision, err := ds.HeadRevision(context.Background())
-		require.NoError(err)
-
-		ctx := NewLocalContext(context.Background(),
-			WithReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
+		ctx := NewTestContext(t)
 
 		// Test: alice should have access because she's a member of ALL teams (team1 and team2)
 		resources := []Object{NewObject("document", "doc1")}
@@ -65,8 +49,6 @@ func TestIntersectionArrowIterator(t *testing.T) {
 	})
 
 	t.Run("NotAllSubjectsSatisfyCondition", func(t *testing.T) {
-		t.Parallel()
-
 		// Left side: document has teams team1 and team2
 		leftPath1 := MustPathFromString("document:doc1#team@team:team1")
 		leftPath2 := MustPathFromString("document:doc1#team@team:team2")
@@ -80,17 +62,7 @@ func TestIntersectionArrowIterator(t *testing.T) {
 
 		intersectionArrow := NewIntersectionArrowIterator(leftIter, rightIter)
 
-		// Create test context
-		ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
-		require.NoError(err)
-
-		revision, err := ds.ReadWriteTx(context.Background(), func(ctx context.Context, tx datastore.ReadWriteTransaction) error {
-			return nil
-		})
-		require.NoError(err)
-
-		ctx := NewLocalContext(context.Background(),
-			WithReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
+		ctx := NewTestContext(t)
 
 		// Test: alice should NOT have access because she's not a member of ALL teams
 		resources := []Object{NewObject("document", "doc1")}
@@ -107,8 +79,6 @@ func TestIntersectionArrowIterator(t *testing.T) {
 	})
 
 	t.Run("SingleSubjectSatisfiesCondition", func(t *testing.T) {
-		t.Parallel()
-
 		// Left side: document has only team1
 		leftPath1 := MustPathFromString("document:doc1#team@team:team1")
 
@@ -120,17 +90,7 @@ func TestIntersectionArrowIterator(t *testing.T) {
 
 		intersectionArrow := NewIntersectionArrowIterator(leftIter, rightIter)
 
-		// Create test context
-		ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
-		require.NoError(err)
-
-		revision, err := ds.ReadWriteTx(context.Background(), func(ctx context.Context, tx datastore.ReadWriteTransaction) error {
-			return nil
-		})
-		require.NoError(err)
-
-		ctx := NewLocalContext(context.Background(),
-			WithReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
+		ctx := NewTestContext(t)
 
 		// Test: alice should have access because she's a member of the only team
 		resources := []Object{NewObject("document", "doc1")}
@@ -154,8 +114,6 @@ func TestIntersectionArrowIterator(t *testing.T) {
 	})
 
 	t.Run("NoLeftSubjects", func(t *testing.T) {
-		t.Parallel()
-
 		// Left side: document has no teams
 		leftIter := NewFixedIterator() // Empty
 
@@ -165,17 +123,7 @@ func TestIntersectionArrowIterator(t *testing.T) {
 
 		intersectionArrow := NewIntersectionArrowIterator(leftIter, rightIter)
 
-		// Create test context
-		ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
-		require.NoError(err)
-
-		revision, err := ds.ReadWriteTx(context.Background(), func(ctx context.Context, tx datastore.ReadWriteTransaction) error {
-			return nil
-		})
-		require.NoError(err)
-
-		ctx := NewLocalContext(context.Background(),
-			WithReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
+		ctx := NewTestContext(t)
 
 		resources := []Object{NewObject("document", "doc1")}
 		subject := ObjectAndRelation{ObjectType: "user", ObjectID: "alice"}
@@ -191,8 +139,6 @@ func TestIntersectionArrowIterator(t *testing.T) {
 	})
 
 	t.Run("ThreeTeamsAllSatisfied", func(t *testing.T) {
-		t.Parallel()
-
 		// Left side: document has teams team1, team2, and team3
 		leftPath1 := MustPathFromString("document:doc1#team@team:team1")
 		leftPath2 := MustPathFromString("document:doc1#team@team:team2")
@@ -208,17 +154,7 @@ func TestIntersectionArrowIterator(t *testing.T) {
 
 		intersectionArrow := NewIntersectionArrowIterator(leftIter, rightIter)
 
-		// Create test context
-		ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
-		require.NoError(err)
-
-		revision, err := ds.ReadWriteTx(context.Background(), func(ctx context.Context, tx datastore.ReadWriteTransaction) error {
-			return nil
-		})
-		require.NoError(err)
-
-		ctx := NewLocalContext(context.Background(),
-			WithReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
+		ctx := NewTestContext(t)
 
 		resources := []Object{NewObject("document", "doc1")}
 		subject := ObjectAndRelation{ObjectType: "user", ObjectID: "alice"}
@@ -241,23 +177,11 @@ func TestIntersectionArrowIterator(t *testing.T) {
 	})
 
 	t.Run("EmptyResources", func(t *testing.T) {
-		t.Parallel()
-
 		leftIter := NewFixedIterator()
 		rightIter := NewFixedIterator()
 		intersectionArrow := NewIntersectionArrowIterator(leftIter, rightIter)
 
-		// Create test context
-		ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
-		require.NoError(err)
-
-		revision, err := ds.ReadWriteTx(context.Background(), func(ctx context.Context, tx datastore.ReadWriteTransaction) error {
-			return nil
-		})
-		require.NoError(err)
-
-		ctx := NewLocalContext(context.Background(),
-			WithReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
+		ctx := NewTestContext(t)
 
 		resources := []Object{}
 		subject := ObjectAndRelation{ObjectType: "user", ObjectID: "alice"}
@@ -272,24 +196,10 @@ func TestIntersectionArrowIterator(t *testing.T) {
 }
 
 func TestIntersectionArrowIteratorCaveatCombination(t *testing.T) {
-	t.Parallel()
-
 	require := require.New(t)
 
-	// Create test context
-	ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
-	require.NoError(err)
-
-	revision, err := ds.ReadWriteTx(context.Background(), func(ctx context.Context, tx datastore.ReadWriteTransaction) error {
-		return nil
-	})
-	require.NoError(err)
-
-	ctx := NewLocalContext(context.Background(),
-		WithReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
-
 	t.Run("CombineTwoCaveats_AND_Logic", func(t *testing.T) {
-		t.Parallel()
+		ctx := NewTestContext(t)
 
 		// Left side path with caveat
 		leftPath := MustPathFromString("document:doc1#team@team:team1")
@@ -343,7 +253,7 @@ func TestIntersectionArrowIteratorCaveatCombination(t *testing.T) {
 	})
 
 	t.Run("LeftCaveat_Right_NoCaveat", func(t *testing.T) {
-		t.Parallel()
+		ctx := NewTestContext(t)
 
 		// Left side path with caveat
 		leftPath := MustPathFromString("document:doc1#team@team:team1")
@@ -388,7 +298,7 @@ func TestIntersectionArrowIteratorCaveatCombination(t *testing.T) {
 	})
 
 	t.Run("MultiplePaths_CombineCaveats_AND_Logic", func(t *testing.T) {
-		t.Parallel()
+		ctx := NewTestContext(t)
 
 		// Left side: document has multiple teams, each with different caveats
 		leftPath1 := MustPathFromString("document:doc1#team@team:team1")
@@ -482,8 +392,6 @@ func TestIntersectionArrowIteratorCaveatCombination(t *testing.T) {
 }
 
 func TestIntersectionArrowIteratorClone(t *testing.T) {
-	t.Parallel()
-
 	require := require.New(t)
 
 	// Create test paths
@@ -503,17 +411,7 @@ func TestIntersectionArrowIteratorClone(t *testing.T) {
 	require.Equal(originalExplain.Info, clonedExplain.Info)
 	require.Len(clonedExplain.SubExplain, len(originalExplain.SubExplain))
 
-	// Create test context
-	ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
-	require.NoError(err)
-
-	revision, err := ds.ReadWriteTx(context.Background(), func(ctx context.Context, tx datastore.ReadWriteTransaction) error {
-		return nil
-	})
-	require.NoError(err)
-
-	ctx := NewLocalContext(context.Background(),
-		WithReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
+	ctx := NewTestContext(t)
 
 	// Test that both iterators produce the same results
 	resources := []Object{NewObject("document", "doc1")}
@@ -535,8 +433,6 @@ func TestIntersectionArrowIteratorClone(t *testing.T) {
 }
 
 func TestIntersectionArrowIteratorExplain(t *testing.T) {
-	t.Parallel()
-
 	require := require.New(t)
 
 	leftPath := MustPathFromString("document:doc1#team@team:team1")
@@ -556,15 +452,13 @@ func TestIntersectionArrowIteratorExplain(t *testing.T) {
 }
 
 func TestIntersectionArrowIteratorIterSubjects(t *testing.T) {
-	t.Parallel()
-
 	require := require.New(t)
 
 	leftIter := NewFixedIterator()
 	rightIter := NewFixedIterator()
 	intersectionArrow := NewIntersectionArrowIterator(leftIter, rightIter)
 
-	ctx := NewLocalContext(context.Background())
+	ctx := NewTestContext(t)
 
 	// Test with empty iterators - should return empty
 	pathSeq, err := ctx.IterSubjects(intersectionArrow, NewObject("document", "doc1"), NoObjectFilter())
@@ -577,15 +471,13 @@ func TestIntersectionArrowIteratorIterSubjects(t *testing.T) {
 }
 
 func TestIntersectionArrowIteratorIterResources(t *testing.T) {
-	t.Parallel()
-
 	require := require.New(t)
 
 	leftIter := NewFixedIterator()
 	rightIter := NewFixedIterator()
 	intersectionArrow := NewIntersectionArrowIterator(leftIter, rightIter)
 
-	ctx := NewLocalContext(context.Background())
+	ctx := NewTestContext(t)
 
 	// Test with empty iterators - should return empty
 	pathSeq, err := ctx.IterResources(intersectionArrow, NewObject("user", "alice").WithEllipses(), NoObjectFilter())
@@ -598,20 +490,13 @@ func TestIntersectionArrowIteratorIterResources(t *testing.T) {
 }
 
 func TestIntersectionArrowIterSubjects(t *testing.T) {
-	t.Parallel()
-
-	ctx := &Context{
-		Context:  t.Context(),
-		Executor: LocalExecutor{},
-	}
-
 	t.Run("AllLeftSubjectsSatisfyRight", func(t *testing.T) {
-		t.Parallel()
 		require := require.New(t)
+		ctx := NewTestContext(t)
 
 		// Left: doc1 -> folder1, folder2
 		// Right: folder1 -> alice, folder2 -> alice
-		// All left subjects (folder1, folder2) have alice on right, so result is alice
+		// All left subjects (folder1, folder2) map to alice, so result is alice (deduped to 1)
 		leftPath1 := MustPathFromString("document:doc1#parent@folder:folder1")
 		leftPath2 := MustPathFromString("document:doc1#parent@folder:folder2")
 		rightPath1 := MustPathFromString("folder:folder1#viewer@user:alice")
@@ -628,15 +513,15 @@ func TestIntersectionArrowIterSubjects(t *testing.T) {
 		paths, err := CollectAll(pathSeq)
 		require.NoError(err)
 
-		// Should return alice twice (once for each left path)
-		require.Len(paths, 2, "Should return alice for each left subject")
+		// Should return alice once — the two paths share the same endpoints so
+		// top-level deduplication merges them into a single result.
+		require.Len(paths, 1, "Should return alice once after deduplication")
 		require.Equal("alice", paths[0].Subject.ObjectID)
-		require.Equal("alice", paths[1].Subject.ObjectID)
 	})
 
 	t.Run("NotAllLeftSubjectsSatisfyRight", func(t *testing.T) {
-		t.Parallel()
 		require := require.New(t)
+		ctx := NewTestContext(t)
 
 		// Left: doc1 -> folder1, folder2
 		// Right: folder1 -> alice, folder2 has nothing
@@ -660,8 +545,8 @@ func TestIntersectionArrowIterSubjects(t *testing.T) {
 	})
 
 	t.Run("EmptyLeftIterator", func(t *testing.T) {
-		t.Parallel()
 		require := require.New(t)
+		ctx := NewTestContext(t)
 
 		// No left paths
 		leftIter := NewFixedIterator()
@@ -680,12 +565,12 @@ func TestIntersectionArrowIterSubjects(t *testing.T) {
 	})
 
 	t.Run("MultipleRightSubjects", func(t *testing.T) {
-		t.Parallel()
 		require := require.New(t)
+		ctx := NewTestContext(t)
 
 		// Left: doc1 -> folder1
 		// Right: folder1 -> alice, folder1 -> bob
-		// Should return both alice and bob
+		// Should return both alice and bob (distinct endpoints, no dedup)
 		leftPath := MustPathFromString("document:doc1#parent@folder:folder1")
 		rightPath1 := MustPathFromString("folder:folder1#viewer@user:alice")
 		rightPath2 := MustPathFromString("folder:folder1#viewer@user:bob")
@@ -712,8 +597,8 @@ func TestIntersectionArrowIterSubjects(t *testing.T) {
 	})
 
 	t.Run("CaveatCombination", func(t *testing.T) {
-		t.Parallel()
 		require := require.New(t)
+		ctx := NewTestContext(t)
 
 		// Left with caveat, right with caveat
 		leftPath := MustPathFromString("document:doc1#parent@folder:folder1")
@@ -753,11 +638,12 @@ func TestIntersectionArrowIterSubjects(t *testing.T) {
 	})
 
 	t.Run("ThreeLeftSubjectsAllSatisfy", func(t *testing.T) {
-		t.Parallel()
 		require := require.New(t)
+		ctx := NewTestContext(t)
 
 		// Left: doc1 -> folder1, folder2, folder3
 		// Right: folder1 -> alice, folder2 -> alice, folder3 -> alice
+		// All three paths resolve to alice (same endpoints), so dedup yields 1 result.
 		leftPath1 := MustPathFromString("document:doc1#parent@folder:folder1")
 		leftPath2 := MustPathFromString("document:doc1#parent@folder:folder2")
 		leftPath3 := MustPathFromString("document:doc1#parent@folder:folder3")
@@ -777,18 +663,14 @@ func TestIntersectionArrowIterSubjects(t *testing.T) {
 		paths, err := CollectAll(pathSeq)
 		require.NoError(err)
 
-		require.Len(paths, 3, "Should return alice three times")
-		for _, path := range paths {
-			require.Equal("alice", path.Subject.ObjectID)
-		}
+		// All three paths have the same endpoints (doc1 -> alice), so dedup collapses to 1.
+		require.Len(paths, 1, "Should return alice once after deduplication")
+		require.Equal("alice", paths[0].Subject.ObjectID)
 	})
 }
 
 func TestIntersectionArrow_Types(t *testing.T) {
-	t.Parallel()
-
 	t.Run("ResourceType", func(t *testing.T) {
-		t.Parallel()
 		require := require.New(t)
 
 		// Create left and right iterators
@@ -807,7 +689,6 @@ func TestIntersectionArrow_Types(t *testing.T) {
 	})
 
 	t.Run("SubjectTypes", func(t *testing.T) {
-		t.Parallel()
 		require := require.New(t)
 
 		// Create left and right iterators
