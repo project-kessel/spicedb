@@ -1,22 +1,15 @@
 package query
 
 import (
-	"context"
 	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/require"
-
-	"github.com/authzed/spicedb/internal/datastore/memdb"
-	"github.com/authzed/spicedb/pkg/datalayer"
-	"github.com/authzed/spicedb/pkg/datastore"
 )
 
 // TestRecursiveCheckStrategies verifies that all three CheckImpl strategies
 // produce equivalent results for the same input.
 func TestRecursiveCheckStrategies(t *testing.T) {
-	t.Parallel()
-
 	// Create test paths for a simple recursive structure
 	// These paths represent: folder1 -> folder2 -> user:alice
 	paths := []Path{
@@ -39,9 +32,6 @@ func TestRecursiveCheckStrategies(t *testing.T) {
 	sentinel := NewRecursiveSentinelIterator("folder", "view", false)
 	union := NewUnionIterator(fixed, sentinel)
 
-	ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
-	require.NoError(t, err)
-
 	// Test all three strategies
 	strategies := []struct {
 		name     string
@@ -54,13 +44,10 @@ func TestRecursiveCheckStrategies(t *testing.T) {
 
 	for _, tc := range strategies {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
 			// Create a separate Context for each parallel subtest to avoid races.
 			// Contexts contain mutable state (e.g., recursiveFrontierCollectors)
 			// that must not be shared across concurrent goroutines.
-			queryCtx := NewLocalContext(context.Background(),
-				WithReader(datalayer.NewDataLayer(ds).SnapshotReader(datastore.NoRevision)))
+			queryCtx := NewTestContext(t)
 
 			// Create recursive iterator with the specific strategy
 			recursive := NewRecursiveIterator(union, "folder", "view")
@@ -100,17 +87,11 @@ func TestRecursiveCheckStrategies(t *testing.T) {
 
 // TestRecursiveCheckStrategiesEmpty verifies that all strategies handle empty results correctly
 func TestRecursiveCheckStrategiesEmpty(t *testing.T) {
-	t.Parallel()
-
-	ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
-	require.NoError(t, err)
-
 	// Build a simple iterator with no paths
 	emptyFixed := NewEmptyFixedIterator()
 	recursive := NewRecursiveIterator(emptyFixed, "folder", "view")
 
-	queryCtx := NewLocalContext(context.Background(),
-		WithReader(datalayer.NewDataLayer(ds).SnapshotReader(datastore.NoRevision)))
+	queryCtx := NewTestContext(t)
 
 	strategies := []recursiveCheckStrategy{
 		recursiveCheckIterSubjects,
@@ -135,8 +116,6 @@ func TestRecursiveCheckStrategiesEmpty(t *testing.T) {
 
 // TestRecursiveCheckStrategiesMultipleResources verifies strategies handle multiple resources correctly
 func TestRecursiveCheckStrategiesMultipleResources(t *testing.T) {
-	t.Parallel()
-
 	// Create test paths for multiple resources
 	paths := []Path{
 		{
@@ -160,11 +139,7 @@ func TestRecursiveCheckStrategiesMultipleResources(t *testing.T) {
 	sentinel := NewRecursiveSentinelIterator("folder", "view", false)
 	union := NewUnionIterator(fixed, sentinel)
 
-	ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
-	require.NoError(t, err)
-
-	queryCtx := NewLocalContext(context.Background(),
-		WithReader(datalayer.NewDataLayer(ds).SnapshotReader(datastore.NoRevision)))
+	queryCtx := NewTestContext(t)
 
 	strategies := []recursiveCheckStrategy{
 		recursiveCheckIterSubjects,

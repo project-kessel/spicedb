@@ -7,7 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	grpcvalidate "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/validator"
+	"buf.build/go/protovalidate"
+	grpcvalidate "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/protovalidate"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.opentelemetry.io/otel/trace"
@@ -19,6 +20,7 @@ import (
 	"github.com/authzed/spicedb/internal/dispatch"
 	"github.com/authzed/spicedb/internal/middleware"
 	"github.com/authzed/spicedb/internal/middleware/handwrittenvalidation"
+	"github.com/authzed/spicedb/internal/middleware/interceptorwrapper"
 	"github.com/authzed/spicedb/internal/middleware/perfinsights"
 	"github.com/authzed/spicedb/internal/middleware/streamtimeout"
 	"github.com/authzed/spicedb/internal/middleware/usagemetrics"
@@ -116,14 +118,26 @@ type PermissionsServerConfig struct {
 	// EnableExperimentalLookupResources3 is used to enable LookupResources v3 for testing.
 	EnableExperimentalLookupResources3 bool // TODO: remove when LookupResources v3 is fully enabled
 
-	// ExperimentalQueryPlan enables the experimental query plan for API calls.
-	ExperimentalQueryPlan bool
+	// ExperimentalQueryPlan configures which API operations use the experimental query plan.
+	ExperimentalQueryPlan ExperimentalQueryPlanConfig
+}
+
+// ExperimentalQueryPlanConfig controls which API operations are routed through the
+// experimental query plan engine instead of the standard dispatcher.
+type ExperimentalQueryPlanConfig struct {
+	// Check enables the query plan for CheckPermission calls.
+	Check bool
+	// LookupResources enables the query plan for LookupResources calls.
+	LookupResources bool
+	// LookupSubjects enables the query plan for LookupSubjects calls.
+	LookupSubjects bool
 }
 
 // NewPermissionsServer creates a PermissionsServiceServer instance.
 func NewPermissionsServer(
 	dispatch dispatch.Dispatcher,
 	config PermissionsServerConfig,
+	validator protovalidate.Validator,
 ) v1.PermissionsServiceServer {
 	configWithDefaults := PermissionsServerConfig{
 		MaxPreconditionsCount:              defaultIfZero(config.MaxPreconditionsCount, 1000),
@@ -145,19 +159,18 @@ func NewPermissionsServer(
 		EnableExperimentalLookupResources3: config.EnableExperimentalLookupResources3,
 		ExperimentalQueryPlan:              config.ExperimentalQueryPlan,
 	}
-
 	return &permissionServer{
 		dispatch: dispatch,
 		config:   configWithDefaults,
 		WithServiceSpecificInterceptors: shared.WithServiceSpecificInterceptors{
 			Unary: middleware.ChainUnaryServer(
-				grpcvalidate.UnaryServerInterceptor(),
+				interceptorwrapper.WrapUnaryServerInterceptorWithSpans(grpcvalidate.UnaryServerInterceptor(validator), "protovalidate"),
 				handwrittenvalidation.UnaryServerInterceptor,
 				usagemetrics.UnaryServerInterceptor(),
 				perfinsights.UnaryServerInterceptor(configWithDefaults.PerformanceInsightMetricsEnabled),
 			),
 			Stream: middleware.ChainStreamServer(
-				grpcvalidate.StreamServerInterceptor(),
+				grpcvalidate.StreamServerInterceptor(validator),
 				handwrittenvalidation.StreamServerInterceptor,
 				usagemetrics.StreamServerInterceptor(),
 				streamtimeout.MustStreamServerInterceptor(configWithDefaults.StreamingAPITimeout),
@@ -172,6 +185,7 @@ func NewPermissionsServer(
 			dispatchChunkSize:    configWithDefaults.DispatchChunkSize,
 			caveatTypeSet:        configWithDefaults.CaveatTypeSet,
 		},
+		queryPlanMetadata: NewQueryPlanMetadata(),
 	}
 }
 
@@ -182,7 +196,8 @@ type permissionServer struct {
 	dispatch dispatch.Dispatcher
 	config   PermissionsServerConfig
 
-	bulkChecker *bulkChecker
+	bulkChecker       *bulkChecker
+	queryPlanMetadata *QueryPlanMetadata
 }
 
 func (ps *permissionServer) ReadRelationships(req *v1.ReadRelationshipsRequest, resp v1.PermissionsService_ReadRelationshipsServer) error {
@@ -201,7 +216,7 @@ func (ps *permissionServer) ReadRelationships(req *v1.ReadRelationshipsRequest, 
 	}
 
 	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision)
-	sr, err := dl.ReadSchema()
+	sr, err := dl.ReadSchema(ctx)
 	if err != nil {
 		return ps.rewriteError(ctx, err)
 	}
@@ -385,7 +400,7 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 
 	revision, err := dl.ReadWriteTx(ctx, func(ctx context.Context, rwt datalayer.ReadWriteTransaction) error {
 		// Extract schema reader for validation.
-		sr, err := rwt.ReadSchema()
+		sr, err := rwt.ReadSchema(ctx)
 		if err != nil {
 			return err
 		}
@@ -492,7 +507,7 @@ func (ps *permissionServer) DeleteRelationships(ctx context.Context, req *v1.Del
 	var deletedRelationshipCount uint64
 	revision, err := dl.ReadWriteTx(ctx, func(ctx context.Context, rwt datalayer.ReadWriteTransaction) error {
 		// Extract schema reader for validation.
-		sr, err := rwt.ReadSchema()
+		sr, err := rwt.ReadSchema(ctx)
 		if err != nil {
 			return err
 		}

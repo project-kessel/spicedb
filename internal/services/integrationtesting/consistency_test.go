@@ -45,20 +45,24 @@ const testTimedelta = 1 * time.Second
 // both real-world schemas, as well as the full set of hand-constructed corner
 // cases so that the system can be fully exercised.
 func TestConsistency(t *testing.T) {
-	t.Parallel()
-
 	// List all the defined consistency test files.
 	consistencyTestFiles, err := consistencytestutil.ListTestConfigs()
 	require.NoError(t, err)
 
 	for _, filePath := range consistencyTestFiles {
 		t.Run(path.Base(filePath), func(t *testing.T) {
-			t.Parallel()
 			for _, dispatcherKind := range []string{"local", "caching"} {
 				t.Run(dispatcherKind, func(t *testing.T) {
+					// This t.Parallel, and the one inside runConsistencyTestSuiteForFile, actually help our parallelism.
+					// This is because there is an unbounded, and combinatoric, number of actual subtests we are going to run for each file
+					// depending on the data (since we validate all subjects and all resources and all reachability)
+					//
+					// Thus, running each of those in parallel, once we've built the datastore for each, is useful.
+					// But the files are done in serial.
+					t.Parallel()
+
 					for _, chunkSize := range []uint16{5, 10} {
 						t.Run(fmt.Sprintf("chunk-size-%d", chunkSize), func(t *testing.T) {
-							t.Parallel()
 							runConsistencyTestSuiteForFile(t, filePath, dispatcherKind == "caching", chunkSize)
 						})
 					}
@@ -235,6 +239,8 @@ func TestConsistency(t *testing.T) {
 }
 
 func runConsistencyTestSuiteForFile(t *testing.T, filePath string, useCachingDispatcher bool, chunkSize uint16) {
+	t.Parallel()
+
 	options := []server.ConfigOption{
 		server.WithDispatchChunkSize(chunkSize),
 		server.WithEnableExperimentalLookupResources(true),

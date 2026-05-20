@@ -14,8 +14,6 @@ import (
 )
 
 func TestCheck(t *testing.T) {
-	t.Parallel()
-
 	require := require.New(t)
 	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
@@ -39,7 +37,7 @@ func TestCheck(t *testing.T) {
 	it := NewIntersectionIterator(vande, edit)
 
 	ctx := NewLocalContext(t.Context(),
-		WithReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
+		WithRevisionedReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
 
 	relSeq, err := ctx.Check(it, NewObjects("document", "specialplan"), NewObject("user", "multiroleguy").WithEllipses())
 	require.NoError(err)
@@ -49,8 +47,6 @@ func TestCheck(t *testing.T) {
 }
 
 func TestBaseIterSubjects(t *testing.T) {
-	t.Parallel()
-
 	require := require.New(t)
 	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
@@ -67,7 +63,7 @@ func TestBaseIterSubjects(t *testing.T) {
 	vande := NewDatastoreIterator(vandeRel.BaseRelations()[0])
 
 	ctx := NewLocalContext(t.Context(),
-		WithReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
+		WithRevisionedReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
 
 	relSeq, err := ctx.IterSubjects(vande, NewObject("document", "specialplan"), NoObjectFilter())
 	require.NoError(err)
@@ -77,8 +73,6 @@ func TestBaseIterSubjects(t *testing.T) {
 }
 
 func TestCheckArrow(t *testing.T) {
-	t.Parallel()
-
 	require := require.New(t)
 	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
@@ -100,7 +94,7 @@ func TestCheckArrow(t *testing.T) {
 	it := NewArrowIterator(folders, view)
 
 	ctx := NewLocalContext(t.Context(),
-		WithReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
+		WithRevisionedReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
 
 	relSeq, err := ctx.Check(it, NewObjects("document", "companyplan"), NewObject("user", "legal").WithEllipses())
 	require.NoError(err)

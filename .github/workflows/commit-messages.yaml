@@ -9,10 +9,13 @@ on: # yamllint disable-line rule:truthy
       - "reopened"
 permissions:
   contents: "read"
+concurrency:
+  group: "spicedb-commit-message-${{ github.event.pull_request.number }}"
+  cancel-in-progress: true
 jobs:
   conventional-commits:
     name: "Lint Commit Messages"
-    runs-on: "depot-ubuntu-24.04-small"
+    runs-on: "ubuntu-latest"
     if: false
     steps:
       - uses: "actions/checkout@v6"

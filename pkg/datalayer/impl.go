@@ -85,7 +85,7 @@ type revisionedReader struct {
 	reader datastore.Reader
 }
 
-func (r *revisionedReader) ReadSchema() (SchemaReader, error) {
+func (r *revisionedReader) ReadSchema(ctx context.Context) (SchemaReader, error) {
 	return &legacySchemaReaderAdapter{legacyReader: r.reader}, nil
 }
 
@@ -110,7 +110,7 @@ type readWriteTransaction struct {
 	rwt datastore.ReadWriteTransaction
 }
 
-func (t *readWriteTransaction) ReadSchema() (SchemaReader, error) {
+func (t *readWriteTransaction) ReadSchema(_ context.Context) (SchemaReader, error) {
 	return &legacySchemaReaderAdapter{legacyReader: t.rwt}, nil
 }
 
@@ -143,7 +143,7 @@ func (t *readWriteTransaction) BulkLoad(ctx context.Context, iter datastore.Bulk
 }
 
 func (t *readWriteTransaction) WriteSchema(ctx context.Context, definitions []datastore.SchemaDefinition, schemaString string, caveatTypeSet *caveattypes.TypeSet) error {
-	return writeSchemaViaLegacy(ctx, t.rwt, t.rwt, definitions, schemaString, caveatTypeSet)
+	return writeSchemaViaLegacy(ctx, t.rwt, t.rwt, definitions)
 }
 
 func (t *readWriteTransaction) LegacySchemaWriter() LegacySchemaWriter {
