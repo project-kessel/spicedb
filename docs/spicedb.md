@@ -115,11 +115,8 @@ spicedb datastore gc [flags]
       --datastore-relationship-integrity-expired-keys stringArray             config for expired keys for relationship integrity checks
       --datastore-revision-quantization-interval duration                     boundary interval to which to round the quantized revision (default 5s)
       --datastore-revision-quantization-max-staleness-percent float           float percentage (where 1 = 100%) of the revision quantization interval where we may opt to select a stale revision for performance reasons. Defaults to 0.1 (representing 10%) (default 0.1)
-      --datastore-spanner-credentials string                                  path to service account key credentials file with access to the cloud spanner instance (omit to use application default credentials)
       --datastore-spanner-emulator-host string                                URI of spanner emulator instance used for development and testing (e.g. localhost:9010)
-      --datastore-spanner-max-sessions uint                                   maximum number of sessions across all Spanner gRPC connections the client can have at a given time (default 400)
       --datastore-spanner-metrics string                                      configure the metrics that are emitted by the Spanner datastore ("none", "native", "otel") (default "otel")
-      --datastore-spanner-min-sessions uint                                   minimum number of sessions across all Spanner gRPC connections the client can have at a given time (default 100)
       --datastore-tx-overlap-key string                                       static key to touch when writing to ensure transactions overlap (only used if --datastore-tx-overlap-strategy=static is set; CockroachDB driver only) (default "key")
       --datastore-tx-overlap-strategy string                                  strategy to generate transaction overlap keys ("request", "prefix", "static", "insecure") (CockroachDB driver only - see https://spicedb.dev/d/crdb-overlap for details) (default "static")
       --datastore-watch-buffer-length uint16                                  how large the watch buffer should be before blocking (default 1024)
@@ -281,11 +278,8 @@ spicedb datastore repair [flags]
       --datastore-relationship-integrity-expired-keys stringArray             config for expired keys for relationship integrity checks
       --datastore-revision-quantization-interval duration                     boundary interval to which to round the quantized revision (default 5s)
       --datastore-revision-quantization-max-staleness-percent float           float percentage (where 1 = 100%) of the revision quantization interval where we may opt to select a stale revision for performance reasons. Defaults to 0.1 (representing 10%) (default 0.1)
-      --datastore-spanner-credentials string                                  path to service account key credentials file with access to the cloud spanner instance (omit to use application default credentials)
       --datastore-spanner-emulator-host string                                URI of spanner emulator instance used for development and testing (e.g. localhost:9010)
-      --datastore-spanner-max-sessions uint                                   maximum number of sessions across all Spanner gRPC connections the client can have at a given time (default 400)
       --datastore-spanner-metrics string                                      configure the metrics that are emitted by the Spanner datastore ("none", "native", "otel") (default "otel")
-      --datastore-spanner-min-sessions uint                                   minimum number of sessions across all Spanner gRPC connections the client can have at a given time (default 100)
       --datastore-tx-overlap-key string                                       static key to touch when writing to ensure transactions overlap (only used if --datastore-tx-overlap-strategy=static is set; CockroachDB driver only) (default "key")
       --datastore-tx-overlap-strategy string                                  strategy to generate transaction overlap keys ("request", "prefix", "static", "insecure") (CockroachDB driver only - see https://spicedb.dev/d/crdb-overlap for details) (default "static")
       --datastore-watch-buffer-length uint16                                  how large the watch buffer should be before blocking (default 1024)
@@ -469,11 +463,8 @@ spicedb serve [flags]
       --datastore-revision-quantization-interval duration                               boundary interval to which to round the quantized revision (default 5s)
       --datastore-revision-quantization-max-staleness-percent float                     float percentage (where 1 = 100%) of the revision quantization interval where we may opt to select a stale revision for performance reasons. Defaults to 0.1 (representing 10%) (default 0.1)
       --datastore-schema-watch-heartbeat duration                                       heartbeat time on the schema watch in the datastore (if supported). 0 means to default to the datastore's minimum. (default 1s)
-      --datastore-spanner-credentials string                                            path to service account key credentials file with access to the cloud spanner instance (omit to use application default credentials)
       --datastore-spanner-emulator-host string                                          URI of spanner emulator instance used for development and testing (e.g. localhost:9010)
-      --datastore-spanner-max-sessions uint                                             maximum number of sessions across all Spanner gRPC connections the client can have at a given time (default 400)
       --datastore-spanner-metrics string                                                configure the metrics that are emitted by the Spanner datastore ("none", "native", "otel") (default "otel")
-      --datastore-spanner-min-sessions uint                                             minimum number of sessions across all Spanner gRPC connections the client can have at a given time (default 100)
       --datastore-tx-overlap-key string                                                 static key to touch when writing to ensure transactions overlap (only used if --datastore-tx-overlap-strategy=static is set; CockroachDB driver only) (default "key")
       --datastore-tx-overlap-strategy string                                            strategy to generate transaction overlap keys ("request", "prefix", "static", "insecure") (CockroachDB driver only - see https://spicedb.dev/d/crdb-overlap for details) (default "static")
       --datastore-watch-buffer-length uint16                                            how large the watch buffer should be before blocking (default 1024)
@@ -516,7 +507,7 @@ spicedb serve [flags]
       --experimental-dispatch-secondary-upstream-addrs stringToString                   secondary upstream addresses for dispatches, each with a name (default [])
       --experimental-dispatch-secondary-upstream-exprs stringToString                   map from request type to its associated CEL expression, which returns the secondary upstream(s) to be used for the request (default [])
       --experimental-lookup-resources-version lr3                                       if non-empty, the version of the experimental lookup resources API to use: lr3 or empty
-      --experimental-query-plan check                                                   if non-empty, the version of the experimental query plan to use: check or empty
+      --experimental-query-plan check                                                   comma-separated list of operations to route through the experimental query plan engine; valid values are check, `lr` (LookupResources), and `ls` (LookupSubjects)
       --grpc-addr string                                                                address to listen on to serve gRPC (default ":50051")
       --grpc-enabled                                                                    enable gRPC gRPC server (default true)
       --grpc-log-requests-enabled                                                       enable logging of API request payloads

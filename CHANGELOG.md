@@ -5,6 +5,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 ### Added
+- Added support for YAML-based validation files in DevContext (https://github.com/authzed/spicedb/pull/3024)
+- Added support for YAML-based validation files in the Language Server (https://github.com/authzed/spicedb/pull/3024)
+- Enable statistics-based optimizations when `--experimental-query-plan` is enabled. (https://github.com/authzed/spicedb/pull/3052)
+- Added missing implementations of cursoring for LookupResource, LookupSubjects and ReadRelationships calls in FDW (https://github.com/authzed/spicedb/pull/3016)
+- Add new gRPC Dispatch API and messages for dispatching query plans (https://github.com/authzed/spicedb/pull/3072)
+- Support new `withDebug` flag in LookupResources calls to identify cycles (https://github.com/authzed/spicedb/pull/3070)
+
+### Changed
+- Removed MySQL metrics prefixed with `go_sql_stats_connections_*` in favor of those prefixed with `go_sql_*` (https://github.com/authzed/spicedb/pull/2980)
+- Removed support for Spanner flag value `--datastore-spanner-metrics=deprecated-prometheus`; please use values `otel` or `native` (https://github.com/authzed/spicedb/pull/2980)
+- Reduced binary size (https://github.com/authzed/spicedb/pull/3005)
+- Reduce memory consumption of Watch API (https://github.com/authzed/spicedb/pull/2578)
+
+### Fixed
+- Improved error message when expiration is written before caveat in a relationship (https://github.com/authzed/spicedb/pull/3071)
+- On a Postgres setup with read replicas, some requests may silently swallow errors of sort "revision not found in replica" (https://github.com/authzed/spicedb/pull/2979)
+- Use cgroup-aware memory detection for cache and watch buffer sizing in containerized environments (https://github.com/authzed/spicedb/pull/3000)
+- Upgraded the spanner client, which changed the internal implementation to not use a session pool. This means that the `--datastore-spanner-max-sessions` and `--datastore-spanner-min-sessions` flags are now deprecated and no-op. We also strongly recommend using [Application Default Credentials](https://docs.cloud.google.com/docs/authentication/client-libraries#adc) in favor of a credentials file. (https://github.com/authzed/spicedb/pull/3038)
+- Query Planner: error `"ERROR: index \"pk_relation_tuple\" cannot be used for this query (SQLSTATE 42809)"` returned when using wildcards (https://github.com/authzed/spicedb/pull/3039)
+- Providing one of (`--grpc-tls-cert-path`, `--grpc-tls-key-path`) but not the other is now considered an error state, as both are necessary if you want to use TLS.
+- In a caveat context that uses nested lists of lists, the hashes generated for cache keys could collide because of an issue with the serialization logic. The serialization now uses deterministic protobuf serialization which avoids this issue (https://github.com/authzed/spicedb/pull/3065)
+
+## [1.51.1] - 2026-04-14
+### Fixed
+- [Moderate severity CVE-2026-40091](https://github.com/authzed/spicedb/security/advisories/GHSA-jf4f-rr2c-9m58)
+
+## [1.51.0] - 2026-03-24 [YANKED]
+⚠️ **Warning**: Due to [CVE-2026-40091](https://github.com/authzed/spicedb/security/advisories/GHSA-jf4f-rr2c-9m58), please use v1.51.1.
+
+### Changed
+- Updated DevContext and LSP to support composable schemas (https://github.com/authzed/spicedb/pull/2965)
+
+### Fixed
+- Fix duplicate diagnostics in LSP server when VS Code pulls diagnostics (https://github.com/authzed/spicedb/pull/2977)
+- In DevContext's schema position mapper, only the first occurrence of a caveat parameter could be found (https://github.com/authzed/spicedb/pull/2972)
+- Fix increase in memory usage brought in v1.50.0 due to replacing `protoc-gen-validate` with `protovalidate` (https://github.com/authzed/spicedb/pull/2984)
+
+## [1.50.0] - 2026-03-19 [YANKED]
+⚠️ **Warning**: Due to an increase in memory usage and [CVE-2026-40091](https://github.com/authzed/spicedb/security/advisories/GHSA-jf4f-rr2c-9m58), please use v1.51.1.
+
+### Added
+- New `pkg/query/queryopt` package for building optimizations into the query plan
+
+### Changed
+- Updated CI so that Postgres tests run against v18 which is GA and not against v13 which is EOL (https://github.com/authzed/spicedb/pull/2926)
+- Added tracing to request validation (https://github.com/authzed/spicedb/pull/2950)
+- Query Planner optimization: in Check requests, prune branches that cannot lead to the subject type specified (https://github.com/authzed/spicedb/pull/2968)
+- Added `lr` and `ls` to `--experimental-query-plan` for those endpoints, as well as in-memory statistics for optimizing the plans (https://github.com/authzed/spicedb/pull/2929)
+- Use `protovalidate` instead of `protoc-gen-validate` for request validation (https://github.com/authzed/spicedb/pull/2863, https://github.com/authzed/spicedb/pull/2596, https://github.com/authzed/spicedb/pull/2959)
+
+### Fixed
+- Regression introduced in 1.49.2: missing spans in ReadSchema calls (https://github.com/authzed/spicedb/pull/2947)
+- Long standing bug in the way postgres revisions were being compared. Sometimes revisions that were actually overlapping were erroneously being ordered. (https://github.com/authzed/spicedb/pull/2958)
+- Prevent panics in schema compiler, which can reproduce if using the VSCode extension or zed (https://github.com/authzed/spicedb/pull/2971)
+
+## [1.49.2] - 2026-03-02 [YANKED]
+⚠️ **Warning**: Due to [CVE-2026-40091](https://github.com/authzed/spicedb/security/advisories/GHSA-jf4f-rr2c-9m58), please use v1.51.1.
+
+### Added
 - feat(query planner): add recursive direction strategies, and fix IS BFS (https://github.com/authzed/spicedb/pull/2891)
 - feat(query planner): introduce query plan outlines and canonicalization (https://github.com/authzed/spicedb/pull/2901)
 - Schema v2: introduces support for PostOrder traversal in walk.go (https://github.com/authzed/spicedb/pull/2761) and improve PostOrder walker cycle detection (https://github.com/authzed/spicedb/pull/2902)
@@ -13,15 +72,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Begin deprecation of library "github.com/dlmiddlecote/sqlstats" (https://github.com/authzed/spicedb/pull/2904).
   NOTE: in a future release, MySQL metrics will change.
 - Add support for imports and partials to the schemadsl package that drives the LSP and development server (https://github.com/authzed/spicedb/pull/2919).
-- `DatastoreTester.New` now takes a `testing.TB` as its first argument, allowing per-test cleanup in datastore test suites (https://github.com/authzed/spicedb/pull/2925).
-- Added support for CRDB 26.1 by fixing how version information is read from the cluster
+- Added support for CRDB 26.1 by fixing how version information is read from the cluster (https://github.com/authzed/spicedb/pull/2907).
 
 ### Fixed
 - enforce graceful shutdown on serve and serve-testing (https://github.com/authzed/spicedb/pull/2888)
 - Spanner metrics regression (https://github.com/authzed/spicedb/pull/2329)
 - improve streaming dispatch logging and observability (https://github.com/authzed/spicedb/pull/2915)
 
-## [1.49.1] - 2026-02-06
+## [1.49.1] - 2026-02-06 [YANKED]
+⚠️ **Warning**: Due to [CVE-2026-40091](https://github.com/authzed/spicedb/security/advisories/GHSA-jf4f-rr2c-9m58), please use v1.51.1.
+
 ### Added
 - chore: add metrics and tests to all cache implementations by @miparnisari in https://github.com/authzed/spicedb/pull/2874
 - feat(query planner): finish LR consistency tests with the fix to the recursive iterator by @barakmich in https://github.com/authzed/spicedb/pull/2881
@@ -40,7 +100,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Security
 - A fix for a [low-severity GHSA](https://github.com/authzed/spicedb/security/advisories/GHSA-vhvq-fv9f-wh4q) in [#2878](https://github.com/authzed/spicedb/issues/2878)
 
-## [1.49.0] - 2026-02-03
+## [1.49.0] - 2026-02-03 [YANKED]
+⚠️ **Warning**: Due to [CVE-2026-40091](https://github.com/authzed/spicedb/security/advisories/GHSA-jf4f-rr2c-9m58), please use v1.51.1.
+
 ### Added
 - Support for `self` keyword added to permissions.
   Previously, if you wanted to represent something like "a user should be able to view themselves," this required adding a relation to the schema and then writing a relation from the user to itself. We've added support for a `self` keyword in permissions that represents this directly, which reduces storage requirements, removes the need for a trip to the database, and removes a relationship that needs to be synced. For more information, see [the Docs](https://authzed.com/docs/spicedb/concepts/schema#the-self-keyword) and the [PR](https://github.com/authzed/spicedb/pull/2785)
@@ -215,7 +277,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.44.2] - 2025-06-05
 ### Security
-- CVE-2025-49011 fix: Checks involving relations with caveats can result in no permission when permission is expected by @miparnisari
+- [CVE-2025-49011](https://github.com/authzed/spicedb/security/advisories/GHSA-cwwm-hr97-qfxm) fix: Checks involving relations with caveats can result in no permission when permission is expected by @miparnisari
 
 ## [1.44.1] - 2025-06-05
 - Merge commit from fork
@@ -295,7 +357,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - pin dockerfile images
 - pin github actions
 - add GCI linter for better organization of imports
-- fix regression in [#2353] - add PR write permissions to labeler action
+- fix regression in [#2353](https://github.com/authzed/spicedb/pull/2353) - add PR write permissions to labeler action
 - tighten github workflow scopes
 - add security policy
 - Use golangci-lint v2
@@ -468,7 +530,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.41.0] - 2025-02-28
 ### Changed
-- follow ups to [#2252](https://github.com/authzed/spicedb/issues/2252)(https://github.com/authzed/spicedb/issues/2252)
+- follow ups to [#2252](https://github.com/authzed/spicedb/issues/2252)
 - Move nodeid default calculation to init to avoid race
 - add heartbeat leader election
 - make pg datastore continuously checkpoint using a revision heartbeat
@@ -577,7 +639,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Bump the go_modules group across 2 directories with 1 update
 - Update Go crypto to v0.31.0 due to a reported vuln in that lib
 - Update grpc health probe for crypto lib fix
-- Backport changes from [#2163](https://github.com/authzed/spicedb/issues/2163)(https://github.com/authzed/spicedb/issues/2163) into 1.39.0
+- Backport changes from [#2163](https://github.com/authzed/spicedb/issues/2163) into 1.39.0
 - Fix bulk export of relationships with caveats
 - Update grpc health probe for crypto lib fix
 - Update Go crypto to v0.31.0 due to a reported vuln in that lib
@@ -3527,9 +3589,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 - First release.
 
-[#2353]: https://github.com/authzed/spicedb/issues/2353
-
-[Unreleased]: https://github.com/authzed/spicedb/compare/v1.49.1...HEAD
+[Unreleased]: https://github.com/authzed/spicedb/compare/v1.51.1...HEAD
+[1.51.1]: https://github.com/authzed/spicedb/compare/v1.51.0...v1.51.1
+[1.51.0]: https://github.com/authzed/spicedb/compare/v1.50.0...v1.51.0
+[1.50.0]: https://github.com/authzed/spicedb/compare/v1.49.2...v1.50.0
+[1.49.2]: https://github.com/authzed/spicedb/compare/v1.49.1...v1.49.2
 [1.49.1]: https://github.com/authzed/spicedb/compare/v1.49.0...v1.49.1
 [1.49.0]: https://github.com/authzed/spicedb/compare/v1.48.0...v1.49.0
 [1.48.0]: https://github.com/authzed/spicedb/compare/v1.47.1...v1.48.0

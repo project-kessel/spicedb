@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
 ---
 name: "Lint"
 on: # yamllint disable-line rule:truthy
@@ -12,11 +13,14 @@ on: # yamllint disable-line rule:truthy
       - "checks_requested"
 permissions:
   contents: "read"
+concurrency:
+  group: "spicedb-lint-${{ github.event.pull_request.number }}"
+  cancel-in-progress: true
 jobs:
   go-license-check:
+    if: false
     name: "License Check"
     runs-on: "ubuntu-latest"
-    if: false
     steps:
       - uses: "actions/checkout@v6"
       - uses: "authzed/actions/setup-go@main"
@@ -26,27 +30,25 @@ jobs:
           ignore: "buf.build" # Has no license information
   ensure-docs-uptodate:
     name: "Ensure Docs are up to date"
-    runs-on: "depot-ubuntu-24.04-4"
-    if: false
+    runs-on: "ubuntu-latest"
     steps:
       - uses: "actions/checkout@v6"
       - uses: "authzed/actions/setup-go@main"
       - name: "Generate docs"
         run: "go run mage.go gen:docs"
-      - uses: "chainguard-dev/actions/nodiff@18e5e3427cf9d6bcfbefe60dca48e40292f000c5" # main
+      - uses: "chainguard-dev/actions/nodiff@71714a76c3df10b544595a2294c16649dc3472e5" # main
         with:
           path: ""
           fixup-command: "mage gen:docs"
   lint-everything:
     name: "Lint Everything"
-    runs-on: "depot-ubuntu-24.04-4"
-    if: false
+    runs-on: "ubuntu-latest"
     steps:
       - uses: "actions/checkout@v6"
       - uses: "authzed/actions/setup-go@main"
       - name: "Lint Everything"
         run: "go run mage.go lint:all"
-      - uses: "chainguard-dev/actions/nodiff@18e5e3427cf9d6bcfbefe60dca48e40292f000c5" # main
+      - uses: "chainguard-dev/actions/nodiff@71714a76c3df10b544595a2294c16649dc3472e5" # main
         with:
           path: ""
           fixup-command: "go run mage.go lint:all"

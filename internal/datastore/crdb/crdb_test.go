@@ -1,4 +1,4 @@
-//go:build ci && docker
+//go:build datastore
 
 package crdb
 
@@ -57,12 +57,7 @@ const (
 	veryLargeGCInterval = 90000 * time.Second
 )
 
-// Implement the TestableDatastore interface
-func (cds *crdbDatastore) ExampleRetryableError() error {
-	return &pgconn.PgError{
-		Code: pool.CrdbRetryErrCode,
-	}
-}
+var crdbFactory = test.NewTesterFactory(&pgconn.PgError{Code: pool.CrdbRetryErrCode})
 
 func crdbTestVersion() string {
 	ver := os.Getenv("CRDB_TEST_VERSION")
@@ -74,10 +69,9 @@ func crdbTestVersion() string {
 }
 
 func TestCRDBDatastoreWithoutIntegrity(t *testing.T) {
-	t.Parallel()
 	b := testdatastore.RunCRDBForTesting(t, "", crdbTestVersion())
-	test.All(t, test.DatastoreTesterFunc(func(_ testing.TB, revisionQuantization, gcInterval, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
-		ctx := context.Background()
+	test.All(t, crdbFactory.NewTester(test.DatastoreTesterFunc(func(_ testing.TB, revisionQuantization, gcInterval, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
+		ctx := t.Context()
 		ds := b.NewDatastore(t, func(engine, uri string) datastore.Datastore {
 			ds, err := NewCRDBDatastore(
 				ctx,
@@ -97,7 +91,7 @@ func TestCRDBDatastoreWithoutIntegrity(t *testing.T) {
 		})
 
 		return ds, nil
-	}), false)
+	})))
 
 	t.Run("TestWatchStreaming", createDatastoreTest(
 		b,
@@ -135,7 +129,6 @@ func createDatastoreTest(b testdatastore.RunningEngineForTest, tf datastoreTestF
 }
 
 func TestCRDBDatastoreWithFollowerReads(t *testing.T) {
-	t.Parallel()
 	followerReadDelay := time.Duration(4.8 * float64(time.Second))
 	gcWindow := 100 * time.Second
 
@@ -147,8 +140,7 @@ func TestCRDBDatastoreWithFollowerReads(t *testing.T) {
 	}
 	for _, quantization := range quantizationDurations {
 		t.Run(fmt.Sprintf("Quantization%s", quantization), func(t *testing.T) {
-			t.Parallel()
-			ctx := context.Background()
+			ctx := t.Context()
 
 			ds := engine.NewDatastore(t, func(engine, uri string) datastore.Datastore {
 				ds, err := NewCRDBDatastore(
@@ -201,11 +193,10 @@ var defaultKeyForTesting = proxy.KeyConfig{
 }
 
 func TestCRDBDatastoreWithIntegrity(t *testing.T) { //nolint:tparallel
-	t.Parallel()
 	b := testdatastore.RunCRDBForTesting(t, "", crdbTestVersion())
 
-	test.All(t, test.DatastoreTesterFunc(func(_ testing.TB, revisionQuantization, gcInterval, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
-		ctx := context.Background()
+	test.All(t, crdbFactory.NewTester(test.DatastoreTesterFunc(func(_ testing.TB, revisionQuantization, gcInterval, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
+		ctx := t.Context()
 		ds := b.NewDatastore(t, func(engine, uri string) datastore.Datastore {
 			ds, err := NewCRDBDatastore(
 				ctx,
@@ -229,10 +220,10 @@ func TestCRDBDatastoreWithIntegrity(t *testing.T) { //nolint:tparallel
 		})
 
 		return ds, nil
-	}), false)
+	})))
 
 	unwrappedTester := test.DatastoreTesterFunc(func(_ testing.TB, revisionQuantization, gcInterval, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
-		ctx := context.Background()
+		ctx := t.Context()
 		ds := b.NewDatastore(t, func(engine, uri string) datastore.Datastore {
 			ds, err := NewCRDBDatastore(
 				ctx,
@@ -261,7 +252,6 @@ func TestCRDBDatastoreWithIntegrity(t *testing.T) { //nolint:tparallel
 }
 
 func TestWatchFeatureDetection(t *testing.T) {
-	t.Parallel()
 	pool, err := dockertest.NewPool("")
 	require.NoError(t, err)
 	cases := []struct {
@@ -306,8 +296,7 @@ func TestWatchFeatureDetection(t *testing.T) {
 	for _, tt := range cases {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			ctx, cancel := context.WithCancel(context.Background())
+			ctx, cancel := context.WithCancel(t.Context())
 			t.Cleanup(cancel)
 			adminConn, connStrings := newCRDBWithUser(t, pool)
 			require.NoError(t, err)
@@ -458,7 +447,7 @@ func newCRDBWithUser(t *testing.T, pool *dockertest.Pool) (adminConn *pgx.Conn, 
 	require.NoError(t, rootCertFile.Close())
 
 	resource, err := pool.RunWithOptions(&dockertest.RunOptions{
-		Repository: "mirror.gcr.io/cockroachdb/cockroach",
+		Repository: "cockroachdb/cockroach",
 		Tag:        "v" + crdbTestVersion(),
 		Cmd:        []string{"start-single-node", "--certs-dir", "/certs", "--accept-sql-without-tls"},
 		Mounts:     []string{certDir + ":/certs"},
@@ -471,7 +460,7 @@ func newCRDBWithUser(t *testing.T, pool *dockertest.Pool) (adminConn *pgx.Conn, 
 	port := resource.GetPort(fmt.Sprintf("%d/tcp", 26257))
 	require.NoError(t, pool.Retry(func() error {
 		var err error
-		_, err = pgxpool.New(context.Background(), fmt.Sprintf("postgres://root@localhost:%[1]s/defaultdb?sslmode=verify-full&sslrootcert=%[2]s/ca.crt&sslcert=%[2]s/client.root.crt&sslkey=%[2]s/client.root.key", port, certDir))
+		_, err = pgxpool.New(t.Context(), fmt.Sprintf("postgres://root@localhost:%[1]s/defaultdb?sslmode=verify-full&sslrootcert=%[2]s/ca.crt&sslcert=%[2]s/client.root.crt&sslkey=%[2]s/client.root.key", port, certDir))
 		if err != nil {
 			t.Log(err)
 			return err
@@ -479,7 +468,7 @@ func newCRDBWithUser(t *testing.T, pool *dockertest.Pool) (adminConn *pgx.Conn, 
 		return nil
 	}))
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	adminConnString := fmt.Sprintf("postgresql://root:unused@localhost:%[1]s?sslmode=require&sslrootcert=%[2]s/ca.crt&sslcert=%[2]s/client.root.crt&sslkey=%[2]s/client.root.key", port, certDir)
 
@@ -511,7 +500,7 @@ func RelationshipIntegrityInfoTest(t *testing.T, tester test.DatastoreTester) {
 	require.NoError(err)
 
 	ds, _ := testfixtures.StandardDatastoreWithSchema(rawDS, require)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Write a relationship with integrity information.
 	timestamp := time.Now().UTC()
@@ -574,7 +563,7 @@ func BulkRelationshipIntegrityInfoTest(t *testing.T, tester test.DatastoreTester
 	require.NoError(err)
 
 	ds, _ := testfixtures.StandardDatastoreWithSchema(rawDS, require)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Write a relationship with integrity information.
 	timestamp := time.Now().UTC()
@@ -623,7 +612,7 @@ func RelationshipIntegrityWatchTest(t *testing.T, tester test.DatastoreTester) {
 	require.NoError(err)
 
 	ds, rev := testfixtures.StandardDatastoreWithSchema(rawDS, require)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Write a relationship with integrity information.
 	timestamp := time.Now().UTC()
@@ -682,7 +671,7 @@ func TransactionMetadataMarkingTest(t *testing.T, rawDS datastore.Datastore) {
 		tuple.MustParse("resource:foo#viewer@user:tom"),
 		tuple.MustParse("resource:foo#viewer@user:fred"),
 	}, require)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	cds := datastore.UnwrapAs[*crdbDatastore](ds)
 	require.NotNil(cds)
@@ -819,7 +808,7 @@ func StreamingWatchTest(t *testing.T, rawDS datastore.Datastore) {
 		tuple.MustParse("resource:foo#viewer@user:tom"),
 		tuple.MustParse("resource:foo#viewer@user:fred"),
 	}, require)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Touch and delete some relationships, add a namespace and caveat and delete a namespace and caveat.
 	_, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {

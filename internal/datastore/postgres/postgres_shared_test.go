@@ -1,4 +1,4 @@
-//go:build ci && docker
+//go:build datastore
 
 package postgres
 
@@ -24,14 +24,12 @@ import (
 	"github.com/authzed/spicedb/internal/datastore/common"
 	pgcommon "github.com/authzed/spicedb/internal/datastore/postgres/common"
 	"github.com/authzed/spicedb/internal/datastore/postgres/schema"
-	pgversion "github.com/authzed/spicedb/internal/datastore/postgres/version"
 	"github.com/authzed/spicedb/internal/datastore/proxy"
 	"github.com/authzed/spicedb/internal/datastore/proxy/indexcheck"
 	"github.com/authzed/spicedb/internal/testfixtures"
 	testdatastore "github.com/authzed/spicedb/internal/testserver/datastore"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/datastore/options"
-	"github.com/authzed/spicedb/pkg/datastore/queryshape"
 	"github.com/authzed/spicedb/pkg/datastore/test"
 	"github.com/authzed/spicedb/pkg/migrate"
 	"github.com/authzed/spicedb/pkg/namespace"
@@ -44,12 +42,7 @@ const (
 	veryLargeGCInterval = 90000 * time.Second
 )
 
-// Implement the interface for testing datastores
-func (pgd *pgDatastore) ExampleRetryableError() error {
-	return &pgconn.PgError{
-		Code: pgSerializationFailure,
-	}
-}
+var pgFactory = test.NewTesterFactory(&pgconn.PgError{Code: pgSerializationFailure})
 
 type postgresTestConfig struct {
 	targetMigration string
@@ -79,7 +72,7 @@ func testPostgresDatastore(t *testing.T, config postgresTestConfig) {
 
 	t.Run(fmt.Sprintf("%spostgres-%s-%s-%s-gc", pgbouncerStr, config.pgVersion, config.targetMigration, config.migrationPhase), func(t *testing.T) {
 		b := testdatastore.RunPostgresForTesting(t, "", config.targetMigration, config.pgVersion, config.pgbouncer)
-		ctx := context.Background()
+		ctx := t.Context()
 
 		// NOTE: gc tests take exclusive locks, so they are run under non-parallel.
 		test.OnlyGCTests(t, test.DatastoreTesterFunc(func(_ testing.TB, revisionQuantization, gcInterval, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
@@ -97,7 +90,7 @@ func testPostgresDatastore(t *testing.T, config postgresTestConfig) {
 				return ds
 			})
 			return ds, nil
-		}), false)
+		}))
 
 		t.Run("TestLocking", createMultiDatastoreTest(
 			b,
@@ -115,11 +108,10 @@ func testPostgresDatastore(t *testing.T, config postgresTestConfig) {
 	})
 
 	t.Run(fmt.Sprintf("%spostgres-%s-%s-%s", pgbouncerStr, config.pgVersion, config.targetMigration, config.migrationPhase), func(t *testing.T) {
-		t.Parallel()
 		b := testdatastore.RunPostgresForTesting(t, "", config.targetMigration, config.pgVersion, config.pgbouncer)
-		ctx := context.Background()
+		ctx := t.Context()
 
-		test.AllWithExceptions(t, test.DatastoreTesterFunc(func(_ testing.TB, revisionQuantization, _, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
+		test.AllWithExceptions(t, pgFactory.NewTester(test.DatastoreTesterFunc(func(_ testing.TB, revisionQuantization, _, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
 			ds := b.NewDatastore(t, func(engine, uri string) datastore.Datastore {
 				ds, err := newPostgresDatastore(ctx, uri, primaryInstanceID,
 					RevisionQuantization(revisionQuantization),
@@ -134,7 +126,7 @@ func testPostgresDatastore(t *testing.T, config postgresTestConfig) {
 				return indexcheck.WrapWithIndexCheckingDatastoreProxyIfApplicable(ds)
 			})
 			return ds, nil
-		}), test.WithCategories(test.GCCategory), false)
+		})), test.WithCategories(test.GCCategory))
 
 		t.Run("TransactionTimestamps", createDatastoreTest(
 			b,
@@ -311,14 +303,12 @@ func testPostgresDatastoreWithoutCommitTimestamps(t *testing.T, config postgresT
 	pgVersion := config.pgVersion
 	enablePgbouncer := config.pgbouncer
 	t.Run(fmt.Sprintf("postgres-%s", pgVersion), func(t *testing.T) {
-		t.Parallel()
-
-		ctx := context.Background()
+		ctx := t.Context()
 		b := testdatastore.RunPostgresForTestingWithCommitTimestamps(t, "", "head", false, pgVersion, enablePgbouncer)
 
 		// NOTE: watch API requires the commit timestamps, so we skip those tests here.
 		// NOTE: gc tests take exclusive locks, so they are run under non-parallel.
-		test.AllWithExceptions(t, test.DatastoreTesterFunc(func(_ testing.TB, revisionQuantization, _, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
+		test.AllWithExceptions(t, pgFactory.NewTester(test.DatastoreTesterFunc(func(_ testing.TB, revisionQuantization, _, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
 			ds := b.NewDatastore(t, func(engine, uri string) datastore.Datastore {
 				ds, err := newPostgresDatastore(ctx, uri, primaryInstanceID,
 					RevisionQuantization(revisionQuantization),
@@ -332,11 +322,11 @@ func testPostgresDatastoreWithoutCommitTimestamps(t *testing.T, config postgresT
 				return ds
 			})
 			return ds, nil
-		}), test.WithCategories(test.WatchCategory, test.GCCategory), false)
+		})), test.WithCategories(test.WatchCategory, test.GCCategory))
 	})
 
 	t.Run(fmt.Sprintf("postgres-%s-gc", pgVersion), func(t *testing.T) {
-		ctx := context.Background()
+		ctx := t.Context()
 		b := testdatastore.RunPostgresForTestingWithCommitTimestamps(t, "", "head", false, pgVersion, enablePgbouncer)
 		test.OnlyGCTests(t, test.DatastoreTesterFunc(func(_ testing.TB, revisionQuantization, gcInterval, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
 			ds := b.NewDatastore(t, func(engine, uri string) datastore.Datastore {
@@ -352,7 +342,7 @@ func testPostgresDatastoreWithoutCommitTimestamps(t *testing.T, config postgresT
 				return ds
 			})
 			return ds, nil
-		}), false)
+		}))
 	})
 }
 
@@ -361,7 +351,7 @@ type datastoreTestFunc func(t *testing.T, ds datastore.Datastore)
 func createDatastoreTest(b testdatastore.RunningEngineForTest, tf datastoreTestFunc, options ...Option) func(*testing.T) {
 	return func(t *testing.T) {
 		t.Helper()
-		ctx := context.Background()
+		ctx := t.Context()
 		ds := b.NewDatastore(t, func(engine, uri string) datastore.Datastore {
 			ds, err := newPostgresDatastore(ctx, uri, primaryInstanceID, options...)
 			require.NoError(t, err)
@@ -376,7 +366,7 @@ func createDatastoreTest(b testdatastore.RunningEngineForTest, tf datastoreTestF
 
 func createReplicaDatastoreTest(b testdatastore.RunningEngineForTest, tf multiDatastoreTestFunc, options ...Option) func(*testing.T) {
 	return func(t *testing.T) {
-		ctx := context.Background()
+		ctx := t.Context()
 
 		var replicaDS datastore.Datastore
 
@@ -400,7 +390,7 @@ type multiDatastoreTestFunc func(t *testing.T, ds1 datastore.Datastore, ds2 data
 
 func createMultiDatastoreTest(b testdatastore.RunningEngineForTest, tf multiDatastoreTestFunc, options ...Option) func(*testing.T) {
 	return func(t *testing.T) {
-		ctx := context.Background()
+		ctx := t.Context()
 		var secondDS datastore.Datastore
 		ds := b.NewDatastore(t, func(engine, uri string) datastore.Datastore {
 			ds, err := newPostgresDatastore(ctx, uri, primaryInstanceID, options...)
@@ -421,7 +411,7 @@ func createMultiDatastoreTest(b testdatastore.RunningEngineForTest, tf multiData
 func SerializationErrorTest(t *testing.T, ds datastore.Datastore) {
 	require := require.New(t)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	r, err := ds.ReadyState(ctx)
 	require.NoError(err)
 	require.True(r.IsReady)
@@ -440,7 +430,7 @@ func SerializationErrorTest(t *testing.T, ds datastore.Datastore) {
 func ReadWriteTxReturnsOptionalRevisionFields(t *testing.T, ds datastore.Datastore) {
 	require := require.New(t)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	r, err := ds.ReadyState(ctx)
 	require.NoError(err)
 	require.True(r.IsReady)
@@ -473,7 +463,7 @@ func (txwse txWithSerializationError) Exec(ctx context.Context, sql string, argu
 func GarbageCollectionTest(t *testing.T, ds datastore.Datastore) {
 	require := require.New(t)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	r, err := ds.ReadyState(ctx)
 	require.NoError(err)
 	require.True(r.IsReady)
@@ -625,7 +615,7 @@ func GarbageCollectionTest(t *testing.T, ds datastore.Datastore) {
 func TransactionTimestampsTest(t *testing.T, ds datastore.Datastore) {
 	require := require.New(t)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	r, err := ds.ReadyState(ctx)
 	require.NoError(err)
 	require.True(r.IsReady)
@@ -669,7 +659,7 @@ func TransactionTimestampsTest(t *testing.T, ds datastore.Datastore) {
 func GarbageCollectionByTimeTest(t *testing.T, ds datastore.Datastore) {
 	require := require.New(t)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	r, err := ds.ReadyState(ctx)
 	require.NoError(err)
 	require.True(r.IsReady)
@@ -748,7 +738,7 @@ const chunkRelationshipCount = 2000
 func ChunkedGarbageCollectionTest(t *testing.T, ds datastore.Datastore) {
 	require := require.New(t)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	r, err := ds.ReadyState(ctx)
 	require.NoError(err)
 	require.True(r.IsReady)
@@ -909,7 +899,7 @@ func QuantizedRevisionTest(t *testing.T, b testdatastore.RunningEngineForTest) {
 	for _, tc := range testCases {
 		t.Run(tc.testName, func(t *testing.T) {
 			require := require.New(t)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 
 			var conn *pgx.Conn
@@ -987,7 +977,7 @@ func OverlappingRevisionTest(t *testing.T, b testdatastore.RunningEngineForTest)
 	for _, tc := range testCases {
 		t.Run(tc.testName, func(t *testing.T) {
 			require := require.New(t)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 
 			var conn *pgx.Conn
@@ -1072,7 +1062,7 @@ func assertRevisionLowerAndHigher(ctx context.Context, t *testing.T, ds datastor
 func ConcurrentRevisionHeadTest(t *testing.T, ds datastore.Datastore) {
 	require := require.New(t)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	r, err := ds.ReadyState(ctx)
 	require.NoError(err)
 	require.True(r.IsReady)
@@ -1143,7 +1133,7 @@ func ConcurrentRevisionHeadTest(t *testing.T, ds datastore.Datastore) {
 func ConcurrentRevisionWatchTest(t *testing.T, ds datastore.Datastore) {
 	require := require.New(t)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	withCancel, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -1255,7 +1245,7 @@ func ConcurrentRevisionWatchTest(t *testing.T, ds datastore.Datastore) {
 func OverlappingRevisionWatchTest(t *testing.T, ds datastore.Datastore) {
 	require := require.New(t)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	r, err := ds.ReadyState(ctx)
 	require.NoError(err)
 	require.True(r.IsReady)
@@ -1361,7 +1351,7 @@ loop:
 func RevisionInversionTest(t *testing.T, ds datastore.Datastore) {
 	require := require.New(t)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	r, err := ds.ReadyState(ctx)
 	require.NoError(err)
 	require.True(r.IsReady)
@@ -1416,7 +1406,7 @@ func OTelTracingTest(t *testing.T, ds datastore.Datastore) {
 
 	require := require.New(t)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	r, err := ds.ReadyState(ctx)
 	require.NoError(err)
 	require.True(r.IsReady)
@@ -1444,7 +1434,7 @@ func WatchNotEnabledTest(t *testing.T, _ testdatastore.RunningEngineForTest, pgV
 	require := require.New(t)
 
 	ds := testdatastore.RunPostgresForTestingWithCommitTimestamps(t, "", migrate.Head, false, pgVersion, false).NewDatastore(t, func(engine, uri string) datastore.Datastore {
-		ctx := context.Background()
+		ctx := t.Context()
 		ds, err := newPostgresDatastore(ctx, uri,
 			primaryInstanceID,
 			RevisionQuantization(0),
@@ -1459,7 +1449,7 @@ func WatchNotEnabledTest(t *testing.T, _ testdatastore.RunningEngineForTest, pgV
 
 	ds, revision := testfixtures.StandardDatastoreWithData(ds, require)
 	_, errChan := ds.Watch(
-		context.Background(),
+		t.Context(),
 		revision,
 		datastore.WatchJustRelationships(),
 	)
@@ -1468,50 +1458,11 @@ func WatchNotEnabledTest(t *testing.T, _ testdatastore.RunningEngineForTest, pgV
 	require.Contains(err.Error(), "track_commit_timestamp=on")
 }
 
-func BenchmarkPostgresQuery(b *testing.B) {
-	b.StopTimer()
-	req := require.New(b)
-
-	ds := testdatastore.RunPostgresForTesting(b, "", migrate.Head, pgversion.MinimumSupportedPostgresVersion, false).NewDatastore(b, func(engine, uri string) datastore.Datastore {
-		ctx := context.Background()
-		ds, err := newPostgresDatastore(ctx, uri,
-			primaryInstanceID,
-			RevisionQuantization(0),
-			GCWindow(time.Millisecond*1),
-			GCInterval(veryLargeGCInterval),
-			WatchBufferLength(1),
-		)
-		require.NoError(b, err)
-		return ds
-	})
-	ds, revision := testfixtures.StandardDatastoreWithData(ds, req)
-	b.Cleanup(func() {
-		_ = ds.Close()
-	})
-
-	b.StartTimer()
-
-	b.Run("benchmark checks", func(b *testing.B) {
-		require := require.New(b)
-
-		for i := 0; i < b.N; i++ {
-			iter, err := ds.SnapshotReader(revision).QueryRelationships(context.Background(), datastore.RelationshipsFilter{
-				OptionalResourceType: testfixtures.DocumentNS.Name,
-			}, options.WithQueryShape(queryshape.FindResourceOfType))
-			require.NoError(err)
-			for rel, err := range iter {
-				require.NoError(err)
-				require.Equal(testfixtures.DocumentNS.Name, rel.Resource.ObjectType)
-			}
-		}
-	})
-}
-
 func datastoreWithInterceptorAndTestData(t *testing.T, interceptor pgcommon.QueryInterceptor, pgVersion string) datastore.Datastore {
 	require := require.New(t)
 
 	ds := testdatastore.RunPostgresForTestingWithCommitTimestamps(t, "", migrate.Head, false, pgVersion, false).NewDatastore(t, func(engine, uri string) datastore.Datastore {
-		ctx := context.Background()
+		ctx := t.Context()
 		ds, err := newPostgresDatastore(ctx, uri,
 			primaryInstanceID,
 			RevisionQuantization(0),
@@ -1530,7 +1481,7 @@ func datastoreWithInterceptorAndTestData(t *testing.T, interceptor pgcommon.Quer
 	ds, _ = testfixtures.StandardDatastoreWithData(ds, require)
 
 	// Write namespaces and a few thousand relationships.
-	ctx := context.Background()
+	ctx := t.Context()
 	for i := 0; i < 1000; i++ {
 		_, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
 			err := rwt.LegacyWriteNamespaces(ctx, namespace.Namespace(
@@ -1675,7 +1626,7 @@ func GCQueriesServedByExpectedIndexes(t *testing.T, _ testdatastore.RunningEngin
 	ds := datastoreWithInterceptorAndTestData(t, interceptor, pgVersion)
 
 	// Get the head revision.
-	ctx := context.Background()
+	ctx := t.Context()
 	revision, err := ds.HeadRevision(ctx)
 	require.NoError(err)
 
@@ -1686,7 +1637,7 @@ func GCQueriesServedByExpectedIndexes(t *testing.T, _ testdatastore.RunningEngin
 	require.NoError(err)
 	defer pgg.Close()
 
-	_, err = pgg.(*pgGarbageCollector).deleteBeforeTx(context.Background(), casted.writePool, revision)
+	_, err = pgg.(*pgGarbageCollector).deleteBeforeTx(t.Context(), casted.writePool, revision)
 	require.NoError(err)
 
 	require.NotEmpty(interceptor.explanations, "expected queries to be executed")
@@ -1715,7 +1666,7 @@ func RepairTransactionsTest(t *testing.T, ds datastore.Datastore) {
 
 	getVersionQuery := "SELECT version()"
 	var version string
-	err := pds.writePool.QueryRow(context.Background(), getVersionQuery).Scan(&version)
+	err := pds.writePool.QueryRow(t.Context(), getVersionQuery).Scan(&version)
 	require.NoError(t, err)
 
 	if strings.HasPrefix(version, "PostgreSQL 13.") || strings.HasPrefix(version, "PostgreSQL 14.") {
@@ -1728,16 +1679,16 @@ func RepairTransactionsTest(t *testing.T, ds datastore.Datastore) {
 		schema.TableTransaction,
 	)
 
-	_, err = pds.writePool.Exec(context.Background(), createLaterTxn)
+	_, err = pds.writePool.Exec(t.Context(), createLaterTxn)
 	require.NoError(t, err)
 
 	// Run the repair code.
-	err = pds.repairTransactionIDs(context.Background(), false)
+	err = pds.repairTransactionIDs(t.Context(), false)
 	require.NoError(t, err)
 
 	// Ensure the current transaction ID is greater than the max specified in the transactions table.
 	currentMaximumID := 0
-	err = pds.writePool.QueryRow(context.Background(), queryCurrentTransactionID).Scan(&currentMaximumID)
+	err = pds.writePool.QueryRow(t.Context(), queryCurrentTransactionID).Scan(&currentMaximumID)
 	require.NoError(t, err)
 	require.Greater(t, currentMaximumID, 12345)
 }
@@ -1746,16 +1697,16 @@ func LockingTest(t *testing.T, ds datastore.Datastore, ds2 datastore.Datastore) 
 	pds := ds.(*pgDatastore)
 	pds2 := ds2.(*pgDatastore)
 
-	conn1, err := pds.writePool.Acquire(context.Background())
+	conn1, err := pds.writePool.Acquire(t.Context())
 	require.NoError(t, err)
 	defer conn1.Release()
 
-	conn2, err := pds2.writePool.Acquire(context.Background())
+	conn2, err := pds2.writePool.Acquire(t.Context())
 	require.NoError(t, err)
 	defer conn2.Release()
 
 	// Acquire a lock.
-	ctx := context.Background()
+	ctx := t.Context()
 	acquired, err := pds.tryAcquireLock(ctx, conn1, 42)
 	require.NoError(t, err)
 	require.True(t, acquired)
@@ -1791,7 +1742,7 @@ func LockingTest(t *testing.T, ds datastore.Datastore, ds2 datastore.Datastore) 
 func StrictReadModeFallbackTest(t *testing.T, primaryDS datastore.Datastore, unwrappedReplicaDS datastore.Datastore) {
 	require := require.New(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	// Write some relationships.
@@ -1845,7 +1796,7 @@ func StrictReadModeFallbackTest(t *testing.T, primaryDS datastore.Datastore, unw
 func StrictReadModeTest(t *testing.T, primaryDS datastore.Datastore, replicaDS datastore.Datastore) {
 	require := require.New(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	// Write some relationships.
@@ -1896,7 +1847,7 @@ func StrictReadModeTest(t *testing.T, primaryDS datastore.Datastore, replicaDS d
 func NullCaveatWatchTest(t *testing.T, ds datastore.Datastore) {
 	require := require.New(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	lowestRevision, err := ds.HeadRevision(ctx)
@@ -1967,7 +1918,7 @@ func NullCaveatWatchTest(t *testing.T, ds datastore.Datastore) {
 func RevisionTimestampAndTransactionIDTest(t *testing.T, ds datastore.Datastore) {
 	require := require.New(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	lowestRevision, err := ds.HeadRevision(ctx)
@@ -2031,7 +1982,7 @@ func RevisionTimestampAndTransactionIDTest(t *testing.T, ds datastore.Datastore)
 func ContinuousCheckpointTest(t *testing.T, ds datastore.Datastore) {
 	require := require.New(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	lowestRevision, err := ds.HeadRevision(ctx)
@@ -2076,7 +2027,7 @@ func ContinuousCheckpointTest(t *testing.T, ds datastore.Datastore) {
 func ExceedInsertQuerySizeTest(t *testing.T, ds datastore.Datastore) {
 	require := require.New(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	_, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
@@ -2094,7 +2045,7 @@ func ExceedInsertQuerySizeTest(t *testing.T, ds datastore.Datastore) {
 
 	headRev, err := ds.HeadRevision(ctx)
 	require.NoError(err)
-	iter, err := ds.SnapshotReader(headRev).QueryRelationships(context.Background(), datastore.RelationshipsFilter{
+	iter, err := ds.SnapshotReader(headRev).QueryRelationships(t.Context(), datastore.RelationshipsFilter{
 		OptionalResourceType: "resource",
 	})
 	require.NoError(err)

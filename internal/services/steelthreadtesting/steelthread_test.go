@@ -1,4 +1,4 @@
-//go:build steelthread && docker && image
+//go:build steelthread
 
 package steelthreadtesting
 
@@ -11,7 +11,7 @@ import (
 
 	"github.com/gosimple/slug"
 	"github.com/stretchr/testify/require"
-	yamlv3 "gopkg.in/yaml.v3"
+	yamlv3 "go.yaml.in/yaml/v3"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 
@@ -68,7 +68,7 @@ func TestNonMemdbSteelThreads(t *testing.T) {
 func runSteelThreadTest(t *testing.T, tc steelThreadTestCase, ds datastore.Datastore) {
 	req := require.New(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
 
 	clientConn, cleanup, _, _ := testserver.NewTestServerWithConfigAndDatastore(req, 0, 0, false,

@@ -260,7 +260,6 @@ func TestRevisionFromContextMissingConsistency(t *testing.T) {
 }
 
 func TestRewriteDatastoreError(t *testing.T) {
-	t.Parallel()
 	type tc struct {
 		name        string
 		err         error
@@ -296,7 +295,6 @@ func TestRewriteDatastoreError(t *testing.T) {
 
 	for _, tc := range tcs {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			err := rewriteDatastoreError(tc.err)
 			require.Error(t, err)
 			grpcutil.RequireStatus(t, tc.code, err)
@@ -313,12 +311,12 @@ func TestAtExactSnapshotWithMismatchedToken(t *testing.T) {
 	dl := datalayer.NewDataLayer(ds)
 
 	// revision in context is at `exact`
-	updated := ContextWithHandle(context.Background())
+	updated := ContextWithHandle(t.Context())
 	updated = datalayer.ContextWithDataLayer(updated, dl)
 
 	// mint a token with a different datastore instance ID.
 	ds.CurrentUniqueID = "foo"
-	zedToken, err := zedtoken.NewFromRevision(context.Background(), optimized, dl)
+	zedToken, err := zedtoken.NewFromRevision(t.Context(), optimized, dl)
 	require.NoError(err)
 
 	ds.CurrentUniqueID = "bar"
@@ -342,12 +340,12 @@ func TestAtLeastAsFreshWithMismatchedTokenExpectError(t *testing.T) {
 	dl := datalayer.NewDataLayer(ds)
 
 	// revision in context is at `exact`
-	updated := ContextWithHandle(context.Background())
+	updated := ContextWithHandle(t.Context())
 	updated = datalayer.ContextWithDataLayer(updated, dl)
 
 	// mint a token with a different datastore instance ID.
 	ds.CurrentUniqueID = "foo"
-	zedToken, err := zedtoken.NewFromRevision(context.Background(), optimized, dl)
+	zedToken, err := zedtoken.NewFromRevision(t.Context(), optimized, dl)
 	require.NoError(err)
 
 	ds.CurrentUniqueID = "bar"
@@ -371,12 +369,12 @@ func TestAtLeastAsFreshWithMismatchedTokenExpectMinLatency(t *testing.T) {
 	dl := datalayer.NewDataLayer(ds)
 
 	// revision in context is at `exact`
-	updated := ContextWithHandle(context.Background())
+	updated := ContextWithHandle(t.Context())
 	updated = datalayer.ContextWithDataLayer(updated, dl)
 
 	// mint a token with a different datastore instance ID.
 	ds.CurrentUniqueID = "foo"
-	zedToken, err := zedtoken.NewFromRevision(context.Background(), optimized, dl)
+	zedToken, err := zedtoken.NewFromRevision(t.Context(), optimized, dl)
 	require.NoError(err)
 
 	ds.CurrentUniqueID = "bar"
@@ -406,12 +404,12 @@ func TestAtLeastAsFreshWithMismatchedTokenExpectFullConsistency(t *testing.T) {
 	dl := datalayer.NewDataLayer(ds)
 
 	// revision in context is at `exact`
-	updated := ContextWithHandle(context.Background())
+	updated := ContextWithHandle(t.Context())
 	updated = datalayer.ContextWithDataLayer(updated, dl)
 
 	// mint a token with a different datastore instance ID.
 	ds.CurrentUniqueID = "foo"
-	zedToken, err := zedtoken.NewFromRevision(context.Background(), optimized, dl)
+	zedToken, err := zedtoken.NewFromRevision(t.Context(), optimized, dl)
 	require.NoError(err)
 
 	ds.CurrentUniqueID = "bar"
@@ -441,7 +439,7 @@ func TestAddRevisionToContextAtLeastAsFreshMatchingIDs(t *testing.T) {
 	ds.CurrentUniqueID = "foo"
 	dl := datalayer.NewDataLayer(ds)
 
-	updated := ContextWithHandle(context.Background())
+	updated := ContextWithHandle(t.Context())
 	updated = datalayer.ContextWithDataLayer(updated, dl)
 
 	err := AddRevisionToContext(updated, &v1.ReadRelationshipsRequest{

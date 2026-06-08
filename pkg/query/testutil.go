@@ -1,12 +1,32 @@
 package query
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"testing"
 
 	"github.com/authzed/spicedb/pkg/spiceerrors"
 	"github.com/authzed/spicedb/pkg/tuple"
 )
+
+// NewTestContext creates a fresh Context with a LocalExecutor for use in tests.
+// Each call returns an independent context — parallel subtests must each call
+// this rather than sharing a single context, because Context holds mutable
+// state (e.g. topLevelIterator) that is not safe for concurrent reuse.
+//
+// Pass the current *testing.T so that the Go context is tied to the test's
+// lifetime. Passing nil leaves Context.Context unset (callers must set it).
+func NewTestContext(t testing.TB) *Context {
+	var goCtx context.Context
+	if t != nil {
+		goCtx = t.Context()
+	}
+	return &Context{
+		Context:  goCtx,
+		Executor: LocalExecutor{},
+	}
+}
 
 // createRelation is a helper function to create a relation with the given parameters
 func createRelation(resourceType, resourceID, resourceRel, subjectType, subjectID, subjectRel string) tuple.Relationship {
@@ -54,7 +74,7 @@ func NewDocumentAccessFixedIterator() *FixedIterator {
 
 	paths := make([]Path, len(relations))
 	for i, rel := range relations {
-		paths[i] = FromRelationship(rel)
+		paths[i] = *FromRelationship(rel)
 	}
 	return NewFixedIterator(paths...)
 }
@@ -84,7 +104,7 @@ func NewFolderHierarchyFixedIterator() *FixedIterator {
 
 	paths := make([]Path, len(relations))
 	for i, rel := range relations {
-		paths[i] = FromRelationship(rel)
+		paths[i] = *FromRelationship(rel)
 	}
 	return NewFixedIterator(paths...)
 }
@@ -113,7 +133,7 @@ func NewMultiRoleFixedIterator() *FixedIterator {
 
 	paths := make([]Path, len(relations))
 	for i, rel := range relations {
-		paths[i] = FromRelationship(rel)
+		paths[i] = *FromRelationship(rel)
 	}
 	return NewFixedIterator(paths...)
 }
@@ -131,7 +151,7 @@ func NewSingleUserFixedIterator(userID string) *FixedIterator {
 
 	paths := make([]Path, len(relations))
 	for i, rel := range relations {
-		paths[i] = FromRelationship(rel)
+		paths[i] = *FromRelationship(rel)
 	}
 	return NewFixedIterator(paths...)
 }
@@ -172,7 +192,7 @@ func NewLargeFixedIterator() *FixedIterator {
 
 	paths := make([]Path, len(relations))
 	for i, rel := range relations {
-		paths[i] = FromRelationship(rel)
+		paths[i] = *FromRelationship(rel)
 	}
 	return NewFixedIterator(paths...)
 }
@@ -187,18 +207,14 @@ type FaultyIterator struct {
 
 var _ Iterator = &FaultyIterator{}
 
-func (f *FaultyIterator) CheckImpl(ctx *Context, resources []Object, subject ObjectAndRelation) (PathSeq, error) {
+func (f *FaultyIterator) CheckImpl(ctx *Context, resource Object, subject ObjectAndRelation) (*Path, error) {
 	if f.shouldFailOnCheck {
 		return nil, errors.New("faulty iterator error")
 	}
-	// Return a sequence that will fail during collection
 	if f.shouldFailOnCollect {
-		return func(yield func(Path, error) bool) {
-			yield(Path{}, errors.New("faulty iterator collection error"))
-		}, nil
+		return nil, errors.New("faulty iterator collection error")
 	}
-	// Return empty sequence
-	return EmptyPathSeq(), nil
+	return nil, nil
 }
 
 func (f *FaultyIterator) IterSubjectsImpl(ctx *Context, resource Object, filterSubjectType ObjectType) (PathSeq, error) {
@@ -207,8 +223,8 @@ func (f *FaultyIterator) IterSubjectsImpl(ctx *Context, resource Object, filterS
 	}
 	// Return a sequence that will fail during collection
 	if f.shouldFailOnCollect {
-		return func(yield func(Path, error) bool) {
-			yield(Path{}, errors.New("faulty iterator collection error"))
+		return func(yield func(*Path, error) bool) {
+			yield(nil, errors.New("faulty iterator collection error"))
 		}, nil
 	}
 	// Return empty sequence
@@ -221,8 +237,8 @@ func (f *FaultyIterator) IterResourcesImpl(ctx *Context, subject ObjectAndRelati
 	}
 	// Return a sequence that will fail during collection
 	if f.shouldFailOnCollect {
-		return func(yield func(Path, error) bool) {
-			yield(Path{}, errors.New("faulty iterator collection error"))
+		return func(yield func(*Path, error) bool) {
+			yield(nil, errors.New("faulty iterator collection error"))
 		}, nil
 	}
 	// Return empty sequence

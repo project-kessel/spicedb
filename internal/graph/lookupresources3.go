@@ -268,7 +268,7 @@ func (crr *CursoredLookupResources3) LookupResources3(req ValidatedLookupResourc
 	// interfaces used by various suboperations of the lookup resources operation.
 	dl := datalayer.MustFromContext(stream.Context())
 	reader := dl.SnapshotReader(req.Revision)
-	sr, err := reader.ReadSchema()
+	sr, err := reader.ReadSchema(ctx)
 	if err != nil {
 		return err
 	}
@@ -813,7 +813,7 @@ func (crr *CursoredLookupResources3) relationshipsIter(
 
 					// Start the new relationships chunk that we will fill as we iterate over the results.
 					// It starts at the given dbCursor, which may be nil/empty if this is the first chunk.
-					caveatSR, err := refs.reader.ReadSchema()
+					caveatSR, err := refs.reader.ReadSchema(ctx)
 					if err != nil {
 						yieldError(err)
 						return
@@ -965,11 +965,15 @@ func (crr *CursoredLookupResources3) dispatchIter(
 				AtRevision:     refs.req.Revision.String(),
 				DepthRemaining: refs.req.Metadata.DepthRemaining - 1,
 			},
-			OptionalCursor: currentCursor,
-			OptionalLimit:  refs.req.OptionalLimit,
-			Context:        refs.req.Context,
+			OptionalCursor:   currentCursor,
+			OptionalLimit:    refs.req.OptionalLimit,
+			Context:          refs.req.Context,
+			EnableDebugTrace: refs.req.EnableDebugTrace,
 		}, stream)
 		if err != nil && !stream.canceled {
+			if refs.req.EnableDebugTrace {
+				err = dispatch.HandleTraversalTrace(err, foundResourceType.Namespace, foundResourceType.Relation, subjectIDs)
+			}
 			_ = yield(result{}, err)
 			return
 		}

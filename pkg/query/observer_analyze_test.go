@@ -1,16 +1,11 @@
 package query
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
-
-	"github.com/authzed/spicedb/internal/datastore/memdb"
-	"github.com/authzed/spicedb/pkg/datalayer"
-	"github.com/authzed/spicedb/pkg/datastore"
 )
 
 func TestFormatAnalysisSimpleTree(t *testing.T) {
@@ -29,8 +24,10 @@ func TestFormatAnalysisSimpleTree(t *testing.T) {
 	// Create analyze map with stats
 	analyze := map[CanonicalKey]AnalyzeStats{
 		fixed.CanonicalKey(): {
-			CheckCalls:   1,
-			CheckResults: 2,
+			CountStats: CountStats{
+				CheckCalls:   1,
+				CheckResults: 2,
+			},
 		},
 	}
 
@@ -64,16 +61,22 @@ func TestFormatAnalysisNestedTree(t *testing.T) {
 	// Create analyze map with stats for all iterators
 	analyze := map[CanonicalKey]AnalyzeStats{
 		union.CanonicalKey(): {
-			CheckCalls:   1,
-			CheckResults: 2,
+			CountStats: CountStats{
+				CheckCalls:   1,
+				CheckResults: 2,
+			},
 		},
 		fixed1.CanonicalKey(): {
-			CheckCalls:   1,
-			CheckResults: 1,
+			CountStats: CountStats{
+				CheckCalls:   1,
+				CheckResults: 1,
+			},
 		},
 		fixed2.CanonicalKey(): {
-			CheckCalls:   1,
-			CheckResults: 1,
+			CountStats: CountStats{
+				CheckCalls:   1,
+				CheckResults: 1,
+			},
 		},
 	}
 
@@ -122,10 +125,6 @@ func TestFormatAnalysisEdgeCases(t *testing.T) {
 }
 
 func TestAnalysisIntegration(t *testing.T) {
-	// Create a datastore
-	ds, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
-	require.NoError(t, err)
-
 	// Create a simple iterator
 	fixed := NewFixedIterator(
 		Path{
@@ -140,20 +139,15 @@ func TestAnalysisIntegration(t *testing.T) {
 
 	// Create a context with analysis enabled
 	analyze := NewAnalyzeObserver()
-	ctx := NewLocalContext(context.Background(),
-		WithReader(datalayer.NewDataLayer(ds).SnapshotReader(datastore.NoRevision)),
+	ctx := NewLocalContext(t.Context(),
 		WithObserver(analyze))
 
 	// Execute a Check operation
-	resources := []Object{{ObjectType: "document", ObjectID: "doc1"}}
+	resource := Object{ObjectType: "document", ObjectID: "doc1"}
 	subject := ObjectAndRelation{ObjectType: "user", ObjectID: "alice", Relation: "..."}
-	pathSeq, err := ctx.Check(fixed, resources, subject)
+	path, err := ctx.Check(fixed, resource, subject)
 	require.NoError(t, err)
-
-	// Consume the results
-	paths, err := CollectAll(pathSeq)
-	require.NoError(t, err)
-	require.Len(t, paths, 1)
+	require.NotNil(t, path)
 
 	// Verify stats were recorded
 	analyzeStats := analyze.GetStats()
@@ -178,12 +172,14 @@ func TestAggregateAnalyzeStats(t *testing.T) {
 	t.Run("single entry", func(t *testing.T) {
 		stats := map[CanonicalKey]AnalyzeStats{
 			"k1": {
-				CheckCalls:           5,
-				IterSubjectsCalls:    3,
-				IterResourcesCalls:   2,
-				CheckResults:         10,
-				IterSubjectsResults:  6,
-				IterResourcesResults: 4,
+				CountStats: CountStats{
+					CheckCalls:           5,
+					IterSubjectsCalls:    3,
+					IterResourcesCalls:   2,
+					CheckResults:         10,
+					IterSubjectsResults:  6,
+					IterResourcesResults: 4,
+				},
 			},
 		}
 		result := AggregateAnalyzeStats(stats)
@@ -193,38 +189,46 @@ func TestAggregateAnalyzeStats(t *testing.T) {
 	t.Run("multiple entries", func(t *testing.T) {
 		stats := map[CanonicalKey]AnalyzeStats{
 			"k1": {
-				CheckCalls:           5,
-				IterSubjectsCalls:    3,
-				IterResourcesCalls:   2,
-				CheckResults:         10,
-				IterSubjectsResults:  6,
-				IterResourcesResults: 4,
+				CountStats: CountStats{
+					CheckCalls:           5,
+					IterSubjectsCalls:    3,
+					IterResourcesCalls:   2,
+					CheckResults:         10,
+					IterSubjectsResults:  6,
+					IterResourcesResults: 4,
+				},
 			},
 			"k2": {
-				CheckCalls:           3,
-				IterSubjectsCalls:    2,
-				IterResourcesCalls:   1,
-				CheckResults:         6,
-				IterSubjectsResults:  4,
-				IterResourcesResults: 2,
+				CountStats: CountStats{
+					CheckCalls:           3,
+					IterSubjectsCalls:    2,
+					IterResourcesCalls:   1,
+					CheckResults:         6,
+					IterSubjectsResults:  4,
+					IterResourcesResults: 2,
+				},
 			},
 			"k3": {
-				CheckCalls:           2,
-				IterSubjectsCalls:    1,
-				IterResourcesCalls:   1,
-				CheckResults:         4,
-				IterSubjectsResults:  2,
-				IterResourcesResults: 2,
+				CountStats: CountStats{
+					CheckCalls:           2,
+					IterSubjectsCalls:    1,
+					IterResourcesCalls:   1,
+					CheckResults:         4,
+					IterSubjectsResults:  2,
+					IterResourcesResults: 2,
+				},
 			},
 		}
 		result := AggregateAnalyzeStats(stats)
 		expected := AnalyzeStats{
-			CheckCalls:           10,
-			IterSubjectsCalls:    6,
-			IterResourcesCalls:   4,
-			CheckResults:         20,
-			IterSubjectsResults:  12,
-			IterResourcesResults: 8,
+			CountStats: CountStats{
+				CheckCalls:           10,
+				IterSubjectsCalls:    6,
+				IterResourcesCalls:   4,
+				CheckResults:         20,
+				IterSubjectsResults:  12,
+				IterResourcesResults: 8,
+			},
 		}
 		require.Equal(t, expected, result)
 	})
@@ -232,39 +236,45 @@ func TestAggregateAnalyzeStats(t *testing.T) {
 	t.Run("multiple entries with timing", func(t *testing.T) {
 		stats := map[CanonicalKey]AnalyzeStats{
 			"k1": {
-				CheckCalls:           5,
-				IterSubjectsCalls:    3,
-				IterResourcesCalls:   2,
-				CheckResults:         10,
-				IterSubjectsResults:  6,
-				IterResourcesResults: 4,
-				CheckTime:            100 * time.Millisecond,
-				IterSubjectsTime:     50 * time.Millisecond,
-				IterResourcesTime:    25 * time.Millisecond,
+				CountStats: CountStats{
+					CheckCalls:           5,
+					IterSubjectsCalls:    3,
+					IterResourcesCalls:   2,
+					CheckResults:         10,
+					IterSubjectsResults:  6,
+					IterResourcesResults: 4,
+				},
+				CheckTime:         100 * time.Millisecond,
+				IterSubjectsTime:  50 * time.Millisecond,
+				IterResourcesTime: 25 * time.Millisecond,
 			},
 			"k2": {
-				CheckCalls:           3,
-				IterSubjectsCalls:    2,
-				IterResourcesCalls:   1,
-				CheckResults:         6,
-				IterSubjectsResults:  4,
-				IterResourcesResults: 2,
-				CheckTime:            75 * time.Millisecond,
-				IterSubjectsTime:     30 * time.Millisecond,
-				IterResourcesTime:    15 * time.Millisecond,
+				CountStats: CountStats{
+					CheckCalls:           3,
+					IterSubjectsCalls:    2,
+					IterResourcesCalls:   1,
+					CheckResults:         6,
+					IterSubjectsResults:  4,
+					IterResourcesResults: 2,
+				},
+				CheckTime:         75 * time.Millisecond,
+				IterSubjectsTime:  30 * time.Millisecond,
+				IterResourcesTime: 15 * time.Millisecond,
 			},
 		}
 		result := AggregateAnalyzeStats(stats)
 		expected := AnalyzeStats{
-			CheckCalls:           8,
-			IterSubjectsCalls:    5,
-			IterResourcesCalls:   3,
-			CheckResults:         16,
-			IterSubjectsResults:  10,
-			IterResourcesResults: 6,
-			CheckTime:            175 * time.Millisecond,
-			IterSubjectsTime:     80 * time.Millisecond,
-			IterResourcesTime:    40 * time.Millisecond,
+			CountStats: CountStats{
+				CheckCalls:           8,
+				IterSubjectsCalls:    5,
+				IterResourcesCalls:   3,
+				CheckResults:         16,
+				IterSubjectsResults:  10,
+				IterResourcesResults: 6,
+			},
+			CheckTime:         175 * time.Millisecond,
+			IterSubjectsTime:  80 * time.Millisecond,
+			IterResourcesTime: 40 * time.Millisecond,
 		}
 		require.Equal(t, expected, result)
 	})
@@ -281,14 +291,14 @@ func TestAnalyzeObserver(t *testing.T) {
 		obs := NewAnalyzeObserver()
 		key := CanonicalKey("test-key")
 
-		obs.ObserveEnterIterator(CheckOperation, key)
-		obs.ObserveEnterIterator(IterSubjectsOperation, key)
-		obs.ObserveEnterIterator(IterResourcesOperation, key)
+		obs.ObserveEnterIterator(OperationCheck, key)
+		obs.ObserveEnterIterator(OperationIterSubjects, key)
+		obs.ObserveEnterIterator(OperationIterResources, key)
 
 		// Need to call ObserveReturnIterator to finalize timing
-		obs.ObserveReturnIterator(CheckOperation, key)
-		obs.ObserveReturnIterator(IterSubjectsOperation, key)
-		obs.ObserveReturnIterator(IterResourcesOperation, key)
+		obs.ObserveReturnIterator(OperationCheck, key)
+		obs.ObserveReturnIterator(OperationIterSubjects, key)
+		obs.ObserveReturnIterator(OperationIterResources, key)
 
 		stats := obs.GetStats()[key]
 		require.Equal(t, 1, stats.CheckCalls)
@@ -301,10 +311,10 @@ func TestAnalyzeObserver(t *testing.T) {
 		key := CanonicalKey("test-key")
 		path := Path{}
 
-		obs.ObservePath(CheckOperation, key, path)
-		obs.ObservePath(CheckOperation, key, path)
-		obs.ObservePath(IterSubjectsOperation, key, path)
-		obs.ObservePath(IterResourcesOperation, key, path)
+		obs.ObservePath(OperationCheck, key, &path)
+		obs.ObservePath(OperationCheck, key, &path)
+		obs.ObservePath(OperationIterSubjects, key, &path)
+		obs.ObservePath(OperationIterResources, key, &path)
 
 		stats := obs.GetStats()[key]
 		require.Equal(t, 2, stats.CheckResults)
@@ -316,9 +326,9 @@ func TestAnalyzeObserver(t *testing.T) {
 		obs := NewAnalyzeObserver()
 		key := CanonicalKey("test-key")
 
-		obs.ObserveEnterIterator(CheckOperation, key)
+		obs.ObserveEnterIterator(OperationCheck, key)
 		time.Sleep(time.Millisecond)
-		obs.ObserveReturnIterator(CheckOperation, key)
+		obs.ObserveReturnIterator(OperationCheck, key)
 
 		stats := obs.GetStats()[key]
 		require.Greater(t, stats.CheckTime, time.Duration(0))
@@ -327,8 +337,8 @@ func TestAnalyzeObserver(t *testing.T) {
 	t.Run("GetStats returns copy", func(t *testing.T) {
 		obs := NewAnalyzeObserver()
 		key := CanonicalKey("test-key")
-		obs.ObserveEnterIterator(CheckOperation, key)
-		obs.ObserveReturnIterator(CheckOperation, key)
+		obs.ObserveEnterIterator(OperationCheck, key)
+		obs.ObserveReturnIterator(OperationCheck, key)
 
 		stats1 := obs.GetStats()
 		stats2 := obs.GetStats()
