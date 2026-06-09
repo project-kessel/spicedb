@@ -22,58 +22,65 @@ func NewUnionIterator(subiterators ...Iterator) Iterator {
 	}
 }
 
-func (u *UnionIterator) CheckImpl(ctx *Context, resources []Object, subject ObjectAndRelation) (PathSeq, error) {
-	ctx.TraceStep(u, "processing %d sub-iterators with %d resources", len(u.subIts), len(resources))
+func (u *UnionIterator) CheckImpl(ctx *Context, resource Object, subject ObjectAndRelation) (*Path, error) {
+	if ctx.shouldTrace() {
+		ctx.TraceStep(u, "processing %d sub-iterators for resource %s:%s", len(u.subIts), resource.ObjectType, resource.ObjectID)
+	}
 
-	// Create a concatenated sequence from all sub-iterators
-	combinedSeq := func(yield func(Path, error) bool) {
-		for iterIdx, it := range u.subIts {
+	// Visit all sub-iterators and OR-merge any matching paths.
+	var result *Path
+	for iterIdx, it := range u.subIts {
+		if ctx.shouldTrace() {
 			ctx.TraceStep(u, "processing sub-iterator %d", iterIdx)
+		}
 
-			pathSeq, err := ctx.Check(it, resources, subject)
-			if err != nil {
-				yield(Path{}, err)
-				return
+		path, err := ctx.Check(it, resource, subject)
+		if err != nil {
+			return nil, err
+		}
+
+		if path == nil {
+			if ctx.shouldTrace() {
+				ctx.TraceStep(u, "sub-iterator %d: no match", iterIdx)
 			}
+			continue
+		}
 
-			pathCount := 0
-			for path, err := range pathSeq {
-				if err != nil {
-					yield(Path{}, err)
-					return
-				}
-				pathCount++
-				if !yield(path, nil) {
-					return
-				}
-			}
+		if ctx.shouldTrace() {
+			ctx.TraceStep(u, "sub-iterator %d: matched", iterIdx)
+		}
 
-			ctx.TraceStep(u, "sub-iterator %d returned %d paths", iterIdx, pathCount)
+		result, err = result.MergeOr(path)
+		if err != nil {
+			return nil, err
 		}
 	}
 
-	// Wrap with deduplication
-	return DeduplicatePathSeq(combinedSeq), nil
+	return result, nil
 }
 
 func (u *UnionIterator) IterSubjectsImpl(ctx *Context, resource Object, filterSubjectType ObjectType) (PathSeq, error) {
-	ctx.TraceStep(u, "processing %d sub-iterators for resource %s:%s", len(u.subIts), resource.ObjectType, resource.ObjectID)
+	if ctx.shouldTrace() {
+		ctx.TraceStep(u, "processing %d sub-iterators for resource %s:%s", len(u.subIts), resource.ObjectType, resource.ObjectID)
+	}
 
 	// Create a concatenated sequence from all sub-iterators
-	combinedSeq := func(yield func(Path, error) bool) {
+	combinedSeq := func(yield func(*Path, error) bool) {
 		for iterIdx, it := range u.subIts {
-			ctx.TraceStep(u, "processing sub-iterator %d", iterIdx)
+			if ctx.shouldTrace() {
+				ctx.TraceStep(u, "processing sub-iterator %d", iterIdx)
+			}
 
 			pathSeq, err := ctx.IterSubjects(it, resource, filterSubjectType)
 			if err != nil {
-				yield(Path{}, err)
+				yield(nil, err)
 				return
 			}
 
 			pathCount := 0
 			for path, err := range pathSeq {
 				if err != nil {
-					yield(Path{}, err)
+					yield(nil, err)
 					return
 				}
 				pathCount++
@@ -82,7 +89,9 @@ func (u *UnionIterator) IterSubjectsImpl(ctx *Context, resource Object, filterSu
 				}
 			}
 
-			ctx.TraceStep(u, "sub-iterator %d returned %d paths", iterIdx, pathCount)
+			if ctx.shouldTrace() {
+				ctx.TraceStep(u, "sub-iterator %d returned %d paths", iterIdx, pathCount)
+			}
 		}
 	}
 
@@ -91,23 +100,27 @@ func (u *UnionIterator) IterSubjectsImpl(ctx *Context, resource Object, filterSu
 }
 
 func (u *UnionIterator) IterResourcesImpl(ctx *Context, subject ObjectAndRelation, filterResourceType ObjectType) (PathSeq, error) {
-	ctx.TraceStep(u, "processing %d sub-iterators for subject %s:%s#%s", len(u.subIts), subject.ObjectType, subject.ObjectID, subject.Relation)
+	if ctx.shouldTrace() {
+		ctx.TraceStep(u, "processing %d sub-iterators for subject %s:%s#%s", len(u.subIts), subject.ObjectType, subject.ObjectID, subject.Relation)
+	}
 
 	// Create a concatenated sequence from all sub-iterators
-	combinedSeq := func(yield func(Path, error) bool) {
+	combinedSeq := func(yield func(*Path, error) bool) {
 		for iterIdx, it := range u.subIts {
-			ctx.TraceStep(u, "processing sub-iterator %d", iterIdx)
+			if ctx.shouldTrace() {
+				ctx.TraceStep(u, "processing sub-iterator %d", iterIdx)
+			}
 
 			pathSeq, err := ctx.IterResources(it, subject, filterResourceType)
 			if err != nil {
-				yield(Path{}, err)
+				yield(nil, err)
 				return
 			}
 
 			pathCount := 0
 			for path, err := range pathSeq {
 				if err != nil {
-					yield(Path{}, err)
+					yield(nil, err)
 					return
 				}
 				pathCount++
@@ -116,7 +129,9 @@ func (u *UnionIterator) IterResourcesImpl(ctx *Context, subject ObjectAndRelatio
 				}
 			}
 
-			ctx.TraceStep(u, "sub-iterator %d returned %d paths", iterIdx, pathCount)
+			if ctx.shouldTrace() {
+				ctx.TraceStep(u, "sub-iterator %d returned %d paths", iterIdx, pathCount)
+			}
 		}
 	}
 

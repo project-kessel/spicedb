@@ -89,8 +89,6 @@ func (tn *testNode) MustDecorateWithInt(property string, value int) AstNode {
 }
 
 func TestParser(t *testing.T) {
-	t.Parallel()
-
 	parserTests := []parserTest{
 		{"empty file test", "empty"},
 		{"basic definition test", "basic"},
@@ -155,11 +153,11 @@ func TestParser(t *testing.T) {
 		{"partials with malformed partial reference", "partials_with_malformed_partial_reference"},
 		{"partials with malformed reference splat", "partials_with_malformed_reference_splat"},
 		{"partials with malformed partial block", "partials_with_malformed_partial_block"},
+		{"expiration before caveat test", "expirationbeforecaveat"},
 	}
 
 	for _, test := range parserTests {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			root := Parse(createAstNode, input.Source(test.name), test.input())
 			parseTree := getParseTree((root).(*testNode), 0)
 			assert := assert.New(t)

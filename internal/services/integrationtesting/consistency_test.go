@@ -1,4 +1,4 @@
-//go:build !skipintegrationtests
+//go:build integration || datastoreconsistency
 
 package integrationtesting_test
 
@@ -12,8 +12,8 @@ import (
 
 	"github.com/jzelinskie/stringz"
 	"github.com/stretchr/testify/require"
+	yamlv3 "go.yaml.in/yaml/v3"
 	"google.golang.org/protobuf/types/known/structpb"
-	yamlv2 "gopkg.in/yaml.v2"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 
@@ -45,20 +45,24 @@ const testTimedelta = 1 * time.Second
 // both real-world schemas, as well as the full set of hand-constructed corner
 // cases so that the system can be fully exercised.
 func TestConsistency(t *testing.T) {
-	t.Parallel()
-
 	// List all the defined consistency test files.
 	consistencyTestFiles, err := consistencytestutil.ListTestConfigs()
 	require.NoError(t, err)
 
 	for _, filePath := range consistencyTestFiles {
 		t.Run(path.Base(filePath), func(t *testing.T) {
-			t.Parallel()
 			for _, dispatcherKind := range []string{"local", "caching"} {
 				t.Run(dispatcherKind, func(t *testing.T) {
+					// This t.Parallel, and the one inside runConsistencyTestSuiteForFile, actually help our parallelism.
+					// This is because there is an unbounded, and combinatoric, number of actual subtests we are going to run for each file
+					// depending on the data (since we validate all subjects and all resources and all reachability)
+					//
+					// Thus, running each of those in parallel, once we've built the datastore for each, is useful.
+					// But the files are done in serial.
+					t.Parallel()
+
 					for _, chunkSize := range []uint16{5, 10} {
 						t.Run(fmt.Sprintf("chunk-size-%d", chunkSize), func(t *testing.T) {
-							t.Parallel()
 							runConsistencyTestSuiteForFile(t, filePath, dispatcherKind == "caching", chunkSize)
 						})
 					}
@@ -97,9 +101,7 @@ func TestConsistency(t *testing.T) {
 			require.NoError(t, err)
 		}
 
-		testers := consistencytestutil.ServiceTesters(cad.Conn)
-		tester := testers[0]
-		// Build an accessibility set.
+		tester := consistencytestutil.NewServiceTester(cad.Conn)
 		accessibilitySet := consistencytestutil.BuildAccessibilitySet(t, cad.Ctx, cad.Populated, cad.DataStore)
 
 		dispatcher := consistencytestutil.CreateDispatcherForTesting(t, false)
@@ -235,6 +237,8 @@ func TestConsistency(t *testing.T) {
 }
 
 func runConsistencyTestSuiteForFile(t *testing.T, filePath string, useCachingDispatcher bool, chunkSize uint16) {
+	t.Parallel()
+
 	options := []server.ConfigOption{
 		server.WithDispatchChunkSize(chunkSize),
 		server.WithEnableExperimentalLookupResources(true),
@@ -261,12 +265,10 @@ func runConsistencyTestSuiteForFile(t *testing.T, filePath string, useCachingDis
 	}
 
 	// Run consistency tests.
-	testers := consistencytestutil.ServiceTesters(cad.Conn)
-	for _, tester := range testers {
-		t.Run(tester.Name(), func(t *testing.T) {
-			runConsistencyTestsWithServiceTester(t, cad, tester, headRevision, useCachingDispatcher)
-		})
-	}
+	tester := consistencytestutil.NewServiceTester(cad.Conn)
+	t.Run(tester.Name(), func(t *testing.T) {
+		runConsistencyTestsWithServiceTester(t, cad, tester, headRevision, useCachingDispatcher)
+	})
 }
 
 type validationContext struct {
@@ -996,7 +998,7 @@ func validateDevelopmentAssertions(t *testing.T, devContext *development.DevCont
 		"assertCaveated": caveatedAssertions,
 		"assertFalse":    falseAssertions,
 	}
-	assertions, err := yamlv2.Marshal(assertionsMap)
+	assertions, err := yamlv3.Marshal(assertionsMap)
 	require.NoError(t, err, "Could not marshal assertions map")
 
 	// Run validation with the assertions and the updated YAML.
@@ -1023,7 +1025,7 @@ func validateDevelopmentExpectedRels(t *testing.T, devContext *development.DevCo
 		expectedMap[tuple.StringONR(relationship.Resource)] = []string{}
 	}
 
-	expectedRelations, err := yamlv2.Marshal(expectedMap)
+	expectedRelations, err := yamlv3.Marshal(expectedMap)
 	require.NoError(t, err, "Could not marshal expected relations map")
 
 	expectedRelationsMap, devErr := development.ParseExpectedRelationsYAML(string(expectedRelations))

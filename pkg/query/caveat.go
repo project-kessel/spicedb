@@ -1,9 +1,11 @@
 package query
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
+	"github.com/authzed/spicedb/pkg/datastore"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 )
 
@@ -27,12 +29,15 @@ func NewCaveatIterator(subiterator Iterator, caveat *core.ContextualizedCaveat) 
 	}
 }
 
-func (c *CaveatIterator) CheckImpl(ctx *Context, resources []Object, subject ObjectAndRelation) (PathSeq, error) {
-	subSeq, err := ctx.Check(c.subiterator, resources, subject)
+func (c *CaveatIterator) CheckImpl(ctx *Context, resource Object, subject ObjectAndRelation) (*Path, error) {
+	path, err := ctx.Check(c.subiterator, resource, subject)
 	if err != nil {
 		return nil, err
 	}
-	return c.runCaveats(ctx, subSeq)
+	if path == nil {
+		return nil, nil
+	}
+	return c.runCaveatOnPath(ctx, path)
 }
 
 func (c *CaveatIterator) IterSubjectsImpl(ctx *Context, resource Object, filterSubjectType ObjectType) (PathSeq, error) {
@@ -52,13 +57,32 @@ func (c *CaveatIterator) IterResourcesImpl(ctx *Context, subject ObjectAndRelati
 	return c.runCaveats(ctx, subSeq)
 }
 
+// runCaveatOnPath applies caveat evaluation to a single path (used by CheckImpl).
+// Returns nil if the path fails caveat evaluation, or the (possibly annotated) path if it passes.
+func (c *CaveatIterator) runCaveatOnPath(ctx *Context, path *Path) (*Path, error) {
+	if c.caveat == nil {
+		return path, nil
+	}
+	simplified, passes, err := c.simplifyCaveat(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if !passes {
+		return nil, nil
+	}
+	path.Caveat = simplified
+	return path, nil
+}
+
 func (c *CaveatIterator) runCaveats(ctx *Context, subSeq PathSeq) (PathSeq, error) {
 	if c.caveat == nil {
 		return subSeq, nil
 	}
 
-	return func(yield func(Path, error) bool) {
-		ctx.TraceStep(c, "applying caveat '%s' to sub-iterator results", c.caveat.CaveatName)
+	return func(yield func(*Path, error) bool) {
+		if ctx.shouldTrace() {
+			ctx.TraceStep(c, "applying caveat '%s' to sub-iterator results", c.caveat.CaveatName)
+		}
 
 		processedCount := 0
 		passedCount := 0
@@ -75,7 +99,9 @@ func (c *CaveatIterator) runCaveats(ctx *Context, subSeq PathSeq) (PathSeq, erro
 			// Apply caveat simplification to the path
 			simplified, passes, err := c.simplifyCaveat(ctx, path)
 			if err != nil {
-				ctx.TraceStep(c, "caveat evaluation failed for path: %v", err)
+				if ctx.shouldTrace() {
+					ctx.TraceStep(c, "caveat evaluation failed for path: %v", err)
+				}
 				if !yield(path, err) {
 					return
 				}
@@ -83,7 +109,9 @@ func (c *CaveatIterator) runCaveats(ctx *Context, subSeq PathSeq) (PathSeq, erro
 
 			if !passes {
 				// Caveat evaluated to false - don't yield the path
-				ctx.TraceStep(c, "path failed caveat evaluation")
+				if ctx.shouldTrace() {
+					ctx.TraceStep(c, "path failed caveat evaluation")
+				}
 				continue
 			}
 
@@ -95,13 +123,15 @@ func (c *CaveatIterator) runCaveats(ctx *Context, subSeq PathSeq) (PathSeq, erro
 			}
 		}
 
-		ctx.TraceStep(c, "processed %d paths, %d passed caveat evaluation", processedCount, passedCount)
+		if ctx.shouldTrace() {
+			ctx.TraceStep(c, "processed %d paths, %d passed caveat evaluation", processedCount, passedCount)
+		}
 	}, nil
 }
 
 // simplifyCaveat simplifies the caveat on the given path using AND/OR logic.
 // Returns: (simplified_expression, passes, error)
-func (c *CaveatIterator) simplifyCaveat(ctx *Context, path Path) (*core.CaveatExpression, bool, error) {
+func (c *CaveatIterator) simplifyCaveat(ctx *Context, path *Path) (*core.CaveatExpression, bool, error) {
 	// If no caveat is specified on the iterator, allow all paths
 	if c.caveat == nil {
 		return path.Caveat, true, nil
@@ -127,16 +157,12 @@ func (c *CaveatIterator) simplifyCaveat(ctx *Context, path Path) (*core.CaveatEx
 	}
 
 	// Use the SimplifyCaveatExpression function to properly handle AND/OR logic
-	sr, err := ctx.Reader.ReadSchema()
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to get schema reader: %w", err)
-	}
 	simplified, passes, err := SimplifyCaveatExpression(
 		ctx,
 		ctx.CaveatRunner,
 		path.Caveat,
 		ctx.CaveatContext,
-		sr,
+		caveatDefinitionLookupAdapter{ctx.Reader},
 	)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to simplify caveat: %w", err)
@@ -217,6 +243,26 @@ func (c *CaveatIterator) ResourceType() ([]ObjectType, error) {
 func (c *CaveatIterator) SubjectTypes() ([]ObjectType, error) {
 	// Delegate to the wrapped iterator
 	return c.subiterator.SubjectTypes()
+}
+
+// caveatDefinitionLookupAdapter wraps a QueryDatastoreReader to satisfy
+// caveats.CaveatDefinitionLookup (which takes a bulk name slice) by calling
+// LookupCaveatDefinition individually for each name.
+type caveatDefinitionLookupAdapter struct{ r QueryDatastoreReader }
+
+func (a caveatDefinitionLookupAdapter) LookupCaveatDefinitionsByNames(
+	ctx context.Context,
+	names []string,
+) (map[string]datastore.CaveatDefinition, error) {
+	out := make(map[string]datastore.CaveatDefinition, len(names))
+	for _, name := range names {
+		def, err := a.r.LookupCaveatDefinition(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		out[name] = def
+	}
+	return out, nil
 }
 
 // buildExplainInfo creates detailed explanation information for the caveat iterator

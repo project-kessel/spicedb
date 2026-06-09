@@ -11,20 +11,16 @@ import (
 	"time"
 
 	"cloud.google.com/go/spanner"
-	ocprom "contrib.go.opencensus.io/exporter/prometheus"
 	sq "github.com/Masterminds/squirrel"
 	"github.com/google/uuid"
-	"github.com/prometheus/client_golang/prometheus"
 	slogzerolog "github.com/samber/slog-zerolog/v2"
-	"go.opencensus.io/plugin/ocgrpc"
-	"go.opencensus.io/stats/view"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/sdk/metric"
 	otelres "go.opentelemetry.io/otel/sdk/resource"
-	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
@@ -148,43 +144,14 @@ func NewSpannerDatastore(ctx context.Context, database string, opts ...Option) (
 		}
 	}
 
-	if config.datastoreMetricsOption == DatastoreMetricsOptionLegacyPrometheus {
-		log.Warn().Msg("DEPRECATED: please set --datastore-spanner-metrics=otel. Note that the name of these metrics have changed.")
-		err = spanner.EnableStatViews() // nolint: staticcheck
-		if err != nil {
-			return nil, fmt.Errorf("failed to enable spanner session metrics: %w", err)
-		}
-		err = spanner.EnableGfeLatencyAndHeaderMissingCountViews() // nolint: staticcheck
-		if err != nil {
-			return nil, fmt.Errorf("failed to enable spanner GFE metrics: %w", err)
-		}
-
-		// Register Spanner client gRPC metrics (include round-trip latency, received/sent bytes...)
-		if err := view.Register(ocgrpc.DefaultClientViews...); err != nil {
-			return nil, fmt.Errorf("failed to enable gRPC metrics for Spanner client: %w", err)
-		}
-
-		_, err = ocprom.NewExporter(ocprom.Options{
-			Namespace:  "spicedb",
-			Registerer: prometheus.DefaultRegisterer,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to create exporter for spanner metrics: %w", err)
-		}
-	}
-
-	cfg := spanner.DefaultSessionPoolConfig
-	cfg.MinOpened = config.minSessions
-	cfg.MaxOpened = config.maxSessions
-
 	var spannerOpts []option.ClientOption
 	if config.credentialsJSON != nil {
-		spannerOpts = append(spannerOpts, option.WithCredentialsJSON(config.credentialsJSON))
+		spannerOpts = append(spannerOpts, option.WithCredentialsJSON(config.credentialsJSON)) //nolint:staticcheck  // The preferred approach is using Application Default Credentials
 	}
 
 	slogger := slog.New(slogzerolog.Option{Level: slog.LevelDebug, Logger: &log.Logger}.NewZerologHandler())
 	spannerOpts = append(spannerOpts,
-		option.WithCredentialsFile(config.credentialsFilePath),
+		option.WithCredentialsFile(config.credentialsFilePath), //nolint:staticcheck  // The preferred approach is using Application Default Credentials
 		option.WithGRPCConnectionPool(max(config.readMaxOpen, config.writeMaxOpen)),
 		option.WithGRPCDialOption(
 			grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
@@ -193,13 +160,12 @@ func NewSpannerDatastore(ctx context.Context, database string, opts ...Option) (
 	)
 
 	clientConfig := spanner.ClientConfig{
-		SessionPoolConfig:    cfg,
 		DisableNativeMetrics: config.datastoreMetricsOption != DatastoreMetricsOptionNative,
 	}
 	if meterProvider != nil {
 		clientConfig.OpenTelemetryMeterProvider = meterProvider
 	}
-	client, err := spanner.NewClientWithConfig(context.Background(), database, clientConfig, spannerOpts...)
+	client, err := spanner.NewClientWithConfig(ctx, database, clientConfig, spannerOpts...)
 	if err != nil {
 		return nil, common.RedactAndLogSensitiveConnString(ctx, errUnableToInstantiate, err, database)
 	}
@@ -482,7 +448,7 @@ func convertToWriteConstraintError(err error) error {
 		description := spanner.ErrDesc(err)
 		found := alreadyExistsRegex.FindStringSubmatch(description)
 		if found != nil {
-			return common.NewCreateRelationshipExistsError(&tuple.Relationship{
+			return datastore.NewCreateRelationshipExistsError(&tuple.Relationship{
 				RelationshipReference: tuple.RelationshipReference{
 					Resource: tuple.ObjectAndRelation{
 						ObjectType: found[1],
@@ -498,7 +464,7 @@ func convertToWriteConstraintError(err error) error {
 			})
 		}
 
-		return common.NewCreateRelationshipExistsError(nil)
+		return datastore.NewCreateRelationshipExistsError(nil)
 	}
 	return nil
 }

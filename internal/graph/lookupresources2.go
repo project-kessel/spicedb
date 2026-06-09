@@ -128,7 +128,7 @@ func (crr *CursoredLookupResources2) afterSameType(
 	// Load the type system and reachability graph to find the entrypoints for the reachability.
 	dl := datalayer.MustFromContext(ctx)
 	reader := dl.SnapshotReader(req.Revision)
-	sr, err := reader.ReadSchema()
+	sr, err := reader.ReadSchema(ctx)
 	if err != nil {
 		return err
 	}
@@ -363,7 +363,7 @@ func (crr *CursoredLookupResources2) redispatchOrReportOverDatabaseQuery(
 			toBeHandled := make([]itemAndPostCursor[dispatchableResourcesSubjectMap2], 0)
 			currentCursor := queryCursor
 			caveatRunner := caveats.NewCaveatRunner(crr.caveatTypeSet)
-			caveatSR, err := config.reader.ReadSchema()
+			caveatSR, err := config.reader.ReadSchema(ctx)
 			if err != nil {
 				return nil, err
 			}
@@ -686,7 +686,7 @@ func (crr *CursoredLookupResources2) redispatchOrReport(
 			// all found results, as no further filtering will be needed.
 			if entrypoint.IsDirectResult() {
 				stream := unfilteredLookupResourcesDispatchStreamForEntrypoint(ctx, foundResources, parentStream, ci)
-				return crr.dl.DispatchLookupResources2(&v1.DispatchLookupResources2Request{
+				err := crr.dl.DispatchLookupResources2(&v1.DispatchLookupResources2Request{
 					ResourceRelation: parentRequest.ResourceRelation,
 					SubjectRelation:  newSubjectType,
 					SubjectIds:       filteredSubjectIDs,
@@ -695,14 +695,19 @@ func (crr *CursoredLookupResources2) redispatchOrReport(
 						AtRevision:     parentRequest.Revision.String(),
 						DepthRemaining: parentRequest.Metadata.DepthRemaining - 1,
 					},
-					OptionalCursor: ci.currentCursor,
-					OptionalLimit:  parentRequest.OptionalLimit,
-					Context:        parentRequest.Context,
+					OptionalCursor:   ci.currentCursor,
+					OptionalLimit:    parentRequest.OptionalLimit,
+					Context:          parentRequest.Context,
+					EnableDebugTrace: parentRequest.EnableDebugTrace,
 				}, stream)
+				if parentRequest.EnableDebugTrace {
+					return dispatch.HandleTraversalTrace(err, newSubjectType.Namespace, newSubjectType.Relation, filteredSubjectIDs)
+				}
+				return err
 			}
 
 			// Otherwise, we need to filter results by batch checking along the way before dispatching.
-			return runCheckerAndDispatch(
+			err := runCheckerAndDispatch(
 				ctx,
 				parentRequest,
 				foundResources,
@@ -717,5 +722,9 @@ func (crr *CursoredLookupResources2) redispatchOrReport(
 				crr.concurrencyLimit,
 				crr.dispatchChunkSize,
 			)
+			if parentRequest.EnableDebugTrace {
+				return dispatch.HandleTraversalTrace(err, newSubjectType.Namespace, newSubjectType.Relation, filteredSubjectIDs)
+			}
+			return err
 		})
 }

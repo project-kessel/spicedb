@@ -24,6 +24,7 @@ import (
 	dispatchpkg "github.com/authzed/spicedb/internal/dispatch"
 	"github.com/authzed/spicedb/internal/graph"
 	"github.com/authzed/spicedb/internal/graph/computed"
+	"github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/internal/middleware/perfinsights"
 	"github.com/authzed/spicedb/internal/middleware/usagemetrics"
 	"github.com/authzed/spicedb/internal/namespace"
@@ -70,7 +71,7 @@ func (ps *permissionServer) CheckPermission(ctx context.Context, req *v1.CheckPe
 
 	telemetry.LogicalChecks.Inc()
 
-	if ps.config.ExperimentalQueryPlan {
+	if ps.config.ExperimentalQueryPlan.Check {
 		return ps.checkPermissionWithQueryPlan(ctx, req)
 	}
 
@@ -86,7 +87,7 @@ func (ps *permissionServer) CheckPermission(ctx context.Context, req *v1.CheckPe
 		return nil, ps.rewriteError(ctx, err)
 	}
 
-	sr, err := dl.ReadSchema()
+	sr, err := dl.ReadSchema(ctx)
 	if err != nil {
 		return nil, ps.rewriteError(ctx, err)
 	}
@@ -253,7 +254,7 @@ func (ps *permissionServer) ExpandPermissionTree(ctx context.Context, req *v1.Ex
 
 	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision)
 
-	sr, err := dl.ReadSchema()
+	sr, err := dl.ReadSchema(ctx)
 	if err != nil {
 		return nil, ps.rewriteError(ctx, err)
 	}
@@ -475,6 +476,10 @@ func (ps *permissionServer) LookupResources(req *v1.LookupResourcesRequest, resp
 		}
 	}
 
+	if ps.config.ExperimentalQueryPlan.LookupResources {
+		return ps.lookupResourcesWithQueryPlan(req, resp)
+	}
+
 	if ps.config.EnableExperimentalLookupResources3 {
 		return ps.lookupResources3(req, resp)
 	}
@@ -496,7 +501,7 @@ func (ps *permissionServer) lookupResources3(req *v1.LookupResourcesRequest, res
 
 	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision)
 
-	sr, err := dl.ReadSchema()
+	sr, err := dl.ReadSchema(ctx)
 	if err != nil {
 		return ps.rewriteError(ctx, err)
 	}
@@ -621,12 +626,23 @@ func (ps *permissionServer) lookupResources3(req *v1.LookupResourcesRequest, res
 				ObjectId:  req.Subject.Object.ObjectId,
 				Relation:  normalizeSubjectRelation(req.Subject),
 			},
-			Context:        req.Context,
-			OptionalCursor: currentCursor,
-			OptionalLimit:  req.OptionalLimit,
+			Context:          req.Context,
+			OptionalCursor:   currentCursor,
+			OptionalLimit:    req.OptionalLimit,
+			EnableDebugTrace: req.WithDebug,
 		},
 		stream)
 	if err != nil {
+		if req.WithDebug && dispatchpkg.IsMaxDepthExceeded(err) {
+			if debugInfo := dispatchpkg.ExtractTraversalTrace(err); debugInfo != nil {
+				// We'll only attach debug info if cyclemembers is non-empty. Otherwise we're
+				// in a normal recursion-too-deep scenario and the debuginfo doesn't help.
+				if len(debugInfo.CycleMembers) > 0 {
+					logging.Warn().Strs("cycle-members", debugInfo.CycleMembers).Msg("The following resource/relation pairs were found in a cycle in LookupResources:")
+					err = spiceerrors.AppendDetailsMetadata(err, spiceerrors.DebugTraceErrorDetailsKey, debugInfo.String())
+				}
+			}
+		}
 		return ps.rewriteError(ctx, err)
 	}
 
@@ -647,7 +663,7 @@ func (ps *permissionServer) lookupResources2(req *v1.LookupResourcesRequest, res
 
 	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision)
 
-	sr, err := dl.ReadSchema()
+	sr, err := dl.ReadSchema(ctx)
 	if err != nil {
 		return ps.rewriteError(ctx, err)
 	}
@@ -768,12 +784,23 @@ func (ps *permissionServer) lookupResources2(req *v1.LookupResourcesRequest, res
 				ObjectId:  req.Subject.Object.ObjectId,
 				Relation:  normalizeSubjectRelation(req.Subject),
 			},
-			Context:        req.Context,
-			OptionalCursor: currentCursor,
-			OptionalLimit:  req.OptionalLimit,
+			Context:          req.Context,
+			OptionalCursor:   currentCursor,
+			OptionalLimit:    req.OptionalLimit,
+			EnableDebugTrace: req.WithDebug,
 		},
 		stream)
 	if err != nil {
+		if req.WithDebug && dispatchpkg.IsMaxDepthExceeded(err) {
+			if debugInfo := dispatchpkg.ExtractTraversalTrace(err); debugInfo != nil {
+				// We'll only attach debug info if cyclemembers is non-empty. Otherwise we're
+				// in a normal recursion-too-deep scenario and the debuginfo doesn't help.
+				if len(debugInfo.CycleMembers) > 0 {
+					logging.Warn().Strs("cycle-members", debugInfo.CycleMembers).Msg("The following resource/relation pairs were found in a cycle in LookupResources:")
+					err = spiceerrors.AppendDetailsMetadata(err, spiceerrors.DebugTraceErrorDetailsKey, debugInfo.String())
+				}
+			}
+		}
 		return ps.rewriteError(ctx, err)
 	}
 
@@ -792,6 +819,10 @@ func (ps *permissionServer) LookupSubjects(req *v1.LookupSubjectsRequest, resp v
 
 	ctx := resp.Context()
 
+	if ps.config.ExperimentalQueryPlan.LookupSubjects {
+		return ps.lookupSubjectsWithQueryPlan(req, resp)
+	}
+
 	if req.OptionalConcreteLimit != 0 {
 		return ps.rewriteError(ctx, status.Errorf(codes.Unimplemented, "concrete limit is not yet supported"))
 	}
@@ -808,7 +839,7 @@ func (ps *permissionServer) LookupSubjects(req *v1.LookupSubjectsRequest, resp v
 		return ps.rewriteError(ctx, err)
 	}
 
-	sr, err := dl.ReadSchema()
+	sr, err := dl.ReadSchema(ctx)
 	if err != nil {
 		return ps.rewriteError(ctx, err)
 	}
@@ -1096,7 +1127,7 @@ func (ps *permissionServer) ImportBulkRelationships(stream grpc.ClientStreamingS
 			numWritten += streamWritten
 
 			// The stream has terminated because we're awaiting namespace and/or caveat information
-			schemaReader, err := rwt.ReadSchema()
+			schemaReader, err := rwt.ReadSchema(ctx)
 			if err != nil {
 				return err
 			}
@@ -1184,7 +1215,7 @@ func ExportBulk(ctx context.Context, dl datalayer.DataLayer, batchSize uint64, r
 
 	reader := dl.SnapshotReader(atRevision)
 
-	readerSchema, err := reader.ReadSchema()
+	readerSchema, err := reader.ReadSchema(ctx)
 	if err != nil {
 		return shared.RewriteErrorWithoutConfig(ctx, err)
 	}

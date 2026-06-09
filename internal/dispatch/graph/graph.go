@@ -207,7 +207,7 @@ func (ld *localDispatcher) loadNamespace(ctx context.Context, nsName string, rev
 	reader := datalayer.MustFromContext(ctx).SnapshotReader(revision)
 
 	// Load namespace and relation from the datastore
-	schemaReader, err := reader.ReadSchema()
+	schemaReader, err := reader.ReadSchema(ctx)
 	if err != nil {
 		return nil, rewriteNamespaceError(err)
 	}
@@ -469,6 +469,14 @@ func (ld *localDispatcher) DispatchLookupSubjects(
 		},
 		dispatch.StreamWithContext(ctx, stream),
 	)
+}
+
+// DispatchQueryPlan implements dispatch.Plan interface
+func (ld *localDispatcher) DispatchQueryPlan(
+	req *v1.DispatchQueryPlanRequest,
+	stream dispatch.PlanStream,
+) error {
+	return errors.New("DispatchQueryPlan not yet implemented")
 }
 
 func (ld *localDispatcher) Close() error {

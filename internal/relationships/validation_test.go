@@ -36,8 +36,6 @@ definition resource {
 }`
 
 func TestValidateRelationshipOperations(t *testing.T) {
-	t.Parallel()
-
 	tcs := []struct {
 		name          string
 		schema        string
@@ -328,7 +326,6 @@ func TestValidateRelationshipOperations(t *testing.T) {
 
 	for _, tc := range tcs {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			req := require.New(t)
 
 			ds, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
@@ -336,7 +333,7 @@ func TestValidateRelationshipOperations(t *testing.T) {
 
 			uds, rev := testfixtures.DatastoreFromSchemaAndTestRelationships(ds, tc.schema, nil, req)
 			dl := datalayer.NewDataLayer(uds)
-			sr, err := dl.SnapshotReader(rev).ReadSchema()
+			sr, err := dl.SnapshotReader(rev).ReadSchema(t.Context())
 			req.NoError(err)
 
 			op := tuple.Create

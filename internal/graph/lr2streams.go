@@ -227,7 +227,7 @@ func (rdc *checkAndDispatchRunner) runDispatch(
 			return err
 		}
 
-		if err := publishResultToParentStream(ctx, result, rdc.ci, responsePartialCursor, adjustedResources, nil, isFirstPublishCall, checkMetadata, rdc.parentStream); err != nil {
+		if err := publishResultToParentStream(result, rdc.ci, responsePartialCursor, adjustedResources, nil, isFirstPublishCall, checkMetadata, rdc.parentStream); err != nil {
 			return err
 		}
 		isFirstPublishCall = false
@@ -243,9 +243,10 @@ func (rdc *checkAndDispatchRunner) runDispatch(
 			AtRevision:     rdc.parentRequest.Revision.String(),
 			DepthRemaining: rdc.parentRequest.Metadata.DepthRemaining - 1,
 		},
-		OptionalCursor: updatedCi.currentCursor,
-		OptionalLimit:  rdc.ci.limits.currentLimit,
-		Context:        rdc.parentRequest.Context,
+		OptionalCursor:   updatedCi.currentCursor,
+		OptionalLimit:    rdc.ci.limits.currentLimit,
+		Context:          rdc.parentRequest.Context,
+		EnableDebugTrace: rdc.parentRequest.EnableDebugTrace,
 	}, wrappedStream)
 }
 
@@ -268,7 +269,7 @@ func unfilteredLookupResourcesDispatchStreamForEntrypoint(
 		default:
 		}
 
-		if err := publishResultToParentStream(ctx, result, ci, ci.responsePartialCursor(), foundResources, nil, isFirstPublishCall, emptyMetadata, parentStream); err != nil {
+		if err := publishResultToParentStream(result, ci, ci.responsePartialCursor(), foundResources, nil, isFirstPublishCall, emptyMetadata, parentStream); err != nil {
 			return err
 		}
 		isFirstPublishCall = false
@@ -281,7 +282,6 @@ func unfilteredLookupResourcesDispatchStreamForEntrypoint(
 // publishResultToParentStream publishes the result of a lookup resources call to the parent stream,
 // mapped via foundResources.
 func publishResultToParentStream(
-	ctx context.Context,
 	result *v1.DispatchLookupResources2Response,
 	ci cursorInformation,
 	responseCursor *v1.Cursor,
@@ -314,7 +314,7 @@ func publishResultToParentStream(
 	metadata := result.Metadata
 	if isFirstPublishCall {
 		metadata = addCallToResponseMetadata(metadata)
-		metadata = combineResponseMetadata(ctx, metadata, additionalMetadata)
+		metadata = combineResponseMetadata(metadata, additionalMetadata)
 	} else {
 		metadata = addAdditionalDepthRequired(metadata)
 	}

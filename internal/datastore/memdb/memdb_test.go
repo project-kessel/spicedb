@@ -19,19 +19,19 @@ import (
 	"github.com/authzed/spicedb/pkg/tuple"
 )
 
+var memdbFactory = test.NewTesterFactory(ErrSerialization)
+
 type memDBTest struct{}
 
-func (mdbt memDBTest) New(_ testing.TB, revisionQuantization, _, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
+func (memDBTest) New(_ testing.TB, revisionQuantization, _, gcWindow time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
 	return NewMemdbDatastore(watchBufferLength, revisionQuantization, gcWindow)
 }
 
 func TestMemdbDatastore(t *testing.T) {
-	t.Parallel()
-	test.All(t, memDBTest{}, true)
+	test.All(t, memdbFactory.NewTester(memDBTest{}))
 }
 
 func TestConcurrentWritePanic(t *testing.T) {
-	t.Parallel()
 	require := require.New(t)
 
 	ds, err := NewMemdbDatastore(0, 1*time.Hour, 1*time.Hour)
@@ -83,7 +83,6 @@ func TestConcurrentWritePanic(t *testing.T) {
 }
 
 func TestConcurrentWriteRelsError(t *testing.T) {
-	t.Parallel()
 	require := require.New(t)
 
 	ds, err := NewMemdbDatastore(0, 1*time.Hour, 1*time.Hour)
@@ -114,7 +113,6 @@ func TestConcurrentWriteRelsError(t *testing.T) {
 }
 
 func TestAnythingAfterCloseDoesNotPanic(t *testing.T) {
-	t.Parallel()
 	require := require.New(t)
 
 	ds, err := NewMemdbDatastore(0, 1*time.Hour, 1*time.Hour)
@@ -147,36 +145,4 @@ func TestAnythingAfterCloseDoesNotPanic(t *testing.T) {
 	reader := ds.SnapshotReader(datastore.NoRevision)
 	_, err = reader.CountRelationships(t.Context(), "blah")
 	require.ErrorIs(err, ErrMemDBIsClosed)
-}
-
-func BenchmarkQueryRelationships(b *testing.B) {
-	require := require.New(b)
-
-	ds, err := NewMemdbDatastore(0, 1*time.Hour, 1*time.Hour)
-	require.NoError(err)
-
-	// Write a bunch of relationships.
-	ctx := b.Context()
-	rev, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		updates := []tuple.RelationshipUpdate{}
-		for i := range 1000 {
-			updates = append(updates, tuple.Touch(tuple.MustParse(fmt.Sprintf("document:doc-%d#viewer@user:tom", i))))
-		}
-
-		return rwt.WriteRelationships(ctx, updates)
-	})
-	require.NoError(err)
-
-	reader := ds.SnapshotReader(rev)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		iter, err := reader.QueryRelationships(ctx, datastore.RelationshipsFilter{
-			OptionalResourceType: "document",
-		})
-		require.NoError(err)
-		for _, err := range iter {
-			require.NoError(err)
-		}
-	}
 }
