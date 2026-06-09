@@ -851,6 +851,11 @@ func (cr *clusterDispatcher) DispatchLookupSubjects(
 		})
 }
 
+func (cr *clusterDispatcher) DispatchQueryPlan(req *v1.DispatchQueryPlanRequest, stream dispatch.PlanStream) error {
+	// TODO: implement cluster dispatch for plan
+	return errors.New("DispatchQueryPlan not yet implemented for cluster dispatch")
+}
+
 func (cr *clusterDispatcher) Close() error {
 	if cr.conn != nil {
 		return cr.conn.Close()
@@ -863,7 +868,7 @@ func (cr *clusterDispatcher) ReadyState() dispatch.ReadyState {
 	state := cr.conn.GetState()
 	log.Trace().Interface("connection-state", state).Msg("checked if cluster dispatcher is ready")
 	return dispatch.ReadyState{
-		IsReady: state == connectivity.Ready || state == connectivity.Idle,
+		IsReady: state == connectivity.Ready || state == connectivity.Idle || state == connectivity.Connecting,
 		Message: fmt.Sprintf("found expected state when trying to connect to cluster: %v", state),
 	}
 }

@@ -1,4 +1,4 @@
-//go:build ci && docker
+//go:build datastore
 
 package spanner
 
@@ -20,19 +20,16 @@ import (
 	"github.com/authzed/spicedb/pkg/tuple"
 )
 
-// Implement TestableDatastore interface
-func (sd *spannerDatastore) ExampleRetryableError() error {
-	return status.New(codes.Aborted, "retryable").Err()
-}
+var spannerFactory = test.NewTesterFactory(status.New(codes.Aborted, "retryable").Err())
 
 func TestSpannerDatastore(t *testing.T) {
 	// t.Parallel() //nolint:tparallel, the test sets environment variables (the emulator)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	b := testdatastore.RunSpannerForTesting(t, "", "head")
 
 	// Transaction tests are excluded because, for reasons unknown, one cannot read its own write in one transaction in the Spanner emulator.
-	test.AllWithExceptions(t, test.DatastoreTesterFunc(func(_ testing.TB, revisionQuantization, _, _ time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
+	test.AllWithExceptions(t, spannerFactory.NewTester(test.DatastoreTesterFunc(func(_ testing.TB, revisionQuantization, _, _ time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
 		ds := b.NewDatastore(t, func(engine, uri string) datastore.Datastore {
 			ds, err := NewSpannerDatastore(ctx, uri,
 				RevisionQuantization(revisionQuantization),
@@ -46,7 +43,7 @@ func TestSpannerDatastore(t *testing.T) {
 			return ds
 		})
 		return ds, nil
-	}), test.WithCategories(test.GCCategory, test.StatsCategory, test.TransactionCategory), false)
+	})), test.WithCategories(test.GCCategory, test.StatsCategory, test.TransactionCategory))
 
 	t.Run("TestFakeStats", createDatastoreTest(
 		b,
@@ -58,7 +55,7 @@ type datastoreTestFunc func(t *testing.T, ds datastore.Datastore)
 
 func createDatastoreTest(b testdatastore.RunningEngineForTest, tf datastoreTestFunc, options ...Option) func(*testing.T) {
 	return func(t *testing.T) {
-		ctx := context.Background()
+		ctx := t.Context()
 		ds := b.NewDatastore(t, func(engine, uri string) datastore.Datastore {
 			ds, err := NewSpannerDatastore(ctx, uri, options...)
 			require.NoError(t, err)

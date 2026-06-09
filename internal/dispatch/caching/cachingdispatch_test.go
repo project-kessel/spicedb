@@ -184,9 +184,9 @@ func TestConcurrentDebugInfoAccess(t *testing.T) {
 	errors := make(chan error, numGoroutines)
 
 	var wg sync.WaitGroup
-	for i := range numGoroutines {
+	for range numGoroutines {
 		wg.Add(1)
-		go func(goroutineID int) {
+		go func() {
 			defer wg.Done()
 
 			request := &v1.DispatchCheckRequest{
@@ -200,7 +200,7 @@ func TestConcurrentDebugInfoAccess(t *testing.T) {
 				Debug: v1.DispatchCheckRequest_ENABLE_BASIC_DEBUGGING,
 			}
 
-			resp, err := dispatcher.DispatchCheck(context.Background(), request)
+			resp, err := dispatcher.DispatchCheck(t.Context(), request)
 			if err != nil {
 				errors <- err
 				return
@@ -211,7 +211,7 @@ func TestConcurrentDebugInfoAccess(t *testing.T) {
 			// we mutate the response to prove that it's not shared across goroutines
 			resp.GetMetadata().GetDebugInfo().GetCheck().GetRequest().Subject.Relation = "modified"
 			resp.GetMetadata().GetDebugInfo().GetCheck().GetRequest().ResourceIds = []string{"modified"}
-		}(i)
+		}()
 	}
 
 	wg.Wait()
@@ -243,6 +243,10 @@ func (ddm delegateDispatchMock) DispatchLookupResources3(_ *v1.DispatchLookupRes
 }
 
 func (ddm delegateDispatchMock) DispatchLookupSubjects(_ *v1.DispatchLookupSubjectsRequest, _ dispatch.LookupSubjectsStream) error {
+	return nil
+}
+
+func (ddm delegateDispatchMock) DispatchQueryPlan(_ *v1.DispatchQueryPlanRequest, _ dispatch.PlanStream) error {
 	return nil
 }
 

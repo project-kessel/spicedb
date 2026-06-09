@@ -764,14 +764,14 @@ func TestInvalidWriteRelationship(t *testing.T) {
 			[]*v1.RelationshipFilter{precondFilter("document", "newdoc", "parent", "folder", "afolder", nil)},
 			[]*v1.Relationship{rel("document", "🍣", "parent", "folder", "afolder", "")},
 			codes.InvalidArgument,
-			"caused by: invalid ObjectReference.ObjectId: value does not match regex pattern",
+			"validation error: updates[0].relationship.resource.object_id: does not match regex pattern",
 		},
 		{
 			"invalid precondition, good write",
 			[]*v1.RelationshipFilter{precondFilter("document", "🍣", "parent", "folder", "afolder", nil)},
 			[]*v1.Relationship{rel("document", "newdoc", "parent", "folder", "afolder", "")},
 			codes.InvalidArgument,
-			"caused by: invalid RelationshipFilter.OptionalResourceId: value does not match regex pattern",
+			"validation error: optional_preconditions[0].filter.optional_resource_id: does not match regex pattern",
 		},
 		{
 			"write permission",
@@ -903,9 +903,7 @@ func TestInvalidWriteRelationship(t *testing.T) {
 					})
 					grpcutil.RequireStatus(t, tc.expectedCode, err)
 					errStatus, ok := status.FromError(err)
-					if !ok {
-						panic("failed to find error in status")
-					}
+					require.True(ok, "failed to find error in status")
 					require.Contains(errStatus.Message(), tc.errorContains, "found unexpected error message: %s", errStatus.Message())
 				})
 			}
@@ -1371,7 +1369,7 @@ func TestDeleteRelationshipsBeyondLimitPartial(t *testing.T) {
 				})
 				require.NoError(err)
 
-				headRev, err = ds.HeadRevision(context.Background())
+				headRev, err = ds.HeadRevision(t.Context())
 				require.NoError(err)
 
 				afterDelete := readOfType(require, "document", client, zedtoken.MustNewFromRevisionForTesting(headRev))
@@ -2301,7 +2299,7 @@ func TestReadRelationshipsWithTraitsAndFilters(t *testing.T) {
 
 			// Write the schema
 			schemaClient := v1.NewSchemaServiceClient(conn)
-			_, err := schemaClient.WriteSchema(context.Background(), &v1.WriteSchemaRequest{
+			_, err := schemaClient.WriteSchema(t.Context(), &v1.WriteSchemaRequest{
 				Schema: tc.schema,
 			})
 			require.NoError(err)
@@ -2316,14 +2314,14 @@ func TestReadRelationshipsWithTraitsAndFilters(t *testing.T) {
 						Relationship: tuple.ToV1Relationship(rel),
 					})
 				}
-				_, err = client.WriteRelationships(context.Background(), &v1.WriteRelationshipsRequest{
+				_, err = client.WriteRelationships(t.Context(), &v1.WriteRelationshipsRequest{
 					Updates: updates,
 				})
 				require.NoError(err)
 			}
 
 			// Execute ReadRelationships request
-			stream, err := client.ReadRelationships(context.Background(), &v1.ReadRelationshipsRequest{
+			stream, err := client.ReadRelationships(t.Context(), &v1.ReadRelationshipsRequest{
 				RelationshipFilter: tc.filter,
 			})
 			require.NoError(err)

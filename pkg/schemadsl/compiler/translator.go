@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ccoveille/go-safecast/v2"
+	"buf.build/go/protovalidate"
 	"github.com/jzelinskie/stringz"
-	"github.com/rs/zerolog/log"
 
+	"github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/pkg/caveats"
 	caveattypes "github.com/authzed/spicedb/pkg/caveats/types"
 	"github.com/authzed/spicedb/pkg/genutil/mapz"
@@ -20,6 +20,7 @@ import (
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	"github.com/authzed/spicedb/pkg/schemadsl/dslshape"
 	"github.com/authzed/spicedb/pkg/schemadsl/input"
+	"github.com/authzed/spicedb/pkg/spiceerrors"
 )
 
 type translationContext struct {
@@ -105,7 +106,7 @@ func translate(tctx *translationContext, root *dslNode) (*CompiledSchema, error)
 			orderedDefinitions = append(orderedDefinitions, def)
 
 		case dslshape.NodeTypeDefinition:
-			log.Trace().Msg("adding object definition")
+			logging.Trace().Msg("adding object definition")
 			def, err := translateObjectDefinition(tctx, topLevelNode)
 			if err != nil {
 				return nil, err
@@ -276,7 +277,7 @@ func translateObjectDefinition(tctx *translationContext, defNode *dslNode) (*cor
 		ns.SourcePosition = getSourcePosition(defNode, tctx.mapper)
 
 		if !tctx.skipValidate {
-			if err = ns.Validate(); err != nil {
+			if err = protovalidate.Validate(ns); err != nil {
 				return nil, defNode.Errorf("error in object definition %s: %w", nspath, err)
 			}
 		}
@@ -289,7 +290,7 @@ func translateObjectDefinition(tctx *translationContext, defNode *dslNode) (*cor
 	ns.SourcePosition = getSourcePosition(defNode, tctx.mapper)
 
 	if !tctx.skipValidate {
-		if err := ns.Validate(); err != nil {
+		if err := protovalidate.Validate(ns); err != nil {
 			return nil, defNode.Errorf("error in object definition %s: %w", nspath, err)
 		}
 	}
@@ -345,14 +346,8 @@ func getSourcePosition(dslNode *dslNode, mapper input.PositionMapper) *core.Sour
 		return nil
 	}
 
-	uintLine, err := safecast.Convert[uint64](line)
-	if err != nil {
-		uintLine = 0
-	}
-	uintCol, err := safecast.Convert[uint64](col)
-	if err != nil {
-		uintCol = 0
-	}
+	uintLine := spiceerrors.MustSafecast[uint64](line)
+	uintCol := spiceerrors.MustSafecast[uint64](col)
 
 	return &core.SourcePosition{
 		ZeroIndexedLineNumber:     uintLine,
@@ -429,7 +424,7 @@ func translateRelation(tctx *translationContext, relationNode *dslNode) (*core.R
 	}
 
 	if !tctx.skipValidate {
-		if err := relation.Validate(); err != nil {
+		if err := protovalidate.Validate(relation); err != nil {
 			return nil, relationNode.Errorf("error in relation %s: %w", relationName, err)
 		}
 	}
@@ -478,7 +473,7 @@ func translatePermission(tctx *translationContext, permissionNode *dslNode) (*co
 	}
 
 	if !tctx.skipValidate {
-		if err := permission.Validate(); err != nil {
+		if err := protovalidate.Validate(permission); err != nil {
 			return nil, permissionNode.Errorf("error in permission %s: %w", permissionName, err)
 		}
 	}
@@ -751,7 +746,7 @@ func translateSpecificTypeReference(tctx *translationContext, typeRefNode *dslNo
 	}
 
 	if !tctx.skipValidate {
-		if err := ref.Validate(); err != nil {
+		if err := protovalidate.Validate(ref); err != nil {
 			return nil, typeRefNode.Errorf("invalid type relation: %w", err)
 		}
 	}
@@ -807,22 +802,42 @@ func addWithCaveats(tctx *translationContext, typeRefNode *dslNode, ref *core.Al
 }
 
 type importResolutionContext struct {
-	// The global set of files we've visited in the import process.
-	// If these collide we short circuit, preventing duplicate imports.
-	globallyVisitedFiles *mapz.Set[string]
+	sourceFS     fs.FS
+	sourcePrefix string
+	mapper       input.PositionMapper
+}
+
+func newImportResolutionContext(fs fs.FS, mapper input.PositionMapper, sourcePrefix string) (*importResolutionContext, error) {
+	if fs == nil {
+		return nil, errors.New("import resolution context requires a non-nil filesystem")
+	}
+	if mapper == nil {
+		return nil, errors.New("import resolution context requires a non-nil position mapper")
+	}
+
+	return &importResolutionContext{
+		sourceFS:     fs,
+		sourcePrefix: sourcePrefix,
+		mapper:       mapper,
+	}, nil
+}
+
+// translateImports takes a parsed schema and recursively translates import syntax and replaces
+// import nodes with parsed nodes from the target files
+func (itctx *importResolutionContext) translateImports(root *dslNode, locallyVisitedFiles, globallyVisitedFiles *mapz.Set[string]) error {
 	// The set of files that we've visited on a particular leg of the recursion.
 	// This allows for detection of circular imports.
 	// NOTE: This depends on an assumption that a depth-first search will always
 	// find a cycle, even if we're otherwise marking globally visited nodes.
-	locallyVisitedFiles *mapz.Set[string]
-	sourceFS            fs.FS
-	sourcePrefix        string
-	mapper              input.PositionMapper
-}
+	if locallyVisitedFiles == nil {
+		locallyVisitedFiles = mapz.NewSet[string]()
+	}
+	// The global set of files we've visited in the import process.
+	// If these collide we short circuit, preventing duplicate imports.
+	if globallyVisitedFiles == nil {
+		globallyVisitedFiles = mapz.NewSet[string]()
+	}
 
-// Takes a parsed schema and recursively translates import syntax and replaces
-// import nodes with parsed nodes from the target files
-func translateImports(itctx importResolutionContext, root *dslNode) error {
 	// We create a new list so that we can maintain the order
 	// of imported nodes
 	importedDefinitionNodes := list.New()
@@ -836,48 +851,48 @@ func translateImports(itctx importResolutionContext, root *dslNode) error {
 				return err
 			}
 
-			if err := validateFilepath(importPath); err != nil {
+			if err := validateFilepath(importPath, topLevelNode, itctx.mapper); err != nil {
 				return err
+			}
+			if itctx.sourceFS == nil {
+				return errors.New("import statement found but no source filesystem was configured for compilation")
 			}
 			filePath := filepath.Join(itctx.sourcePrefix, importPath)
 
 			newSourcePrefix := filepath.Dir(filePath)
 
-			currentLocallyVisitedFiles := itctx.locallyVisitedFiles.Copy()
+			currentLocallyVisitedFiles := locallyVisitedFiles.Copy()
 
 			if ok := currentLocallyVisitedFiles.Add(filePath); !ok {
-				// If we've already visited the file on this particular branch walk, it's
-				// a circular import issue.
-				return &CircularImportError{
-					error:    fmt.Errorf("circular import detected: %s has been visited on this branch", filePath),
-					filePath: filePath,
-				}
+				errMsg := fmt.Errorf("circular import detected: %s has been visited on this branch", filePath)
+				return toContextError(errMsg.Error(), filePath, topLevelNode, itctx.mapper)
 			}
 
-			if ok := itctx.globallyVisitedFiles.Add(filePath); !ok {
+			if ok := globallyVisitedFiles.Add(filePath); !ok {
 				// If the file has already been visited, we short-circuit the import process
 				// by not reading the schema file in and compiling a schema with an empty string.
 				// This prevents duplicate definitions from ending up in the output, as well
 				// as preventing circular imports.
-				log.Debug().Str("filepath", filePath).Msg("file has already been visited in another part of the walk")
+				logging.Debug().Str("filepath", filePath).Msg("file has already been visited in another part of the walk")
 				continue
 			}
 
 			// Do the actual import here
 			// This is a new node provided by the translateImport
-			parsedImportRoot, err := importFile(itctx.sourceFS, filePath)
+			parsedImportRoot, importedContent, err := importFile(itctx.sourceFS, filePath, topLevelNode, itctx.mapper)
 			if err != nil {
-				return toContextError("failed to read import in schema file", "", topLevelNode, itctx.mapper)
+				return err
 			}
 
+			// Register the imported file so position mapping works correctly for cross-file references.
+			itctx.mapper.RegisterImportedFile(input.Source(filePath), importedContent)
+
 			// We recurse on that node to resolve any further imports
-			err = translateImports(importResolutionContext{
-				sourceFS:             itctx.sourceFS,
-				sourcePrefix:         newSourcePrefix,
-				locallyVisitedFiles:  currentLocallyVisitedFiles,
-				globallyVisitedFiles: itctx.globallyVisitedFiles,
-				mapper:               itctx.mapper,
-			}, parsedImportRoot)
+			irc, err := newImportResolutionContext(itctx.sourceFS, itctx.mapper, newSourcePrefix)
+			if err != nil {
+				return err
+			}
+			err = irc.translateImports(parsedImportRoot, currentLocallyVisitedFiles, globallyVisitedFiles)
 			if err != nil {
 				return err
 			}

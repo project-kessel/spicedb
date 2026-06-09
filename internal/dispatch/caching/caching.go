@@ -62,33 +62,39 @@ func NewCachingDispatcher(cacheInst cache.Cache[keys.DispatchCacheKey, any], met
 		Namespace: prometheusNamespace,
 		Subsystem: prometheusSubsystem,
 		Name:      "check_total",
+		Help:      "Total number of CheckPermission dispatch requests processed.",
 	})
 	checkFromCacheCounter := prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: prometheusNamespace,
 		Subsystem: prometheusSubsystem,
 		Name:      "check_from_cache_total",
+		Help:      "Total number of CheckPermission dispatch requests served directly from the dispatch cache, avoiding re-computation.",
 	})
 
 	lookupResourcesTotalCounter := prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: prometheusNamespace,
 		Subsystem: prometheusSubsystem,
 		Name:      "lookup_resources_total",
+		Help:      "Total number of LookupResources dispatch requests processed.",
 	})
 	lookupResourcesFromCacheCounter := prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: prometheusNamespace,
 		Subsystem: prometheusSubsystem,
 		Name:      "lookup_resources_from_cache_total",
+		Help:      "Total number of LookupResources dispatch requests served directly from the dispatch cache.",
 	})
 
 	lookupSubjectsTotalCounter := prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: prometheusNamespace,
 		Subsystem: prometheusSubsystem,
 		Name:      "lookup_subjects_total",
+		Help:      "Total number of LookupSubjects dispatch requests processed.",
 	})
 	lookupSubjectsFromCacheCounter := prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: prometheusNamespace,
 		Subsystem: prometheusSubsystem,
 		Name:      "lookup_subjects_from_cache_total",
+		Help:      "Total number of LookupSubjects dispatch requests served directly from the dispatch cache.",
 	})
 
 	if metricsEnabled && prometheusSubsystem != "" {
@@ -396,6 +402,11 @@ func (cd *Dispatcher) DispatchLookupSubjects(req *v1.DispatchLookupSubjectsReque
 
 	cd.c.Set(requestKey, toCacheResults, size)
 	return nil
+}
+
+func (cd *Dispatcher) DispatchQueryPlan(req *v1.DispatchQueryPlanRequest, stream dispatch.PlanStream) error {
+	// TODO: add caching logic
+	return cd.d.DispatchQueryPlan(req, stream)
 }
 
 func (cd *Dispatcher) Close() error {

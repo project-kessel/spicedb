@@ -25,31 +25,24 @@ func NewSelfIterator(relation string, typeName string) *SelfIterator {
 	}
 }
 
-func (s *SelfIterator) CheckImpl(ctx *Context, resources []Object, subject ObjectAndRelation) (PathSeq, error) {
-	// for Self, the check returns the reflexive relation if it's in the set of resources
-	// or else returns an empty set.
-	for _, resource := range resources {
-		// NOTE: we assert that the subject and the object are the same and that
-		// both are ellipses because self is checking whether the subject and the object
-		// are the same, and a subject with a non-ellipsis relation can't semantically
-		// match the object.
-		if subject.Equals(resource.WithEllipses()) {
-			return func(yield func(Path, error) bool) {
-				yield(Path{
-					Resource: resource,
-					Relation: s.relation,
-					Subject:  subject,
-				}, nil)
-			}, nil
-		}
+func (s *SelfIterator) CheckImpl(ctx *Context, resource Object, subject ObjectAndRelation) (*Path, error) {
+	// NOTE: we assert that the subject and the object are the same and that
+	// both are ellipses because self is checking whether the subject and the object
+	// are the same, and a subject with a non-ellipsis relation can't semantically
+	// match the object.
+	if subject.Equals(resource.WithEllipses()) {
+		return &Path{
+			Resource: resource,
+			Relation: s.relation,
+			Subject:  subject,
+		}, nil
 	}
-	// Return the empty set if none of the resources matches
-	return EmptyPathSeq(), nil
+	return nil, nil
 }
 
 func (s *SelfIterator) IterSubjectsImpl(ctx *Context, resource Object, filterSubjectType ObjectType) (PathSeq, error) {
-	return func(yield func(Path, error) bool) {
-		yield(Path{
+	return func(yield func(*Path, error) bool) {
+		yield(&Path{
 			Resource: resource,
 			Relation: s.relation,
 			// NOTE: this is WithEllipses() for the same reason as the comment above.
@@ -64,8 +57,8 @@ func (s *SelfIterator) IterResourcesImpl(ctx *Context, subject ObjectAndRelation
 		return EmptyPathSeq(), nil
 	}
 
-	return func(yield func(Path, error) bool) {
-		yield(Path{
+	return func(yield func(*Path, error) bool) {
+		yield(&Path{
 			Resource: GetObject(subject),
 			Relation: s.relation,
 			Subject:  subject,

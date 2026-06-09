@@ -582,7 +582,7 @@ func CreateAlreadyExistingTest(t *testing.T, tester DatastoreTester) {
 	require.NoError(err)
 
 	_, err = common.WriteRelationships(ctx, ds, tuple.UpdateOperationCreate, tpl1)
-	require.ErrorAs(err, &common.CreateRelationshipExistsError{})
+	require.ErrorAs(err, &datastore.CreateRelationshipExistsError{})
 	require.Contains(err.Error(), "could not CREATE relationship ")
 	grpcutil.RequireStatus(t, codes.AlreadyExists, err)
 
@@ -707,7 +707,7 @@ func DeleteWithInvalidPrefixTest(t *testing.T, tester DatastoreTester) {
 		return err
 	})
 	require.Error(err)
-	require.ErrorContains(err, "value does not match regex")
+	require.ErrorContains(err, "does not match regex")
 }
 
 // DeleteWithPrefixTest tests deleting relationships with a prefix.
