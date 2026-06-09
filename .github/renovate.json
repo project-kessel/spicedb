@@ -5,16 +5,10 @@
     "tekton",
     "dockerfile"
   ],
-  "ignorePaths": [
-    ".github/workflows/benchmark.yaml",
-    ".github/workflows/build-test.yaml",
-    ".github/workflows/commit-messages.yaml",
-    ".github/workflows/docs.yaml",
-    ".github/workflows/keep-a-changelog.yaml",
-    ".github/workflows/lint.yaml",
-    ".github/workflows/release-windows.yaml",
-    "Dockerfile",
-    "Dockerfile.release"
+  "includePaths": [
+    ".github/workflows/security-scanning.yml",
+    ".tekton/**",
+    "Dockerfile.fips"
   ],
   "packageRules": [
     {
