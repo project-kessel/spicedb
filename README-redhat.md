@@ -17,7 +17,7 @@ The table below captures all changes to our fork from upstream. Each entry inclu
 | File(s) | Change | Reason | Merge Action |
 |---------|--------|--------|-------------|
 | `.github/dependabot.yml` | Removed | Aligns with Red Hat mandates to leverage Konflux | Delete |
-| `.github/renovate.json` | Replaced with our own config | Configures Mintmaker (part of Konflux) to prevent Go pkg update PRs, move to weekly updates for Dockerfile base image updates, and track `grpc-ecosystem/grpc-health-probe` tag updates via a custom regex manager | Keep ours |
+| `.github/renovate.json` | Replaced with our own config | Configures Mintmaker (part of Konflux) to prevent Go pkg update PRs and move to weekly updates for Dockerfile base image updates | Keep ours |
 | Active workflows in `.github/workflows/` | Runner changed to `ubuntu-latest` | Authzed uses custom self-hosted runners (`depot-*`, `buildjet-*`) which we don't have access to | Re-apply |
 | `.github/workflows/build-test.yaml` | Disabled: build, steelthread, analyzer-unit, WASM, protobuf, benchmark jobs (`if: false`); disabled CockroachDB/MySQL/Spanner datastore tests; changed `Dockerfile` reference to `Dockerfile.fips`; limited Postgres versions to 16/17 | Non-critical to Red Hat builds or not applicable to our deployment targets | Re-apply |
 | `.github/workflows/benchmark.yaml` | Disabled (`if: false`) | Not critical to Red Hat builds | Re-apply |
@@ -34,7 +34,7 @@ The table below captures all changes to our fork from upstream. Each entry inclu
 | `.github/workflows/wasm.yaml` | Removed | Not applicable to our fork | Delete |
 | `.github/workflows/security-scanning.yml` | Added | Required ConsoleDot platform security workflow for CVE scanning | Red Hat only |
 | `.tekton/spicedb-pull-request.yaml`, `.tekton/spicedb-push.yaml` | Added | Konflux PR and merge build pipelines | Red Hat only |
-| `Dockerfile.fips` | Added | FIPS-compliant builds using Hummingbird base images for Konflux; grpc-health-probe built from source (pinned to a tagged release of `grpc-ecosystem/grpc-health-probe`) to enable FIPS compilation | Red Hat only |
+| `Dockerfile.fips` | Added | FIPS-compliant builds using Hummingbird base images for Konflux; grpc-health-probe built from source (pinned to a `grpc-ecosystem/grpc-health-probe` tag matching upstream `Dockerfile`, updated during syncs) to enable FIPS compilation | Red Hat only |
 | `magefiles/test.go` | Increased timeouts (unit: 20m, integration: 30m, consistency: 20m) | Tests fail with short timeouts on smaller runners | Re-apply |
 | `scripts/redhat-diff.sh` | Added | Script to isolate Red Hat-specific changes from upstream sync PRs for easier code review | Red Hat only |
 | `CLAUDE.md` | Replaced with our own | Contains Red Hat-specific merge conflict resolution rules for upstream syncs | Keep ours |

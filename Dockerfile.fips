@@ -11,10 +11,9 @@ RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/g
     go mod tidy && \
     GOFLAGS="" go build -tags="memoryprotection" -ldflags=-checklinkname=0 -gcflags=all=-trimpath=/go -asmflags=all=-trimpath=/go -o spicedb ./cmd/spicedb
 
-# Builder for health probe
+# Builder for health probe — pin matches upstream Dockerfile (updated during syncs).
 FROM base AS health-probe-builder
 WORKDIR /go/src/app
-# renovate: datasource=github-tags depName=grpc-ecosystem/grpc-health-probe
 RUN git clone --branch v0.4.48 --depth 1 https://github.com/grpc-ecosystem/grpc-health-probe.git
 WORKDIR /go/src/app/grpc-health-probe
 RUN GOBIN=/go/bin go install -a -tags netgo -ldflags=-w
