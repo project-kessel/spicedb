@@ -3,16 +3,32 @@
   "enabledManagers": [
     "github-actions",
     "tekton",
-    "dockerfile"
+    "dockerfile",
+    "custom.regex"
   ],
   "includePaths": [
     ".github/workflows/security-scanning.yml",
     ".tekton/**",
     "Dockerfile.fips"
   ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "fileMatch": ["Dockerfile.fips$"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=github-tags\\s+depName=(?<depName>\\S+)\\s*\\nRUN git clone --branch (?<currentValue>v[\\d.]+)"
+      ],
+      "datasourceTemplate": "github-tags"
+    }
+  ],
   "packageRules": [
     {
       "matchManagers": ["dockerfile"],
+      "schedule": ["* 0-7 * * 0"]
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchDepNames": ["grpc-ecosystem/grpc-health-probe"],
       "schedule": ["* 0-7 * * 0"]
     }
   ]
