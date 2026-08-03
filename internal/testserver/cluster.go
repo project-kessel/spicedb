@@ -9,21 +9,23 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/cespare/xxhash/v2"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/balancer"
 	"google.golang.org/grpc/resolver"
 
 	"github.com/authzed/consistent"
 
+	"github.com/authzed/spicedb/internal/dispatch"
 	combineddispatch "github.com/authzed/spicedb/internal/dispatch/combined"
+	"github.com/authzed/spicedb/internal/grpchelpers"
 	"github.com/authzed/spicedb/pkg/cmd/server"
 	"github.com/authzed/spicedb/pkg/cmd/util"
 	"github.com/authzed/spicedb/pkg/datastore"
+	"github.com/authzed/spicedb/pkg/query"
 	"github.com/authzed/spicedb/pkg/secrets"
 )
 
@@ -72,8 +74,7 @@ func init() {
 // SafeManualResolverBuilder is a resolver builder that builds SafeManualResolvers
 // it is similar to manual.Resolver in grpc, but is thread safe
 type SafeManualResolverBuilder struct {
-	resolvers sync.Map
-	addrs     sync.Map
+	addrs sync.Map
 }
 
 func (b *SafeManualResolverBuilder) Build(target resolver.Target, cc resolver.ClientConn, opts resolver.BuildOptions) (resolver.Resolver, error) {
@@ -93,7 +94,9 @@ func (b *SafeManualResolverBuilder) Build(target resolver.Target, cc resolver.Cl
 		opts:   opts,
 		addrs:  addrs,
 	}
-	b.resolvers.Store(target.URL.Hostname(), r)
+	// Push addresses immediately so the gRPC channel can proceed without
+	// requiring a separate ResolveNow call after the resolver is built.
+	r.ResolveNow(resolver.ResolveNowOptions{})
 	return r, nil
 }
 
@@ -103,15 +106,6 @@ func (b *SafeManualResolverBuilder) Scheme() string {
 
 func (b *SafeManualResolverBuilder) SetAddrs(prefix string, addrs []resolver.Address) {
 	b.addrs.Store(prefix, addrs)
-}
-
-func (b *SafeManualResolverBuilder) ResolveNow(prefix string) {
-	r, ok := b.resolvers.Load(prefix)
-	if !ok {
-		fmt.Println("NO RESOLVER YET") // shouldn't happen, but log
-		return
-	}
-	r.(*SafeManualResolver).ResolveNow(resolver.ResolveNowOptions{})
 }
 
 // SafeManualResolver is the resolver type that SafeManualResolverBuilder builds
@@ -140,7 +134,7 @@ func (r *SafeManualResolver) Close() {}
 // TestClusterWithDispatch creates a cluster with `size` nodes.
 // The cluster has a real dispatch stack that uses bufconn grpc connections.
 // All Caching is turned off.
-func TestClusterWithDispatch(t testing.TB, size uint, ds datastore.Datastore, additionalServerOptions ...server.ConfigOption) ([]*grpc.ClientConn, func()) {
+func TestClusterWithDispatch(t testing.TB, size uint, ds datastore.Datastore, additionalServerOptions ...server.ConfigOption) []*grpc.ClientConn {
 	// each cluster gets a unique prefix since grpc resolution is process-global
 	prefix := getPrefix(t)
 
@@ -156,13 +150,23 @@ func TestClusterWithDispatch(t testing.TB, size uint, ds datastore.Datastore, ad
 
 	dialers := make([]dialerFunc, 0, size)
 	conns := make([]*grpc.ClientConn, 0, size)
-	cancelFuncs := make([]func(), 0, size)
 
 	for i := range size {
+		// One QueryPlanMetadata per node, shared between the node's dispatcher
+		// (so receiver-side DispatchQueryPlan augments + advises off it) and the
+		// permissions service (so the sender's advisor and the receiver's are
+		// consulting the same store).
+		queryPlanMetadata := query.NewQueryPlanMetadata()
+
 		dispatcherOptions := []combineddispatch.Option{
 			combineddispatch.UpstreamAddr("test://" + prefix),
-			combineddispatch.PrometheusSubsystem(fmt.Sprintf("%s_%d_client_dispatch", prefix, i)),
+			combineddispatch.Metrics(dispatch.MetricsOptions{
+				PrometheusRegistry:  prometheus.NewRegistry(),
+				PrometheusSubsystem: fmt.Sprintf("%s_%d_client_dispatch", prefix, i),
+			}),
+			combineddispatch.QueryPlanMetadata(queryPlanMetadata),
 			combineddispatch.GrpcDialOpts(
+				grpc.WithDefaultCallOptions(grpc.WaitForReady(true)),
 				grpc.WithDefaultServiceConfig(
 					(&consistent.BalancerConfig{
 						ReplicationFactor: 1500,
@@ -193,14 +197,11 @@ func TestClusterWithDispatch(t testing.TB, size uint, ds datastore.Datastore, ad
 		serverOptions := []server.ConfigOption{ //nolint: prealloc  // we're not worried about perf here
 			server.WithDatastore(ds),
 			server.WithDispatcher(dispatcher),
-			server.WithDispatchMaxDepth(50),
-			server.WithMaximumPreconditionCount(1000),
-			server.WithMaximumUpdatesPerWrite(1000),
+			server.WithQueryPlanMetadata(queryPlanMetadata),
 			server.WithGRPCServer(util.GRPCServerConfig{
 				Network: util.BufferedNetwork,
 				Enabled: true,
 			}),
-			server.WithMaxRelationshipContextSize(25000),
 			server.WithSchemaPrefixesRequired(false),
 			server.WithGRPCAuthFunc(func(ctx context.Context) (context.Context, error) {
 				return ctx, nil
@@ -215,47 +216,29 @@ func TestClusterWithDispatch(t testing.TB, size uint, ds datastore.Datastore, ad
 		}
 		serverOptions = append(serverOptions, additionalServerOptions...)
 
-		ctx, cancel := context.WithCancel(t.Context())
 		cfg := server.NewConfigWithOptionsAndDefaults(serverOptions...)
-		srv, err := cfg.Complete(ctx)
+		srv, listeners, err := cfg.CompleteForTesting(t.Context())
 		require.NoError(t, err)
 
 		errCh := make(chan error, 1)
 		go func() {
-			errCh <- srv.Run(ctx)
+			errCh <- srv.Run(t.Context())
 		}()
-		cancelFuncs = append(cancelFuncs, func() {
-			cancel()
+		t.Cleanup(func() {
 			err := <-errCh
 			require.NoError(t, err)
 		})
+		dialers = append(dialers, func(ctx context.Context, _ string) (net.Conn, error) {
+			return listeners.Dispatch.DialContext(ctx)
+		})
 
-		dialers = append(dialers, srv.DispatchNetDialContext)
-
-		// TODO: move off of WithBlock and WithReturnConnectionError
-		conn, err := srv.GRPCDialContext(ctx,
-			grpc.WithReturnConnectionError(), // nolint: staticcheck
-			grpc.WithBlock(),                 // nolint: staticcheck
-			grpc.WithConnectParams(grpc.ConnectParams{
-				Backoff: backoff.Config{
-					BaseDelay:  1 * time.Second,
-					Multiplier: 2,
-					MaxDelay:   15 * time.Second,
-				},
-			}))
+		conn, err := grpchelpers.NewBufferedClient(listeners.GRPC)
 		require.NoError(t, err)
+		t.Cleanup(func() {
+			conn.Close()
+		})
 		conns = append(conns, conn)
 	}
 
-	// resolve after dialers have been set to initialize connections
-	testResolverBuilder.ResolveNow(prefix)
-
-	return conns, func() {
-		for _, c := range conns {
-			require.NoError(t, c.Close())
-		}
-		for _, c := range cancelFuncs {
-			c()
-		}
-	}
+	return conns
 }

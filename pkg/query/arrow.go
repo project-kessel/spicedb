@@ -2,12 +2,29 @@ package query
 
 import (
 	"fmt"
+	"io"
 
 	"github.com/authzed/spicedb/internal/caveats"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	"github.com/authzed/spicedb/pkg/spiceerrors"
 	"github.com/authzed/spicedb/pkg/tuple"
 )
+
+func init() {
+	MustRegisterIterator(IteratorSpec{
+		Type: ArrowIteratorType,
+		Name: "Arrow",
+		ConstructWithArgs: func(_ *IteratorArgs, subs []Iterator, key CanonicalKey) (Iterator, error) {
+			if len(subs) != 2 {
+				return nil, fmt.Errorf("ArrowIterator requires exactly 2 subiterators, got %d", len(subs))
+			}
+			arrow := NewArrowIterator(subs[0], subs[1])
+			arrow.canonicalKey = key
+			return arrow, nil
+		},
+		Deserialize: deserializeArrow,
+	})
+}
 
 // arrowDirection specifies which direction to execute the arrow check
 type arrowDirection int
@@ -57,11 +74,19 @@ func (a *ArrowIterator) CheckImpl(ctx *Context, resource Object, subject ObjectA
 	// - IterResources on the right, Check on the left
 	// - IterSubjects on left, IterResources on right, and intersect the two iterators here (especially if they are known to be sorted)
 	//
-	// But for now, we cover the first two.
+	// But for now, we cover the first two. When BatchedArrows is set the
+	// per-element Check loop is replaced by a single CheckMany call so the
+	// executor (e.g. DispatchExecutor) can collapse fanout into one RPC.
 	switch a.direction {
 	case leftToRight:
+		if ctx.BatchedArrows {
+			return a.checkLeftToRightBatch(ctx, resource, subject)
+		}
 		return a.checkLeftToRight(ctx, resource, subject)
 	case rightToLeft:
+		if ctx.BatchedArrows {
+			return a.checkRightToLeftBatch(ctx, resource, subject)
+		}
 		return a.checkRightToLeft(ctx, resource, subject)
 	default:
 		return nil, spiceerrors.MustBugf("unknown arrow direction: %d", a.direction)
@@ -171,12 +196,14 @@ func (a *ArrowIterator) checkRightToLeft(ctx *Context, resource Object, subject 
 
 		// rightPath.Resource is an intermediate object from the right side.
 		// Check if our input resource connects to this intermediate via the left side.
-		// Use tuple.Ellipsis as the relation since the left side stores subjects with "..."
-		// (the canonical relation for direct membership with no subrelation).
+		// The subject relation must match what the left side stores, which differs
+		// between schema arrows (left stores subjects with Ellipsis) and subrelation
+		// arrows (left stores subjects with a specific subject_relation, e.g. `member`).
+		// Derive it from the left's SubjectTypes for the intermediate's type.
 		intermediateAsSubject := ObjectAndRelation{
 			ObjectType: rightPath.Resource.ObjectType,
 			ObjectID:   rightPath.Resource.ObjectID,
-			Relation:   tuple.Ellipsis,
+			Relation:   a.intermediateSubjectRelation(rightPath.Resource.ObjectType),
 		}
 
 		leftPath, err := ctx.Check(a.left, resource, intermediateAsSubject)
@@ -205,6 +232,161 @@ func (a *ArrowIterator) checkRightToLeft(ctx *Context, resource Object, subject 
 
 	if ctx.shouldTrace() {
 		ctx.TraceStep(a, "arrow (right-to-left) completed: %d right paths, found=%v", rightPathCount, result != nil)
+	}
+	return result, nil
+}
+
+// intermediateSubjectRelation returns the subject_relation that the LEFT side's
+// datastore expects for subjects of the given type. Schema arrows store
+// subjects with Ellipsis (no subject_relation in the schema's allowed type),
+// while subrelation arrows store subjects with a specific relation (e.g.
+// team:foo#member). Passing the wrong relation silently misses datastore rows.
+//
+// Implementation derives the expected relation from a.left.SubjectTypes(),
+// falling back to Ellipsis if the type isn't reflected there (e.g. constructed
+// iterator without metadata).
+func (a *ArrowIterator) intermediateSubjectRelation(intermediateType string) string {
+	subjectTypes, err := a.left.SubjectTypes()
+	if err != nil {
+		return tuple.Ellipsis
+	}
+	for _, st := range subjectTypes {
+		if st.Type != intermediateType {
+			continue
+		}
+		if st.Subrelation == "" {
+			return tuple.Ellipsis
+		}
+		return st.Subrelation
+	}
+	return tuple.Ellipsis
+}
+
+// checkLeftToRightBatch is the batched variant of checkLeftToRight: it drains
+// all left subjects first, then issues a single CheckManyResources call against
+// the right side. Wildcards still fall back to the per-element IterResources
+// inversion path because they cannot be used as a concrete resource on the right.
+func (a *ArrowIterator) checkLeftToRightBatch(ctx *Context, resource Object, subject ObjectAndRelation) (*Path, error) {
+	if ctx.shouldTrace() {
+		ctx.TraceStep(a, "arrow check (left-to-right, batched) for resource %s:%s", resource.ObjectType, resource.ObjectID)
+	}
+
+	subit, err := ctx.IterSubjects(a.left, resource, NoObjectFilter())
+	if err != nil {
+		return nil, err
+	}
+	leftPaths, err := CollectAll(subit)
+	if err != nil {
+		return nil, err
+	}
+
+	var result *Path
+	concreteLeft := make([]*Path, 0, len(leftPaths))
+	concreteRes := make([]Object, 0, len(leftPaths))
+	for _, leftPath := range leftPaths {
+		// Wildcards: invert to IterResources, like the unbatched path.
+		if leftPath.Subject.ObjectID == tuple.PublicWildcard {
+			rightSeq, err := ctx.IterResources(a.right, subject, ObjectType{Type: leftPath.Subject.ObjectType})
+			if err != nil {
+				return nil, err
+			}
+			for rightPath, err := range rightSeq {
+				if err != nil {
+					return nil, err
+				}
+				combined := combineArrowPaths(leftPath, rightPath)
+				if combined.Caveat == nil {
+					return combined, nil
+				}
+				result, err = result.MergeOr(combined)
+				if err != nil {
+					return nil, err
+				}
+			}
+			continue
+		}
+		concreteLeft = append(concreteLeft, leftPath)
+		concreteRes = append(concreteRes, GetObject(leftPath.Subject))
+	}
+
+	if len(concreteRes) > 0 {
+		rightPaths, err := ctx.CheckManyResources(a.right, concreteRes, subject)
+		if err != nil {
+			return nil, err
+		}
+		for i, rightPath := range rightPaths {
+			if rightPath == nil {
+				continue
+			}
+			combined := combineArrowPaths(concreteLeft[i], rightPath)
+			if combined.Caveat == nil {
+				return combined, nil
+			}
+			result, err = result.MergeOr(combined)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	if ctx.shouldTrace() {
+		ctx.TraceStep(a, "arrow (left-to-right, batched) completed: %d concrete, found=%v", len(concreteLeft), result != nil)
+	}
+	return result, nil
+}
+
+// checkRightToLeftBatch is the batched variant of checkRightToLeft: it drains
+// all right resources first, then issues a single CheckManySubjects call against
+// the left side using the right resources (with ellipsis relation) as subjects.
+func (a *ArrowIterator) checkRightToLeftBatch(ctx *Context, resource Object, subject ObjectAndRelation) (*Path, error) {
+	if ctx.shouldTrace() {
+		ctx.TraceStep(a, "arrow check (right-to-left, batched) for resource %s:%s, subject %s:%s",
+			resource.ObjectType, resource.ObjectID, subject.ObjectType, subject.ObjectID)
+	}
+
+	rightSeq, err := ctx.IterResources(a.right, subject, NoObjectFilter())
+	if err != nil {
+		return nil, err
+	}
+	rightPaths, err := CollectAll(rightSeq)
+	if err != nil {
+		return nil, err
+	}
+	if len(rightPaths) == 0 {
+		return nil, nil
+	}
+
+	intermediates := make([]ObjectAndRelation, len(rightPaths))
+	for i, rightPath := range rightPaths {
+		intermediates[i] = ObjectAndRelation{
+			ObjectType: rightPath.Resource.ObjectType,
+			ObjectID:   rightPath.Resource.ObjectID,
+			Relation:   a.intermediateSubjectRelation(rightPath.Resource.ObjectType),
+		}
+	}
+
+	leftPaths, err := ctx.CheckManySubjects(a.left, resource, intermediates)
+	if err != nil {
+		return nil, err
+	}
+
+	var result *Path
+	for i, leftPath := range leftPaths {
+		if leftPath == nil {
+			continue
+		}
+		combined := combineArrowPaths(leftPath, rightPaths[i])
+		if combined.Caveat == nil {
+			return combined, nil
+		}
+		result, err = result.MergeOr(combined)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if ctx.shouldTrace() {
+		ctx.TraceStep(a, "arrow (right-to-left, batched) completed: %d right paths, found=%v", len(rightPaths), result != nil)
 	}
 	return result, nil
 }
@@ -543,4 +725,50 @@ func (a *ArrowIterator) ResourceType() ([]ObjectType, error) {
 func (a *ArrowIterator) SubjectTypes() ([]ObjectType, error) {
 	// Arrow's subjects come from the right side
 	return a.right.SubjectTypes()
+}
+
+const (
+	arrowFlagSchemaArrow = iota
+	arrowFlagRightToLeft
+)
+
+func (a *ArrowIterator) Serialize(w io.Writer) error {
+	return SerializeWithHeader(w, ArrowIteratorType, a.canonicalKey, func(buf io.Writer) error {
+		var flags uint64
+		setFlag(&flags, arrowFlagSchemaArrow, a.isSchemaArrow)
+		setFlag(&flags, arrowFlagRightToLeft, a.direction == rightToLeft)
+		if err := writeUvarint(buf, flags); err != nil {
+			return err
+		}
+		if err := a.left.Serialize(buf); err != nil {
+			return fmt.Errorf("left: %w", err)
+		}
+		if err := a.right.Serialize(buf); err != nil {
+			return fmt.Errorf("right: %w", err)
+		}
+		return nil
+	})
+}
+
+func deserializeArrow(body io.Reader, key CanonicalKey, dctx *DeserializeContext) (Iterator, error) {
+	br := asByteReader(body)
+	flags, err := readUvarint(br)
+	if err != nil {
+		return nil, fmt.Errorf("arrow flags: %w", err)
+	}
+	subs, err := readNSubs(br, 2, dctx)
+	if err != nil {
+		return nil, err
+	}
+	a := &ArrowIterator{
+		left:          subs[0],
+		right:         subs[1],
+		isSchemaArrow: hasFlag(flags, arrowFlagSchemaArrow),
+		direction:     leftToRight,
+		canonicalKey:  key,
+	}
+	if hasFlag(flags, arrowFlagRightToLeft) {
+		a.direction = rightToLeft
+	}
+	return a, nil
 }

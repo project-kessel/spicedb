@@ -1,10 +1,33 @@
 package query
 
 import (
+	"fmt"
+	"io"
+
 	"github.com/authzed/spicedb/internal/caveats"
 	"github.com/authzed/spicedb/pkg/genutil/mapz"
 	"github.com/authzed/spicedb/pkg/tuple"
 )
+
+func init() {
+	MustRegisterIterator(IteratorSpec{
+		Type: IntersectionIteratorType,
+		Name: "Intersection",
+		ConstructWithArgs: func(_ *IteratorArgs, subs []Iterator, key CanonicalKey) (Iterator, error) {
+			it := NewIntersectionIterator(subs...)
+			// NewIntersectionIterator returns a FixedIterator when subs is empty.
+			switch v := it.(type) {
+			case *IntersectionIterator:
+				v.canonicalKey = key
+			case *FixedIterator:
+				// This stands in for the fixed, so the canonical key is correct.
+				v.canonicalKey = key
+			}
+			return it, nil
+		},
+		Deserialize: deserializeIntersection,
+	})
+}
 
 // IntersectionIterator the set of paths that are in all of underlying subiterators.
 // This is equivalent to `permission foo = bar & baz`
@@ -17,7 +40,7 @@ var _ Iterator = &IntersectionIterator{}
 
 func NewIntersectionIterator(subiterators ...Iterator) Iterator {
 	if len(subiterators) == 0 {
-		return NewFixedIterator() // Return empty FixedIterator instead of empty Intersection
+		return NewEmptyFixedIterator() // Return empty FixedIterator instead of empty Intersection
 	}
 	return &IntersectionIterator{
 		subIts: subiterators,
@@ -177,37 +200,109 @@ func intersectSubjectSets(
 
 	// Concrete subjects in prev matched by curr's wildcard.
 	if currWildcard != nil {
+		excluded := excludedSubjectMap(currWildcard)
 		for key, prevPath := range prevConcrete {
 			if _, exists := result[key]; exists {
 				continue // already handled by concrete ∩ concrete
 			}
 			synth := *prevPath
 			synth.Caveat = caveats.And(prevPath.Caveat, currWildcard.Caveat)
+			// If the wildcard explicitly excludes this concrete subject
+			// (e.g. `viewer:* - banned`), apply that exclusion instead of
+			// admitting the subject unconditionally: drop it when the exclusion
+			// is absolute, or condition it on the negated exclusion caveat.
+			if excludedPath, found := excluded[key]; found {
+				if _, shouldInclude := combineExclusionCaveats(&synth, excludedPath); !shouldInclude {
+					continue
+				}
+			}
 			result[key] = &synth
 		}
 	}
 
 	// Concrete subjects in curr matched by prev's wildcard.
 	if prevWildcard != nil {
+		excluded := excludedSubjectMap(prevWildcard)
 		for key, currPath := range currConcrete {
 			if _, exists := result[key]; exists {
 				continue // already handled above
 			}
 			synth := *currPath
 			synth.Caveat = caveats.And(currPath.Caveat, prevWildcard.Caveat)
+			if excludedPath, found := excluded[key]; found {
+				if _, shouldInclude := combineExclusionCaveats(&synth, excludedPath); !shouldInclude {
+					continue
+				}
+			}
 			result[key] = &synth
 		}
 	}
 
-	// Wildcard ∩ wildcard → wildcard with AND'd caveats.
+	// Wildcard ∩ wildcard → wildcard with AND'd caveats and unioned exclusions.
+	// (* - E1) ∩ (* - E2) = * - (E1 ∪ E2): a subject excluded from either side is
+	// excluded from the intersection.
 	var resultWildcard *Path
 	if prevWildcard != nil && currWildcard != nil {
 		wc := *prevWildcard
 		wc.Caveat = caveats.And(prevWildcard.Caveat, currWildcard.Caveat)
+		wc.ExcludedSubjects = unionExcludedSubjects(prevWildcard.ExcludedSubjects, currWildcard.ExcludedSubjects)
 		resultWildcard = &wc
 	}
 
 	return result, resultWildcard, nil
+}
+
+// excludedSubjectMap indexes a wildcard path's ExcludedSubjects by subject key for
+// O(1) lookup. A concrete subject present here was explicitly excluded from the
+// wildcard (e.g. `viewer:* - banned`), so it must not be re-admitted when the
+// wildcard is intersected with a concrete set on the other side.
+func excludedSubjectMap(wildcard *Path) map[string]*Path {
+	if wildcard == nil || len(wildcard.ExcludedSubjects) == 0 {
+		return nil
+	}
+	m := make(map[string]*Path, len(wildcard.ExcludedSubjects))
+	for _, excluded := range wildcard.ExcludedSubjects {
+		m[ObjectAndRelationKey(excluded.Subject)] = excluded
+	}
+	return m
+}
+
+// unionExcludedSubjects merges the ExcludedSubjects of two intersected wildcards.
+// Because (* - E1) ∩ (* - E2) = * - (E1 ∪ E2), a subject excluded from either side
+// is excluded from the result. When the same subject is excluded by both sides
+// under caveats, the exclusion applies if either condition holds, so the caveats
+// are OR'd; an unconditional (nil-caveat) exclusion on either side dominates.
+func unionExcludedSubjects(a, b []*Path) []*Path {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
+	}
+	merged := make(map[string]*Path, len(a)+len(b))
+	order := make([]string, 0, len(a)+len(b))
+	add := func(p *Path) {
+		key := ObjectAndRelationKey(p.Subject)
+		if existing, ok := merged[key]; ok {
+			if existing.Caveat == nil || p.Caveat == nil {
+				existing.Caveat = nil // unconditional exclusion dominates
+			} else {
+				existing.Caveat = caveats.Or(existing.Caveat, p.Caveat)
+			}
+			return
+		}
+		cp := *p
+		merged[key] = &cp
+		order = append(order, key)
+	}
+	for _, p := range a {
+		add(p)
+	}
+	for _, p := range b {
+		add(p)
+	}
+	result := make([]*Path, 0, len(order))
+	for _, key := range order {
+		result = append(result, merged[key])
+	}
+	return result
 }
 
 func (i *IntersectionIterator) IterResourcesImpl(ctx *Context, subject ObjectAndRelation, filterResourceType ObjectType) (PathSeq, error) {
@@ -393,4 +488,32 @@ func (i *IntersectionIterator) ResourceType() ([]ObjectType, error) {
 
 func (i *IntersectionIterator) SubjectTypes() ([]ObjectType, error) {
 	return collectAndDeduplicateSubjectTypes(i.subIts)
+}
+
+func (i *IntersectionIterator) Serialize(w io.Writer) error {
+	return SerializeWithHeader(w, IntersectionIteratorType, i.canonicalKey, func(buf io.Writer) error {
+		if err := writeUvarint(buf, 0); err != nil {
+			return err
+		}
+		return writeSubs(buf, i.subIts)
+	})
+}
+
+func deserializeIntersection(body io.Reader, key CanonicalKey, dctx *DeserializeContext) (Iterator, error) {
+	br := asByteReader(body)
+	if _, err := readUvarint(br); err != nil {
+		return nil, fmt.Errorf("intersection flags: %w", err)
+	}
+	subs, err := readSubs(br, dctx)
+	if err != nil {
+		return nil, err
+	}
+	it := NewIntersectionIterator(subs...)
+	switch v := it.(type) {
+	case *IntersectionIterator:
+		v.canonicalKey = key
+	case *FixedIterator:
+		v.canonicalKey = key
+	}
+	return it, nil
 }

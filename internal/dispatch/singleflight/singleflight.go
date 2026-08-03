@@ -39,8 +39,9 @@ type Dispatcher struct {
 	delegate   dispatch.Dispatcher
 	keyHandler keys.Handler
 
-	checkGroup  singleflight.Group[string, *v1.DispatchCheckResponse]
-	expandGroup singleflight.Group[string, *v1.DispatchExpandResponse]
+	checkGroup     singleflight.Group[string, *v1.DispatchCheckResponse]
+	expandGroup    singleflight.Group[string, *v1.DispatchExpandResponse]
+	planCheckGroup singleflight.Group[string, []*v1.DispatchQueryPlanResponse]
 }
 
 func (d *Dispatcher) DispatchCheck(ctx context.Context, req *v1.DispatchCheckRequest) (*v1.DispatchCheckResponse, error) {
@@ -76,6 +77,18 @@ func (d *Dispatcher) DispatchCheck(ctx context.Context, req *v1.DispatchCheckReq
 	} else if possiblyLoop {
 		log.Debug().Object("DispatchCheckRequest", req).Str("key", keyString).Msg("potential DispatchCheckRequest loop detected")
 		singleFlightCount.WithLabelValues("DispatchCheck", "loop").Inc()
+		return d.delegate.DispatchCheck(ctx, req)
+	}
+
+	// Debug-enabled checks must not share a flight with non-debug checks: the
+	// dispatch key does not depend on req.Debug, so an identical concurrent
+	// request with a different debug level would otherwise collapse into the
+	// same flight. A non-debug leader would deny a tracing follower its trace,
+	// and a debug leader would leak its trace to a non-debug follower (the
+	// latter has panicked CheckBulkPermissions, see #3159). Dispatch directly
+	// so the response carries exactly the debug info this caller asked for.
+	if req.Debug != v1.DispatchCheckRequest_NO_DEBUG {
+		singleFlightCount.WithLabelValues("DispatchCheck", "debug").Inc()
 		return d.delegate.DispatchCheck(ctx, req)
 	}
 
@@ -123,15 +136,16 @@ func (d *Dispatcher) DispatchExpand(ctx context.Context, req *v1.DispatchExpandR
 		return d.delegate.DispatchExpand(ctx, req)
 	}
 
-	v, isShared, err := d.expandGroup.Do(ctx, keyString, func(innerCtx context.Context) (*v1.DispatchExpandResponse, error) {
+	sharedResp, isShared, err := d.expandGroup.Do(ctx, keyString, func(innerCtx context.Context) (*v1.DispatchExpandResponse, error) {
 		return d.delegate.DispatchExpand(innerCtx, req)
 	})
 
-	singleFlightCount.WithLabelValues("DispatchExpand", strconv.FormatBool(isShared)).Inc()
-	if err != nil {
-		return &v1.DispatchExpandResponse{Metadata: &v1.ResponseMeta{DispatchCount: 1}}, err
+	if sharedResp == nil {
+		sharedResp = &v1.DispatchExpandResponse{Metadata: &v1.ResponseMeta{DispatchCount: 1}}
 	}
-	return v, err
+
+	singleFlightCount.WithLabelValues("DispatchExpand", strconv.FormatBool(isShared)).Inc()
+	return sharedResp.CloneVT(), err
 }
 
 func (d *Dispatcher) DispatchLookupResources2(req *v1.DispatchLookupResources2Request, stream dispatch.LookupResources2Stream) error {
@@ -146,8 +160,51 @@ func (d *Dispatcher) DispatchLookupSubjects(req *v1.DispatchLookupSubjectsReques
 	return d.delegate.DispatchLookupSubjects(req, stream)
 }
 
+// LookupPlanCheck is a passthrough — singleflight provides no cache of its
+// own; it just deduplicates concurrent identical Plan-Check dispatches. The
+// delegate (typically a caching.Dispatcher) is the actual cache holder.
+func (d *Dispatcher) LookupPlanCheck(ctx context.Context, lookup dispatch.PlanCheckLookup) (*v1.ResultPath, bool, error) {
+	return d.delegate.LookupPlanCheck(ctx, lookup)
+}
+
 func (d *Dispatcher) DispatchQueryPlan(req *v1.DispatchQueryPlanRequest, stream dispatch.PlanStream) error {
-	return d.delegate.DispatchQueryPlan(req, stream)
+	// Only PLAN_OPERATION_CHECK is request/response-shaped (single ResultPath
+	// per call) and therefore safe to deduplicate via singleflight. The lookup
+	// variants produce streamed multi-result outputs that don't fit the
+	// single-value singleflight model. Recursion safety is provided by the
+	// receiver-side DispatchExecutor, which refuses to dispatch any alias
+	// whose key is already in PlanContext.in_progress_keys, so a plan-check
+	// can never recurse to itself with the same dispatch key.
+	if req.Operation != v1.PlanOperation_PLAN_OPERATION_CHECK {
+		singleFlightCount.WithLabelValues("DispatchQueryPlan", "passthrough").Inc()
+		return d.delegate.DispatchQueryPlan(req, stream)
+	}
+
+	key, err := d.keyHandler.PlanCheckDispatchKey(stream.Context(), req)
+	if err != nil {
+		return status.Error(codes.Internal, "unexpected DispatchQueryPlan key error")
+	}
+	keyString := hex.EncodeToString(key)
+
+	sharedResults, isShared, err := d.planCheckGroup.Do(stream.Context(), keyString, func(innerCtx context.Context) ([]*v1.DispatchQueryPlanResponse, error) {
+		collecting := dispatch.NewCollectingDispatchStream[*v1.DispatchQueryPlanResponse](innerCtx)
+		if err := d.delegate.DispatchQueryPlan(req, collecting); err != nil {
+			return nil, err
+		}
+		return collecting.Results(), nil
+	})
+
+	singleFlightCount.WithLabelValues("DispatchQueryPlan", strconv.FormatBool(isShared)).Inc()
+
+	if err != nil {
+		return err
+	}
+	for _, resp := range sharedResults {
+		if err := stream.Publish(resp.CloneVT()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (d *Dispatcher) Close() error                    { return d.delegate.Close() }

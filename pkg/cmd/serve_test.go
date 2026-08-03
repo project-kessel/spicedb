@@ -21,13 +21,6 @@ func RunServeTest(t *testing.T, args []string, assertConfig func(t *testing.T, m
 	err := RegisterRootFlags(cmd)
 	require.NoError(t, err)
 	require.NoError(t, RegisterServeFlags(cmd, config))
-	// Disable all metrics as they are singletons
-	config.DispatchClusterMetricsEnabled = false
-	config.DispatchClientMetricsEnabled = false
-	config.DatastoreConfig.EnableDatastoreMetrics = false
-	config.DispatchCacheConfig.Metrics = false
-	config.ClusterDispatchCacheConfig.Metrics = false
-	config.NamespaceCacheConfig.Metrics = false
 
 	cmd.SetArgs(args)
 
@@ -71,6 +64,23 @@ func restoreEnv(prevEnv []string) {
 		envvar := strings.SplitN(line, "=", 2)
 		os.Setenv(envvar[0], envvar[1])
 	}
+}
+
+// TestConfigDefaultsMatchCLIFlags asserts that NewConfigWithOptionsAndDefaults
+// (the library entry point) produces the same Config as RegisterServeFlags
+// (the CLI entry point). Any drift is a bug: a new flag or a new struct field
+// added without a matching default tag/SetDefaults hook will be caught here.
+//
+// pflag writes each flag's default into the bound destination at registration
+// time, so RegisterServeFlags alone (no ParseFlags call) is enough to fully
+// populate cliCfg with the CLI defaults.
+func TestConfigDefaultsMatchCLIFlags(t *testing.T) {
+	cliCfg := &server.Config{}
+	require.NoError(t, RegisterServeFlags(&cobra.Command{}, cliCfg))
+
+	libCfg := server.NewConfigWithOptionsAndDefaults()
+
+	require.Equal(t, cliCfg.DebugMap(), libCfg.DebugMap())
 }
 
 func TestDefaultConfig(t *testing.T) {

@@ -236,6 +236,7 @@ func NewSpannerDatastore(ctx context.Context, database string, opts ...Option) (
 	// TODO: Still investigating whether a stale read can be used for
 	//       HeadRevision for FullConsistency queries.
 	ds.SetNowFunc(ds.staleHeadRevision)
+	ds.SetNowOnlyFunc(ds.nowOnly)
 
 	return ds, nil
 }
@@ -360,6 +361,13 @@ func (sd *spannerDatastore) ReadWriteTx(ctx context.Context, fn datastore.TxUser
 			spannerReader{executor, txSource, sd.filterMaximumIDCount, sd.schema},
 			spannerRWT,
 		}
+
+		if config.SchemaHashPrecondition != "" {
+			if err := assertSchemaHash(ctx, spannerRWT, config.SchemaHashPrecondition); err != nil {
+				return err
+			}
+		}
+
 		err := func() error {
 			innerCtx, innerSpan := tracer.Start(ctx, "TxUserFunc")
 			defer innerSpan.End()

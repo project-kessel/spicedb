@@ -56,7 +56,7 @@ func (p *indexcheckingProxy) UniqueID(ctx context.Context) (string, error) {
 	return p.delegate.UniqueID(ctx)
 }
 
-func (p *indexcheckingProxy) OptimizedRevision(ctx context.Context) (datastore.Revision, error) {
+func (p *indexcheckingProxy) OptimizedRevision(ctx context.Context) (datastore.RevisionWithSchemaHash, error) {
 	return p.delegate.OptimizedRevision(ctx)
 }
 
@@ -64,7 +64,7 @@ func (p *indexcheckingProxy) CheckRevision(ctx context.Context, revision datasto
 	return p.delegate.CheckRevision(ctx, revision)
 }
 
-func (p *indexcheckingProxy) HeadRevision(ctx context.Context) (datastore.Revision, error) {
+func (p *indexcheckingProxy) HeadRevision(ctx context.Context) (datastore.RevisionWithSchemaHash, error) {
 	return p.delegate.HeadRevision(ctx)
 }
 
@@ -135,6 +135,10 @@ func (r *indexcheckingReader) LegacyReadNamespaceByName(ctx context.Context, nsN
 	return r.delegate.LegacyReadNamespaceByName(ctx, nsName)
 }
 
+func (r *indexcheckingReader) ReadStoredSchema(ctx context.Context) (*datastore.ReadOnlyStoredSchema, error) {
+	return r.delegate.ReadStoredSchema(ctx)
+}
+
 func (r *indexcheckingReader) mustEnsureIndexes(ctx context.Context, sql string, args []any, shape queryshape.Shape, explain string, expectedIndexes options.SQLIndexInformation) error {
 	// If no indexes are expected, there is nothing to check.
 	if len(expectedIndexes.ExpectedIndexNames) == 0 {
@@ -146,13 +150,21 @@ func (r *indexcheckingReader) mustEnsureIndexes(ctx context.Context, sql string,
 		return fmt.Errorf("failed to parse explain output: %w", err)
 	}
 
+	indexesUsed := mapz.NewSet(parsed.IndexesUsed...)
+
+	// Ignore any indexes that do not serve a query shape (e.g. maintenance indexes used for GC,
+	// watch or expiration, or the implicit primary key). On small datasets the optimizer may
+	// fall back to one of these instead of the intended index, so it is treated the same as no index being used.
+	if len(expectedIndexes.ShapeServingIndexNames) > 0 {
+		indexesUsed = indexesUsed.Intersect(mapz.NewSet(expectedIndexes.ShapeServingIndexNames...))
+	}
+
 	// If an index is not used (perhaps because the data is too small), the query is still valid.
-	if len(parsed.IndexesUsed) == 0 {
+	if indexesUsed.IsEmpty() {
 		return nil
 	}
 
 	// Otherwise, ensure the index used is one of the expected indexes.
-	indexesUsed := mapz.NewSet(parsed.IndexesUsed...)
 	indexesExpected := mapz.NewSet(expectedIndexes.ExpectedIndexNames...)
 	if indexesExpected.Intersect(indexesUsed).IsEmpty() {
 		return fmt.Errorf("expected index(es) %v for query shape %v not used: %s", expectedIndexes.ExpectedIndexNames, shape, explain)
@@ -224,6 +236,10 @@ func (rwt *indexcheckingRWT) DeleteRelationships(ctx context.Context, filter *v1
 
 func (rwt *indexcheckingRWT) BulkLoad(ctx context.Context, iter datastore.BulkWriteRelationshipSource) (uint64, error) {
 	return rwt.delegate.BulkLoad(ctx, iter)
+}
+
+func (rwt *indexcheckingRWT) WriteStoredSchema(ctx context.Context, schema *core.StoredSchema) error {
+	return rwt.delegate.WriteStoredSchema(ctx, schema)
 }
 
 var (

@@ -23,19 +23,10 @@ func (sk StringKey) KeyString() string {
 }
 
 // Config for caching.
-// See: https://github.com/outcaste-io/ristretto#Config
 type Config struct {
-	// NumCounters determines the number of counters (keys) to keep that hold
-	// access frequency information. It's generally a good idea to have more
-	// counters than the max cache capacity, as this will improve eviction
-	// accuracy and subsequent hit ratios.
-	//
-	// For example, if you expect your cache to hold 1,000,000 items when full,
-	// NumCounters should be 10,000,000 (10x). Each counter takes up roughly
-	// 3 bytes (4 bits for each counter * 4 copies plus about a byte per
-	// counter for the bloom filter). Note that the number of counters is
-	// internally rounded up to the nearest power of 2, so the space usage
-	// may be a little larger than 3 bytes * NumCounters.
+	// Deprecated: NumCounters was used to control behavior of the cache
+	// when the underlying cache exposed it, but the current cache implementation
+	// does not use it.
 	NumCounters int64
 
 	// MaxCost can be considered as the cache capacity, in whatever units you
@@ -57,32 +48,46 @@ func (c *Config) MarshalZerologObject(e *zerolog.Event) {
 	maxCost := spiceerrors.MustSafecast[uint64](c.MaxCost)
 	e.
 		Str("maxCost", humanize.IBytes(maxCost)).
-		Int64("numCounters", c.NumCounters).
 		Dur("defaultTTL", c.DefaultTTL)
 }
 
-// Cache defines an interface for a generic cache.
+// Cache defines an interface for a generic cache. Method semantics follow
+// Ristretto, the original implementation; the current implementation is
+// backed by Otter (see NewOtterCache).
 type Cache[K KeyString, V any] interface {
-	// Get returns the value for the given key in the cache, if it exists.
+	// Get returns the value for the given key and true if it is present;
+	// otherwise it returns the zero value of V and false.
 	Get(key K) (V, bool)
 
-	// GetTTL returns the TTL of entries in the cache.
-	// If zero is used, entries are not deleted.
+	// GetTTL returns the TTL configured for entries in this cache.
+	// If zero, entries never expire. The current Otter-backed
+	// implementation refreshes the TTL on access.
 	GetTTL() time.Duration
 
-	// Set is a best-effort attempt to set a value for the key in the cache, with the given cost.
-	// If GetTTL returns zero, the entry never expires.
-	// Returns true if the value could be set, false if the cost was too high.
+	// Set attempts to store an entry for key, overwriting any existing entry,
+	// and returns true if the write was accepted for processing. cost is
+	// passed to the eviction policy and weighed against Config.MaxCost;
+	// the Otter implementation saturates cost at math.MaxUint32.
+	// A false return means the implementation did not enqueue the write
+	// (as Ristretto may do under pressure); the Otter-backed implementation
+	// always returns true. A true return does not guarantee retention —
+	// the entry may still be dropped or evicted by the underlying
+	// implementation, so writes are best-effort.
 	Set(key K, entry V, cost int64) bool
 
-	// Wait waits for the cache to process and apply updates.
+	// Wait blocks until buffered Set calls have been processed by the
+	// underlying implementation. Required for read-your-own-writes
+	// semantics with implementations that buffer writes (e.g. Ristretto);
+	// a no-op on the current Otter-backed implementation, which applies
+	// writes synchronously.
 	Wait()
 
-	// Close closes the cache's background workers (if any).
+	// Close stops the cache's background workers (if any) and tears down
+	// associated metrics registration, if one was set up.
 	Close()
 
 	// GetMetrics returns the metrics block for the cache.
-	// Some implementations may chose to not return some of these metrics.
+	// Some implementations may choose to not return some of these metrics.
 	GetMetrics() Metrics
 
 	zerolog.LogObjectMarshaler

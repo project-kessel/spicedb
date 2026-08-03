@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
@@ -16,14 +17,19 @@ import (
 	"github.com/authzed/spicedb/internal/datastore/memdb"
 	tf "github.com/authzed/spicedb/internal/testfixtures"
 	"github.com/authzed/spicedb/internal/testserver"
+	"github.com/authzed/spicedb/pkg/datalayer"
+	"github.com/authzed/spicedb/pkg/testutil"
 	"github.com/authzed/spicedb/pkg/tuple"
 	"github.com/authzed/spicedb/pkg/zedtoken"
 )
 
 func TestAllMethodsReturnMetadata(t *testing.T) {
-	req := require.New(t)
-	conn, cleanup, _, revision := testserver.NewTestServer(req, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
-	t.Cleanup(cleanup)
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
+	conn, _, revision := testserver.NewTestServerWithConfig(t, 0, memdb.DisableGC, true,
+		testserver.DefaultTestServerConfig,
+		tf.StandardDatastoreWithData)
 
 	ctx := t.Context()
 
@@ -37,7 +43,7 @@ func TestAllMethodsReturnMetadata(t *testing.T) {
 				_, err := client.CheckPermission(ctx, &v1.CheckPermissionRequest{
 					Consistency: &v1.Consistency{
 						Requirement: &v1.Consistency_AtLeastAsFresh{
-							AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+							AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 						},
 					},
 					Resource:   obj("document", "masterplan"),
@@ -52,7 +58,7 @@ func TestAllMethodsReturnMetadata(t *testing.T) {
 				_, err := client.CheckBulkPermissions(ctx, &v1.CheckBulkPermissionsRequest{
 					Consistency: &v1.Consistency{
 						Requirement: &v1.Consistency_AtLeastAsFresh{
-							AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+							AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 						},
 					},
 					Items: []*v1.CheckBulkPermissionsRequestItem{
@@ -95,7 +101,7 @@ func TestAllMethodsReturnMetadata(t *testing.T) {
 				_, err := client.ExpandPermissionTree(ctx, &v1.ExpandPermissionTreeRequest{
 					Consistency: &v1.Consistency{
 						Requirement: &v1.Consistency_AtLeastAsFresh{
-							AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+							AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 						},
 					},
 					Resource:   obj("document", "masterplan"),
@@ -129,7 +135,7 @@ func TestAllMethodsReturnMetadata(t *testing.T) {
 				stream, err := client.LookupResources(ctx, &v1.LookupResourcesRequest{
 					Consistency: &v1.Consistency{
 						Requirement: &v1.Consistency_AtLeastAsFresh{
-							AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+							AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 						},
 					},
 					ResourceObjectType: "document",
@@ -154,7 +160,7 @@ func TestAllMethodsReturnMetadata(t *testing.T) {
 				stream, err := client.LookupSubjects(ctx, &v1.LookupSubjectsRequest{
 					Consistency: &v1.Consistency{
 						Requirement: &v1.Consistency_AtLeastAsFresh{
-							AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+							AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 						},
 					},
 					Resource:          obj("document", "masterplan"),
@@ -187,7 +193,7 @@ func TestAllMethodsReturnMetadata(t *testing.T) {
 				stream, err := client.ExportBulkRelationships(ctx, &v1.ExportBulkRelationshipsRequest{
 					Consistency: &v1.Consistency{
 						Requirement: &v1.Consistency_AtLeastAsFresh{
-							AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+							AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 						},
 					},
 				}, grpc.Trailer(&trailer))

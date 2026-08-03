@@ -21,7 +21,7 @@ import (
 )
 
 func TestPlanPartitionedExport(t *testing.T) {
-	b := testdatastore.RunCRDBForTesting(t, "", crdbTestVersion())
+	b := testdatastore.RunCRDBForTesting(t, crdbTestVersion())
 	ctx := t.Context()
 
 	var connectStr string
@@ -161,7 +161,7 @@ func TestPlanPartitionedExport(t *testing.T) {
 			for _, partition := range plan.Partitions {
 				iter, err := v1.StreamPartitionedExport(ctx, ds, v1.StreamRequest{
 					Partition: partition,
-					Revision:  rev,
+					Revision:  rev.Revision,
 				})
 				require.NoError(t, err)
 				for _, err := range iter {
@@ -175,7 +175,7 @@ func TestPlanPartitionedExport(t *testing.T) {
 }
 
 func TestUnwrapAsBulkExportPartitioner(t *testing.T) {
-	b := testdatastore.RunCRDBForTesting(t, "", crdbTestVersion())
+	b := testdatastore.RunCRDBForTesting(t, crdbTestVersion())
 
 	t.Run("bare datastore can be unwrapped", createDatastoreTest(b, func(t *testing.T, ds datastore.Datastore) {
 		partitioner := datastore.UnwrapAs[datastore.BulkExportPartitioner](ds)
@@ -207,7 +207,7 @@ func TestUnwrapAsBulkExportPartitioner(t *testing.T) {
 // producing partition bounds that overlap in PK tuple order. The fix is to use
 // SHOW RANGES FROM INDEX @primary to only query PK ranges.
 func TestPlanPartitionsOnlyUsesPrimaryIndex(t *testing.T) {
-	b := testdatastore.RunCRDBForTesting(t, "", crdbTestVersion())
+	b := testdatastore.RunCRDBForTesting(t, crdbTestVersion())
 
 	t.Run("partitions are non-overlapping with secondary indexes present", func(t *testing.T) {
 		ctx := t.Context()
@@ -273,7 +273,7 @@ func TestPlanPartitionsOnlyUsesPrimaryIndex(t *testing.T) {
 		// Verify partitions are non-overlapping and cover all data exactly once.
 		rev, err := ds.HeadRevision(ctx)
 		require.NoError(t, err)
-		reader := ds.SnapshotReader(rev)
+		reader := ds.SnapshotReader(rev.Revision)
 		seen := make(map[string]int) // relationship key → partition index
 		for pi, p := range partitions {
 			opts := []dsoptions.QueryOptionsOption{

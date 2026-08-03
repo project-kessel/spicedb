@@ -28,7 +28,9 @@ func (memDBTest) New(_ testing.TB, revisionQuantization, _, gcWindow time.Durati
 }
 
 func TestMemdbDatastore(t *testing.T) {
-	test.All(t, memdbFactory.NewTester(memDBTest{}))
+	// ConcurrentWrite tests require row-level locking; memdb uses a global write lock
+	// and would deadlock if two write transactions were opened concurrently.
+	test.AllWithExceptions(t, memdbFactory.NewTester(memDBTest{}), test.WithCategories(test.ConcurrentWriteCategory))
 }
 
 func TestConcurrentWritePanic(t *testing.T) {
@@ -82,7 +84,7 @@ func TestConcurrentWritePanic(t *testing.T) {
 	require.ErrorIs(err, recoverErr)
 }
 
-func TestConcurrentWriteRelsError(t *testing.T) {
+func TestConcurrentWriteRelsSucceed(t *testing.T) {
 	require := require.New(t)
 
 	ds, err := NewMemdbDatastore(0, 1*time.Hour, 1*time.Hour)
@@ -90,7 +92,8 @@ func TestConcurrentWriteRelsError(t *testing.T) {
 
 	ctx := t.Context()
 
-	// Kick off a number of writes to ensure at least one hits an error.
+	// With sync.Cond serialization, concurrent writes block until the active write
+	// finishes rather than failing immediately, so all goroutines succeed.
 	g := errgroup.Group{}
 
 	for i := range 50 {
@@ -107,9 +110,7 @@ func TestConcurrentWriteRelsError(t *testing.T) {
 		})
 	}
 
-	werr := g.Wait()
-	require.Error(werr)
-	require.ErrorContains(werr, "serialization max retries exceeded")
+	require.NoError(g.Wait())
 }
 
 func TestAnythingAfterCloseDoesNotPanic(t *testing.T) {
@@ -124,7 +125,7 @@ func TestAnythingAfterCloseDoesNotPanic(t *testing.T) {
 	err = ds.Close()
 	require.NoError(err)
 
-	_, errChan := ds.Watch(t.Context(), lowestRevision, datastore.WatchJustRelationships())
+	_, errChan := ds.Watch(t.Context(), lowestRevision.Revision, datastore.WatchJustRelationships())
 
 	select {
 	case err := <-errChan:
@@ -136,7 +137,7 @@ func TestAnythingAfterCloseDoesNotPanic(t *testing.T) {
 	_, err = ds.Statistics(t.Context())
 	require.ErrorIs(err, ErrMemDBIsClosed)
 
-	err = ds.CheckRevision(t.Context(), lowestRevision)
+	err = ds.CheckRevision(t.Context(), lowestRevision.Revision)
 	require.ErrorIs(err, ErrMemDBIsClosed)
 
 	_, err = ds.OptimizedRevision(t.Context())

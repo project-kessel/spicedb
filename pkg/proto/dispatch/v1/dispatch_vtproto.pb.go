@@ -555,6 +555,11 @@ func (m *ResolverMeta) CloneVT() *ResolverMeta {
 		copy(tmpBytes, rhs)
 		r.TraversalBloom = tmpBytes
 	}
+	if rhs := m.SchemaHash; rhs != nil {
+		tmpBytes := make([]byte, len(rhs))
+		copy(tmpBytes, rhs)
+		r.SchemaHash = tmpBytes
+	}
 	if len(m.unknownFields) > 0 {
 		r.unknownFields = make([]byte, len(m.unknownFields))
 		copy(r.unknownFields, m.unknownFields)
@@ -648,6 +653,17 @@ func (m *PlanContext) CloneVT() *PlanContext {
 	r.CaveatContext = (*structpb.Struct)((*structpb1.Struct)(m.CaveatContext).CloneVT())
 	r.MaxRecursionDepth = m.MaxRecursionDepth
 	r.OptionalDatastoreLimit = m.OptionalDatastoreLimit
+	r.TopLevelOperation = m.TopLevelOperation
+	if rhs := m.SchemaHash; rhs != nil {
+		tmpBytes := make([]byte, len(rhs))
+		copy(tmpBytes, rhs)
+		r.SchemaHash = tmpBytes
+	}
+	if rhs := m.InProgressKeys; rhs != nil {
+		tmpContainer := make([]string, len(rhs))
+		copy(tmpContainer, rhs)
+		r.InProgressKeys = tmpContainer
+	}
 	if len(m.unknownFields) > 0 {
 		r.unknownFields = make([]byte, len(m.unknownFields))
 		copy(r.unknownFields, m.unknownFields)
@@ -665,7 +681,6 @@ func (m *DispatchQueryPlanRequest) CloneVT() *DispatchQueryPlanRequest {
 	}
 	r := new(DispatchQueryPlanRequest)
 	r.Operation = m.Operation
-	r.CanonicalKey = m.CanonicalKey
 	r.PlanContext = m.PlanContext.CloneVT()
 	if rhs := m.Resource; rhs != nil {
 		if vtpb, ok := interface{}(rhs).(interface{ CloneVT() *v1.ObjectAndRelation }); ok {
@@ -680,6 +695,22 @@ func (m *DispatchQueryPlanRequest) CloneVT() *DispatchQueryPlanRequest {
 		} else {
 			r.Subject = proto.Clone(rhs).(*v1.ObjectAndRelation)
 		}
+	}
+	if rhs := m.Many; rhs != nil {
+		tmpContainer := make([]*v1.ObjectAndRelation, len(rhs))
+		for k, v := range rhs {
+			if vtpb, ok := interface{}(v).(interface{ CloneVT() *v1.ObjectAndRelation }); ok {
+				tmpContainer[k] = vtpb.CloneVT()
+			} else {
+				tmpContainer[k] = proto.Clone(v).(*v1.ObjectAndRelation)
+			}
+		}
+		r.Many = tmpContainer
+	}
+	if rhs := m.Plan; rhs != nil {
+		tmpBytes := make([]byte, len(rhs))
+		copy(tmpBytes, rhs)
+		r.Plan = tmpBytes
 	}
 	if len(m.unknownFields) > 0 {
 		r.unknownFields = make([]byte, len(m.unknownFields))
@@ -1527,6 +1558,9 @@ func (this *ResolverMeta) EqualVT(that *ResolverMeta) bool {
 	if string(this.TraversalBloom) != string(that.TraversalBloom) {
 		return false
 	}
+	if string(this.SchemaHash) != string(that.SchemaHash) {
+		return false
+	}
 	return string(this.unknownFields) == string(that.unknownFields)
 }
 
@@ -1673,6 +1707,21 @@ func (this *PlanContext) EqualVT(that *PlanContext) bool {
 	if this.OptionalDatastoreLimit != that.OptionalDatastoreLimit {
 		return false
 	}
+	if string(this.SchemaHash) != string(that.SchemaHash) {
+		return false
+	}
+	if len(this.InProgressKeys) != len(that.InProgressKeys) {
+		return false
+	}
+	for i, vx := range this.InProgressKeys {
+		vy := that.InProgressKeys[i]
+		if vx != vy {
+			return false
+		}
+	}
+	if this.TopLevelOperation != that.TopLevelOperation {
+		return false
+	}
 	return string(this.unknownFields) == string(that.unknownFields)
 }
 
@@ -1690,9 +1739,6 @@ func (this *DispatchQueryPlanRequest) EqualVT(that *DispatchQueryPlanRequest) bo
 		return false
 	}
 	if this.Operation != that.Operation {
-		return false
-	}
-	if this.CanonicalKey != that.CanonicalKey {
 		return false
 	}
 	if equal, ok := interface{}(this.Resource).(interface {
@@ -1714,6 +1760,32 @@ func (this *DispatchQueryPlanRequest) EqualVT(that *DispatchQueryPlanRequest) bo
 		return false
 	}
 	if !this.PlanContext.EqualVT(that.PlanContext) {
+		return false
+	}
+	if len(this.Many) != len(that.Many) {
+		return false
+	}
+	for i, vx := range this.Many {
+		vy := that.Many[i]
+		if p, q := vx, vy; p != q {
+			if p == nil {
+				p = &v1.ObjectAndRelation{}
+			}
+			if q == nil {
+				q = &v1.ObjectAndRelation{}
+			}
+			if equal, ok := interface{}(p).(interface {
+				EqualVT(*v1.ObjectAndRelation) bool
+			}); ok {
+				if !equal.EqualVT(q) {
+					return false
+				}
+			} else if !proto.Equal(p, q) {
+				return false
+			}
+		}
+	}
+	if string(this.Plan) != string(that.Plan) {
 		return false
 	}
 	return string(this.unknownFields) == string(that.unknownFields)
@@ -3261,6 +3333,13 @@ func (m *ResolverMeta) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if len(m.SchemaHash) > 0 {
+		i -= len(m.SchemaHash)
+		copy(dAtA[i:], m.SchemaHash)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.SchemaHash)))
+		i--
+		dAtA[i] = 0x2a
+	}
 	if len(m.TraversalBloom) > 0 {
 		i -= len(m.TraversalBloom)
 		copy(dAtA[i:], m.TraversalBloom)
@@ -3537,6 +3616,27 @@ func (m *PlanContext) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.TopLevelOperation != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.TopLevelOperation))
+		i--
+		dAtA[i] = 0x38
+	}
+	if len(m.InProgressKeys) > 0 {
+		for iNdEx := len(m.InProgressKeys) - 1; iNdEx >= 0; iNdEx-- {
+			i -= len(m.InProgressKeys[iNdEx])
+			copy(dAtA[i:], m.InProgressKeys[iNdEx])
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.InProgressKeys[iNdEx])))
+			i--
+			dAtA[i] = 0x32
+		}
+	}
+	if len(m.SchemaHash) > 0 {
+		i -= len(m.SchemaHash)
+		copy(dAtA[i:], m.SchemaHash)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.SchemaHash)))
+		i--
+		dAtA[i] = 0x2a
+	}
 	if m.OptionalDatastoreLimit != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.OptionalDatastoreLimit))
 		i--
@@ -3597,6 +3697,37 @@ func (m *DispatchQueryPlanRequest) MarshalToSizedBufferVT(dAtA []byte) (int, err
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if len(m.Plan) > 0 {
+		i -= len(m.Plan)
+		copy(dAtA[i:], m.Plan)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Plan)))
+		i--
+		dAtA[i] = 0x3a
+	}
+	if len(m.Many) > 0 {
+		for iNdEx := len(m.Many) - 1; iNdEx >= 0; iNdEx-- {
+			if vtmsg, ok := interface{}(m.Many[iNdEx]).(interface {
+				MarshalToSizedBufferVT([]byte) (int, error)
+			}); ok {
+				size, err := vtmsg.MarshalToSizedBufferVT(dAtA[:i])
+				if err != nil {
+					return 0, err
+				}
+				i -= size
+				i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+			} else {
+				encoded, err := proto.Marshal(m.Many[iNdEx])
+				if err != nil {
+					return 0, err
+				}
+				i -= len(encoded)
+				copy(dAtA[i:], encoded)
+				i = protohelpers.EncodeVarint(dAtA, i, uint64(len(encoded)))
+			}
+			i--
+			dAtA[i] = 0x32
+		}
+	}
 	if m.PlanContext != nil {
 		size, err := m.PlanContext.MarshalToSizedBufferVT(dAtA[:i])
 		if err != nil {
@@ -3650,13 +3781,6 @@ func (m *DispatchQueryPlanRequest) MarshalToSizedBufferVT(dAtA []byte) (int, err
 		}
 		i--
 		dAtA[i] = 0x1a
-	}
-	if len(m.CanonicalKey) > 0 {
-		i -= len(m.CanonicalKey)
-		copy(dAtA[i:], m.CanonicalKey)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.CanonicalKey)))
-		i--
-		dAtA[i] = 0x12
 	}
 	if m.Operation != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.Operation))
@@ -4501,6 +4625,10 @@ func (m *ResolverMeta) SizeVT() (n int) {
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
+	l = len(m.SchemaHash)
+	if l > 0 {
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
 	n += len(m.unknownFields)
 	return n
 }
@@ -4613,6 +4741,19 @@ func (m *PlanContext) SizeVT() (n int) {
 	if m.OptionalDatastoreLimit != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.OptionalDatastoreLimit))
 	}
+	l = len(m.SchemaHash)
+	if l > 0 {
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	if len(m.InProgressKeys) > 0 {
+		for _, s := range m.InProgressKeys {
+			l = len(s)
+			n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+		}
+	}
+	if m.TopLevelOperation != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.TopLevelOperation))
+	}
 	n += len(m.unknownFields)
 	return n
 }
@@ -4625,10 +4766,6 @@ func (m *DispatchQueryPlanRequest) SizeVT() (n int) {
 	_ = l
 	if m.Operation != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.Operation))
-	}
-	l = len(m.CanonicalKey)
-	if l > 0 {
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
 	if m.Resource != nil {
 		if size, ok := interface{}(m.Resource).(interface {
@@ -4652,6 +4789,22 @@ func (m *DispatchQueryPlanRequest) SizeVT() (n int) {
 	}
 	if m.PlanContext != nil {
 		l = m.PlanContext.SizeVT()
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	if len(m.Many) > 0 {
+		for _, e := range m.Many {
+			if size, ok := interface{}(e).(interface {
+				SizeVT() int
+			}); ok {
+				l = size.SizeVT()
+			} else {
+				l = proto.Size(e)
+			}
+			n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+		}
+	}
+	l = len(m.Plan)
+	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
 	n += len(m.unknownFields)
@@ -8106,6 +8259,40 @@ func (m *ResolverMeta) UnmarshalVT(dAtA []byte) error {
 				m.TraversalBloom = []byte{}
 			}
 			iNdEx = postIndex
+		case 5:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field SchemaHash", wireType)
+			}
+			var byteLen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				byteLen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if byteLen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + byteLen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.SchemaHash = append(m.SchemaHash[:0], dAtA[iNdEx:postIndex]...)
+			if m.SchemaHash == nil {
+				m.SchemaHash = []byte{}
+			}
+			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -8883,6 +9070,91 @@ func (m *PlanContext) UnmarshalVT(dAtA []byte) error {
 					break
 				}
 			}
+		case 5:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field SchemaHash", wireType)
+			}
+			var byteLen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				byteLen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if byteLen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + byteLen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.SchemaHash = append(m.SchemaHash[:0], dAtA[iNdEx:postIndex]...)
+			if m.SchemaHash == nil {
+				m.SchemaHash = []byte{}
+			}
+			iNdEx = postIndex
+		case 6:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field InProgressKeys", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.InProgressKeys = append(m.InProgressKeys, string(dAtA[iNdEx:postIndex]))
+			iNdEx = postIndex
+		case 7:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field TopLevelOperation", wireType)
+			}
+			m.TopLevelOperation = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.TopLevelOperation |= PlanOperation(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -8953,38 +9225,6 @@ func (m *DispatchQueryPlanRequest) UnmarshalVT(dAtA []byte) error {
 					break
 				}
 			}
-		case 2:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field CanonicalKey", wireType)
-			}
-			var stringLen uint64
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				stringLen |= uint64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			intStringLen := int(stringLen)
-			if intStringLen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + intStringLen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			m.CanonicalKey = string(dAtA[iNdEx:postIndex])
-			iNdEx = postIndex
 		case 3:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field Resource", wireType)
@@ -9107,6 +9347,82 @@ func (m *DispatchQueryPlanRequest) UnmarshalVT(dAtA []byte) error {
 			}
 			if err := m.PlanContext.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 				return err
+			}
+			iNdEx = postIndex
+		case 6:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Many", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Many = append(m.Many, &v1.ObjectAndRelation{})
+			if unmarshal, ok := interface{}(m.Many[len(m.Many)-1]).(interface {
+				UnmarshalVT([]byte) error
+			}); ok {
+				if err := unmarshal.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+					return err
+				}
+			} else {
+				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.Many[len(m.Many)-1]); err != nil {
+					return err
+				}
+			}
+			iNdEx = postIndex
+		case 7:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Plan", wireType)
+			}
+			var byteLen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				byteLen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if byteLen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + byteLen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Plan = append(m.Plan[:0], dAtA[iNdEx:postIndex]...)
+			if m.Plan == nil {
+				m.Plan = []byte{}
 			}
 			iNdEx = postIndex
 		default:

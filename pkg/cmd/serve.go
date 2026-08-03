@@ -9,7 +9,6 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/jzelinskie/cobrautil/v2"
-	"github.com/jzelinskie/cobrautil/v2/cobraotel"
 	"github.com/spf13/cobra"
 
 	"github.com/authzed/spicedb/internal/telemetry"
@@ -24,39 +23,43 @@ const PresharedKeyFlag = "grpc-preshared-key"
 
 var (
 	namespaceCacheDefaults = &server.CacheConfig{
-		Name:                "namespace",
-		Enabled:             true,
-		Metrics:             true,
-		NumCounters:         1_000,
-		MaxCost:             "32MiB",
-		CacheKindForTesting: "",
+		Name:        "namespace",
+		Enabled:     true,
+		Metrics:     true,
+		NumCounters: 1_000,
+		MaxCost:     "32MiB",
 	}
 
 	dispatchCacheDefaults = &server.CacheConfig{
-		Name:                "dispatch",
-		Enabled:             true,
-		Metrics:             true,
-		NumCounters:         10_000,
-		MaxCost:             "30%",
-		CacheKindForTesting: "",
+		Name:        "dispatch",
+		Enabled:     true,
+		Metrics:     true,
+		NumCounters: 10_000,
+		MaxCost:     "30%",
 	}
 
 	dispatchClusterCacheDefaults = &server.CacheConfig{
-		Name:                "cluster_dispatch",
-		Enabled:             true,
-		Metrics:             true,
-		NumCounters:         100_000,
-		MaxCost:             "70%",
-		CacheKindForTesting: "",
+		Name:        "cluster_dispatch",
+		Enabled:     true,
+		Metrics:     true,
+		NumCounters: 100_000,
+		MaxCost:     "70%",
 	}
 
 	lr3ChunkCacheDefaults = &server.CacheConfig{
-		Name:                "lr3_chunk",
-		Enabled:             true,
-		Metrics:             false,
-		NumCounters:         10_000,
-		MaxCost:             "50MiB",
-		CacheKindForTesting: "",
+		Name:        "lr3_chunk",
+		Enabled:     true,
+		Metrics:     false,
+		NumCounters: 10_000,
+		MaxCost:     "50MiB",
+	}
+
+	storedSchemaCacheDefaults = &server.CacheConfig{
+		Name:        "stored_schema",
+		Enabled:     true,
+		Metrics:     true,
+		NumCounters: 1_000,
+		MaxCost:     "32MiB",
 	}
 )
 
@@ -188,6 +191,7 @@ func RegisterServeFlags(cmd *cobra.Command, config *server.Config) error {
 		return fmt.Errorf("failed to mark flag as deprecated: %w", err)
 	}
 	experimentalFlags.BoolVar(&config.EnableExperimentalWatchableSchemaCache, "enable-experimental-watchable-schema-cache", false, "enables the experimental schema cache, which uses the Watch API to keep the schema up to date")
+	experimentalFlags.StringVar(&config.ExperimentalSchemaMode, "experimental-schema-mode", "read-legacy-write-legacy", "schema storage mode for migration to unified schema: read-legacy-write-legacy, read-legacy-write-both, read-new-write-both, read-new-write-new")
 	// TODO: these two could reasonably be put in either the Dispatch group or the Experimental group. Is there a preference?
 	experimentalFlags.StringToStringVar(&config.DispatchSecondaryUpstreamAddrs, "experimental-dispatch-secondary-upstream-addrs", nil, "secondary upstream addresses for dispatches, each with a name")
 	experimentalFlags.StringToStringVar(&config.DispatchSecondaryUpstreamExprs, "experimental-dispatch-secondary-upstream-exprs", nil, "map from request type to its associated CEL expression, which returns the secondary upstream(s) to be used for the request")
@@ -204,11 +208,13 @@ func RegisterServeFlags(cmd *cobra.Command, config *server.Config) error {
 		return fmt.Errorf("could not register lookup resources chunk cache flags: %w", err)
 	}
 
-	tracingFlags := nfs.FlagSet(BoldBlue("Tracing"))
+	err = server.RegisterCacheFlags(experimentalFlags, "stored-schema-cache", "stored schema", &config.StoredSchemaCacheConfig, storedSchemaCacheDefaults)
+	if err != nil {
+		return fmt.Errorf("could not register stored schema cache flags: %w", err)
+	}
+
 	// Flags for tracing
-	// NOTE: cobraotel.New takes service name as an arg rather than command name.
-	otel := cobraotel.New("spicedb")
-	otel.RegisterFlags(tracingFlags)
+	server.RegisterOTelFlags(cmd, &config.OTel)
 
 	loggingFlagSet := nfs.FlagSet(BoldBlue("Logging"))
 	loggingFlagSet.BoolVar(&config.EnableRequestLogs, "grpc-log-requests-enabled", false, "enable logging of API request payloads")
@@ -250,14 +256,14 @@ func NewServeCommand(programName string, config *server.Config) *cobra.Command {
 		Long:    "start a SpiceDB server",
 		PreRunE: server.DefaultPreRunE(programName),
 		RunE: termination.PublishError(func(cmd *cobra.Command, args []string) error {
-			server, err := config.Complete(cmd.Context())
+			srv, err := config.Complete(cmd.Context())
 			if err != nil {
 				return err
 			}
 			signalctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
-			return server.Run(signalctx)
+			return srv.Run(signalctx)
 		}),
 		Example: server.ServeExample(programName),
 	}

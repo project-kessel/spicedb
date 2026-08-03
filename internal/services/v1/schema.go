@@ -19,6 +19,7 @@ import (
 	"github.com/authzed/spicedb/internal/services/shared"
 	caveattypes "github.com/authzed/spicedb/pkg/caveats/types"
 	"github.com/authzed/spicedb/pkg/datalayer"
+	"github.com/authzed/spicedb/pkg/datastore/options"
 	"github.com/authzed/spicedb/pkg/genutil"
 	"github.com/authzed/spicedb/pkg/middleware/consistency"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
@@ -87,12 +88,12 @@ func (ss *schemaServer) ReadSchema(ctx context.Context, _ *v1.ReadSchemaRequest)
 
 	// Schema is always read from the head revision.
 	dl := datalayer.MustFromContext(ctx)
-	headRevision, err := dl.HeadRevision(ctx)
+	headRevision, headSchemaHash, err := dl.HeadRevision(ctx)
 	if err != nil {
 		return nil, ss.rewriteError(ctx, err)
 	}
 
-	reader := dl.SnapshotReader(headRevision)
+	reader := dl.SnapshotReader(headRevision, headSchemaHash)
 
 	sr, err := reader.ReadSchema(ctx)
 	if err != nil {
@@ -108,7 +109,7 @@ func (ss *schemaServer) ReadSchema(ctx context.Context, _ *v1.ReadSchemaRequest)
 		DispatchCount: 1,
 	})
 
-	zedToken, err := zedtoken.NewFromRevision(ctx, headRevision, dl)
+	zedToken, err := zedtoken.NewFromRevision(ctx, headRevision, headSchemaHash, dl)
 	if err != nil {
 		return nil, ss.rewriteError(ctx, err)
 	}
@@ -155,11 +156,13 @@ func (ss *schemaServer) WriteSchema(ctx context.Context, in *v1.WriteSchemaReque
 		return nil, ss.rewriteError(ctx, err)
 	}
 
+	var writtenSchemaHash datalayer.SchemaHash
 	revision, err := dl.ReadWriteTx(ctx, func(ctx context.Context, rwt datalayer.ReadWriteTransaction) error {
 		applied, err := shared.ApplySchemaChanges(ctx, rwt, ss.caveatTypeSet, validated)
 		if err != nil {
 			return err
 		}
+		writtenSchemaHash = applied.SchemaHash
 
 		dispatchCount, err := genutil.EnsureUInt32(applied.TotalOperationCount)
 		if err != nil {
@@ -170,12 +173,12 @@ func (ss *schemaServer) WriteSchema(ctx context.Context, in *v1.WriteSchemaReque
 			DispatchCount: dispatchCount,
 		})
 		return nil
-	})
+	}, options.WithSchemaHashPreconditionExclusive(true))
 	if err != nil {
 		return nil, ss.rewriteError(ctx, err)
 	}
 
-	zedToken, err := zedtoken.NewFromRevision(ctx, revision, dl)
+	zedToken, err := zedtoken.NewFromRevision(ctx, revision, writtenSchemaHash, dl)
 	if err != nil {
 		return nil, ss.rewriteError(ctx, err)
 	}
@@ -189,7 +192,7 @@ func (ss *schemaServer) ReflectSchema(ctx context.Context, req *v1.ReflectSchema
 	perfinsights.SetInContext(ctx, perfinsights.NoLabels)
 
 	// Get the current schema.
-	schema, atRevision, err := loadCurrentSchema(ctx)
+	schema, atRevision, schemaHash, err := loadCurrentSchema(ctx)
 	if err != nil {
 		return nil, shared.RewriteErrorWithoutConfig(ctx, err)
 	}
@@ -228,7 +231,7 @@ func (ss *schemaServer) ReflectSchema(ctx context.Context, req *v1.ReflectSchema
 	}
 
 	dl := datalayer.MustFromContext(ctx)
-	zedToken, err := zedtoken.NewFromRevision(ctx, atRevision, dl)
+	zedToken, err := zedtoken.NewFromRevision(ctx, atRevision, schemaHash, dl)
 	if err != nil {
 		return nil, shared.RewriteErrorWithoutConfig(ctx, err)
 	}
@@ -243,7 +246,7 @@ func (ss *schemaServer) ReflectSchema(ctx context.Context, req *v1.ReflectSchema
 func (ss *schemaServer) DiffSchema(ctx context.Context, req *v1.DiffSchemaRequest) (*v1.DiffSchemaResponse, error) {
 	perfinsights.SetInContext(ctx, perfinsights.NoLabels)
 
-	atRevision, _, err := consistency.RevisionFromContext(ctx)
+	atRevision, _, _, err := consistency.RevisionFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -270,12 +273,12 @@ func (ss *schemaServer) ComputablePermissions(ctx context.Context, req *v1.Compu
 		}
 	})
 
-	atRevision, revisionReadAt, err := consistency.RevisionFromContext(ctx)
+	atRevision, schemaHash, revisionReadAt, err := consistency.RevisionFromContext(ctx)
 	if err != nil {
 		return nil, shared.RewriteErrorWithoutConfig(ctx, err)
 	}
 
-	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision)
+	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision, schemaHash)
 	sr, err := dl.ReadSchema(ctx)
 	if err != nil {
 		return nil, shared.RewriteErrorWithoutConfig(ctx, err)
@@ -357,12 +360,12 @@ func (ss *schemaServer) DependentRelations(ctx context.Context, req *v1.Dependen
 		}
 	})
 
-	atRevision, revisionReadAt, err := consistency.RevisionFromContext(ctx)
+	atRevision, schemaHash, revisionReadAt, err := consistency.RevisionFromContext(ctx)
 	if err != nil {
 		return nil, shared.RewriteErrorWithoutConfig(ctx, err)
 	}
 
-	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision)
+	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision, schemaHash)
 	sr2, err := dl.ReadSchema(ctx)
 	if err != nil {
 		return nil, shared.RewriteErrorWithoutConfig(ctx, err)

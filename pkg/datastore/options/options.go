@@ -56,6 +56,13 @@ type SQLIndexInformation struct {
 	// ExpectedIndexNames are the name(s) of the index(es) that are expected to be used by this
 	// SQL query.
 	ExpectedIndexNames []string
+
+	// ShapeServingIndexNames are the names of all indexes that serve at least one query shape.
+	// Any index used by a query that is *not* in this set (e.g. maintenance indexes such as
+	// those used for garbage collection or watch, or the implicit primary key) is considered a
+	// small-data optimizer artifact rather than a meaningful index choice, and is ignored when
+	// validating that an expected index was used.
+	ShapeServingIndexNames []string
 }
 
 // SQLExplainCallbackForTest is a callback invoked with the explain plan of the SQL query string.
@@ -117,9 +124,17 @@ type ResourceRelation struct {
 // RWTOptions are options that can affect the way a read-write transaction is
 // executed.
 type RWTOptions struct {
-	DisableRetries    bool             `debugmap:"visible"`
-	Metadata          *structpb.Struct `debugmap:"visible"`
-	IncludesExpiredAt bool             `debugmap:"visible"`
+	DisableRetries bool             `debugmap:"visible"`
+	Metadata       *structpb.Struct `debugmap:"visible"`
+	// SchemaHashPrecondition, when non-empty, causes ReadWriteTx to verify the
+	// stored schema hash equals this value before invoking the user callback.
+	// Returns ErrSchemaHashPreconditionFailed if the hash differs.
+	SchemaHashPrecondition string `debugmap:"visible"`
+	// SchemaHashPreconditionExclusive, when true, causes the schema hash precondition
+	// check to acquire an exclusive (FOR UPDATE) lock rather than a shared (FOR SHARE)
+	// lock. Set by schema write transactions; relationship writes use the default shared lock
+	// so they can proceed concurrently.
+	SchemaHashPreconditionExclusive bool `debugmap:"visible"`
 }
 
 // DeleteOptions are the options that can affect the results of a delete relationships

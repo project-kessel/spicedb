@@ -1,44 +1,55 @@
-//go:build !wasm
-
 package cache
 
 import (
+	"math"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 )
 
-func TestCacheWithMetrics(t *testing.T) {
-	config := &Config{
-		NumCounters: 10000,
-		MaxCost:     1000,
-		DefaultTTL:  10 * time.Hour,
-	}
+func TestEntryWeight(t *testing.T) {
+	// Empty key, zero payload.
+	require.Equal(t, uint32(0), entryWeight("", 0))
 
-	t.Run("otter", func(t *testing.T) {
-		testCacheImplementation(t, func() (Cache[StringKey, string], error) {
-			return NewOtterCacheWithMetrics[StringKey, string]("test-otter", config)
-		})
-	})
+	// Payload + key bytes.
+	require.Equal(t, uint32(10+3), entryWeight("abc", 10))
 
-	t.Run("ristretto", func(t *testing.T) {
-		testCacheImplementation(t, func() (Cache[StringKey, string], error) {
-			// Use the metrics version for proper metrics tracking
-			return NewRistrettoCacheWithMetrics[StringKey, string]("test-ristretto", config)
-		})
-	})
-
-	t.Run("theine", func(t *testing.T) {
-		testCacheImplementation(t, func() (Cache[StringKey, string], error) {
-			return NewTheineCacheWithMetrics[StringKey, string]("test-theine", config)
-		})
-	})
+	// Saturates rather than overflowing uint32.
+	require.Equal(t, uint32(math.MaxUint32), entryWeight("x", math.MaxUint32))
+	require.Equal(t, uint32(math.MaxUint32), entryWeight("x", math.MaxUint32-1))
 }
 
-func testCacheImplementation(t *testing.T, factory func() (Cache[StringKey, string], error)) {
+func TestCostAddedIncludesKey(t *testing.T) {
+	cache, err := NewOtterCacheWithMetrics[StringKey, string](
+		prometheus.NewRegistry(), "test-otter",
+		&Config{MaxCost: 100000, DefaultTTL: 10 * time.Hour},
+	)
+	require.NoError(t, err)
+	defer cache.Close()
+
+	const key = "some-key"
+	const payloadCost = 10
+	require.True(t, cache.Set(StringKey(key), "value", payloadCost))
+	cache.Wait()
+
+	// costAdded must reflect the full entry weight (payload + key bytes), not
+	// just the caller-supplied payload cost.
+	require.Equal(t,
+		uint64(payloadCost+len(key)),
+		cache.GetMetrics().CostAdded(),
+	)
+}
+
+func TestCacheWithMetrics(t *testing.T) {
+	config := &Config{
+		MaxCost:    1000,
+		DefaultTTL: 10 * time.Hour,
+	}
+
 	t.Run("Set and Get", func(t *testing.T) {
-		cache, err := factory()
+		cache, err := NewOtterCacheWithMetrics[StringKey, string](prometheus.NewRegistry(), "test-otter", config)
 		require.NoError(t, err)
 		defer cache.Close()
 
@@ -69,7 +80,7 @@ func testCacheImplementation(t *testing.T, factory func() (Cache[StringKey, stri
 	})
 
 	t.Run("Set same key with diff values", func(t *testing.T) {
-		cache, err := factory()
+		cache, err := NewOtterCacheWithMetrics[StringKey, string](prometheus.NewRegistry(), "test-otter", config)
 		require.NoError(t, err)
 		defer cache.Close()
 
@@ -90,7 +101,7 @@ func testCacheImplementation(t *testing.T, factory func() (Cache[StringKey, stri
 	})
 
 	t.Run("Close multiple times", func(t *testing.T) {
-		cache, err := factory()
+		cache, err := NewOtterCacheWithMetrics[StringKey, string](prometheus.NewRegistry(), "test-otter", config)
 		require.NoError(t, err)
 
 		for range 10 {
@@ -99,7 +110,7 @@ func testCacheImplementation(t *testing.T, factory func() (Cache[StringKey, stri
 	})
 
 	t.Run("GetTTL", func(t *testing.T) {
-		cache, err := factory()
+		cache, err := NewOtterCacheWithMetrics[StringKey, string](prometheus.NewRegistry(), "test-otter", config)
 		require.NoError(t, err)
 		defer cache.Close()
 
@@ -107,7 +118,7 @@ func testCacheImplementation(t *testing.T, factory func() (Cache[StringKey, stri
 	})
 
 	t.Run("GetMetrics", func(t *testing.T) {
-		cache, err := factory()
+		cache, err := NewOtterCacheWithMetrics[StringKey, string](prometheus.NewRegistry(), "test-otter", config)
 		require.NoError(t, err)
 		defer cache.Close()
 

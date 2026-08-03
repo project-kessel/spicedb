@@ -55,7 +55,7 @@ func SimpleTest(t *testing.T, tester DatastoreTester) {
 				require.True(c, r.IsReady, "datastore not ready: %s", r.Message)
 			}, 3*time.Second, 50*time.Millisecond)
 
-			setupDatastore(ds, require.New(t))
+			setupDatastore(t, ds)
 
 			tRequire := testfixtures.RelationshipChecker{Require: require.New(t), DS: ds}
 
@@ -288,9 +288,9 @@ func ObjectIDsTest(t *testing.T, tester DatastoreTester) {
 			require.NoError(err)
 
 			// Read it back
-			rev, err := ds.HeadRevision(ctx)
+			revResult, err := ds.HeadRevision(ctx)
 			require.NoError(err)
-			iter, err := ds.SnapshotReader(rev).QueryRelationships(ctx, datastore.RelationshipsFilter{
+			iter, err := ds.SnapshotReader(revResult.Revision).QueryRelationships(ctx, datastore.RelationshipsFilter{
 				OptionalResourceType: testResourceNamespace,
 				OptionalResourceIds:  []string{tc},
 			}, options.WithQueryShape(queryshape.Varying))
@@ -306,6 +306,59 @@ func ObjectIDsTest(t *testing.T, tester DatastoreTester) {
 			require.Equal(tc, first.Subject.ObjectID)
 		})
 	}
+}
+
+// CaseSensitivityTest verifies that object IDs are treated as case-sensitive: resources
+// and subjects that differ only in letter case are distinct relationships. This is a
+// regression test for datastores whose default collation is case-insensitive (e.g. MySQL's
+// latin1_swedish_ci), which would otherwise collide "Foo" with "foo".
+func CaseSensitivityTest(t *testing.T, tester DatastoreTester) {
+	ctx := t.Context()
+	require := require.New(t)
+
+	ds, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
+	require.NoError(err)
+	defer ds.Close()
+
+	lower := makeTestRel("caseobject", "caseuser")
+	upper := makeTestRel("CaseObject", "CaseUser")
+
+	// Both relationships are distinct and must both persist in a single write.
+	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
+		return rwt.WriteRelationships(ctx, []tuple.RelationshipUpdate{
+			tuple.Create(lower),
+			tuple.Create(upper),
+		})
+	})
+	require.NoError(err)
+
+	revResult, err := ds.HeadRevision(ctx)
+	require.NoError(err)
+	reader := ds.SnapshotReader(revResult.Revision)
+
+	// Filtering by the lowercase resource ID must return ONLY the lowercase relationship.
+	iter, err := reader.QueryRelationships(ctx, datastore.RelationshipsFilter{
+		OptionalResourceType: testResourceNamespace,
+		OptionalResourceIds:  []string{"caseobject"},
+	}, options.WithQueryShape(queryshape.Varying))
+	require.NoError(err)
+	found, err := datastore.IteratorToSlice(iter)
+	require.NoError(err)
+	require.Len(found, 1)
+	require.Equal("caseobject", found[0].Resource.ObjectID)
+	require.Equal("caseuser", found[0].Subject.ObjectID)
+
+	// Filtering by the uppercase resource ID must return ONLY the uppercase relationship.
+	iter, err = reader.QueryRelationships(ctx, datastore.RelationshipsFilter{
+		OptionalResourceType: testResourceNamespace,
+		OptionalResourceIds:  []string{"CaseObject"},
+	}, options.WithQueryShape(queryshape.Varying))
+	require.NoError(err)
+	found, err = datastore.IteratorToSlice(iter)
+	require.NoError(err)
+	require.Len(found, 1)
+	require.Equal("CaseObject", found[0].Resource.ObjectID)
+	require.Equal("CaseUser", found[0].Subject.ObjectID)
 }
 
 // DeleteRelationshipsTest tests whether or not the requirements for deleting
@@ -403,7 +456,7 @@ func DeleteRelationshipsTest(t *testing.T, tester DatastoreTester) {
 			require.NoError(err)
 			defer ds.Close()
 
-			setupDatastore(ds, require)
+			setupDatastore(t, ds)
 
 			tRequire := testfixtures.RelationshipChecker{Require: require, DS: ds}
 
@@ -447,7 +500,7 @@ func InvalidReadsTest(t *testing.T, tester DatastoreTester) {
 		require.NoError(err)
 		defer ds.Close()
 
-		setupDatastore(ds, require)
+		setupDatastore(t, ds)
 
 		ctx := t.Context()
 
@@ -490,7 +543,7 @@ func DeleteNotExistantTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithData(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
 	ctx := t.Context()
 
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
@@ -511,7 +564,7 @@ func DeleteAlreadyDeletedTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithData(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
 	ctx := t.Context()
 
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
@@ -546,7 +599,7 @@ func WriteDeleteWriteTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithData(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
 	ctx := t.Context()
 
 	tpl := makeTestRel("foo", "tom")
@@ -573,7 +626,7 @@ func CreateAlreadyExistingTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithData(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
 	ctx := t.Context()
 
 	tpl1 := makeTestRel("foo", "tom")
@@ -603,7 +656,7 @@ func TouchAlreadyExistingTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithData(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
 	ctx := t.Context()
 
 	tpl1 := makeTestRel("foo", "tom")
@@ -633,7 +686,7 @@ func CreateDeleteTouchTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithData(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
 	ctx := t.Context()
 
 	tpl1 := makeTestRel("foo", "tom")
@@ -662,7 +715,7 @@ func DeleteOneThousandIndividualInOneCallTest(t *testing.T, tester DatastoreTest
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithData(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
 	ctx := t.Context()
 
 	// Write the 1000 relationships.
@@ -697,7 +750,7 @@ func DeleteWithInvalidPrefixTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithSchema(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithSchema(t, rawDS)
 	ctx := t.Context()
 
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
@@ -717,7 +770,7 @@ func DeleteWithPrefixTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithSchema(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithSchema(t, rawDS)
 	ctx := t.Context()
 
 	// Write some relationships.
@@ -828,7 +881,7 @@ func MixedWriteOperationsTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithSchema(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithSchema(t, rawDS)
 	ctx := t.Context()
 
 	// Write the 100 relationships.
@@ -918,7 +971,7 @@ func DeleteWithLimitTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithSchema(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithSchema(t, rawDS)
 	ctx := t.Context()
 
 	// Write the 1000 relationships.
@@ -972,7 +1025,7 @@ func DeleteCaveatedTupleTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithData(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
 	ctx := t.Context()
 
 	tpl, err := tuple.Parse("test/resource:someresource#viewer@test/user:someuser[somecaveat]")
@@ -1093,7 +1146,7 @@ func DeleteRelationshipsWithVariousFiltersTest(t *testing.T, tester DatastoreTes
 					require.NoError(err)
 
 					// Write the initial relationships.
-					ds, _ := testfixtures.StandardDatastoreWithSchema(rawDS, require)
+					ds, _ := testfixtures.StandardDatastoreWithSchema(t, rawDS)
 					ctx := t.Context()
 
 					allRelationships := mapz.NewSet[string]()
@@ -1105,8 +1158,9 @@ func DeleteRelationshipsWithVariousFiltersTest(t *testing.T, tester DatastoreTes
 						require.NoError(err)
 					}
 
-					writtenRev, err := ds.HeadRevision(ctx)
+					writtenRevResult, err := ds.HeadRevision(ctx)
 					require.NoError(err)
+					writtenRev := writtenRevResult.Revision
 
 					var delLimit *uint64
 					if withLimit {
@@ -1122,13 +1176,13 @@ func DeleteRelationshipsWithVariousFiltersTest(t *testing.T, tester DatastoreTes
 					require.NoError(err)
 
 					// Read the updated relationships and ensure no matching relationships are found.
-					headRev, err := ds.HeadRevision(ctx)
+					headRevResult, err := ds.HeadRevision(ctx)
 					require.NoError(err)
 
 					filter, err := datastore.RelationshipsFilterFromPublicFilter(tc.filter)
 					require.NoError(err)
 
-					reader := ds.SnapshotReader(headRev)
+					reader := ds.SnapshotReader(headRevResult.Revision)
 					iter, err := reader.QueryRelationships(ctx, filter, options.WithQueryShape(queryshape.Varying))
 					require.NoError(err)
 
@@ -1187,7 +1241,7 @@ func RecreateRelationshipsAfterDeleteWithFilter(t *testing.T, tester DatastoreTe
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithSchema(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithSchema(t, rawDS)
 	ctx := t.Context()
 
 	relationships := make([]tuple.Relationship, 100)
@@ -1762,7 +1816,7 @@ func QueryRelationshipsWithVariousFiltersTest(t *testing.T, tester DatastoreTest
 			rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 			require.NoError(err)
 
-			ds, _ := testfixtures.StandardDatastoreWithSchema(rawDS, require)
+			ds, _ := testfixtures.StandardDatastoreWithSchema(t, rawDS)
 			ctx := t.Context()
 
 			for _, rel := range tc.relationships {
@@ -1771,10 +1825,10 @@ func QueryRelationshipsWithVariousFiltersTest(t *testing.T, tester DatastoreTest
 				require.NoError(err)
 			}
 
-			headRev, err := ds.HeadRevision(ctx)
+			headRevResult, err := ds.HeadRevision(ctx)
 			require.NoError(err)
 
-			reader := ds.SnapshotReader(headRev)
+			reader := ds.SnapshotReader(headRevResult.Revision)
 			iter, err := reader.QueryRelationships(ctx, tc.filter, options.WithSkipCaveats(tc.withoutCaveats), options.WithSkipExpiration(tc.withoutExpiration), options.WithQueryShape(queryshape.Varying))
 			require.NoError(err)
 
@@ -1796,7 +1850,7 @@ func RelationshipCaveatFilteringTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithData(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
 	ctx := t.Context()
 
 	// Create a relationship without a caveat.
@@ -1877,7 +1931,7 @@ func RelationshipExpirationTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithData(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
 	ctx := t.Context()
 
 	// Create a relationship that expires in the future.
@@ -1941,7 +1995,7 @@ func TypedTouchAlreadyExistingTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithData(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
 	ctx := t.Context()
 
 	tpl1, err := tuple.Parse("document:foo#viewer@user:tom")
@@ -1963,7 +2017,7 @@ func TypedTouchAlreadyExistingWithCaveatTest(t *testing.T, tester DatastoreTeste
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithData(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
 	ctx := t.Context()
 
 	ctpl1, err := tuple.Parse("document:foo#caveated_viewer@user:tom[test:{\"foo\":\"bar\"}]")
@@ -1988,7 +2042,7 @@ func CreateTouchDeleteTouchTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithData(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
 	ctx := t.Context()
 
 	tpl1 := makeTestRel("foo", "tom")
@@ -2022,7 +2076,7 @@ func TouchAlreadyExistingCaveatedTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithData(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
 	ctx := t.Context()
 
 	tpl1 := tuple.MustWithCaveat(makeTestRel("foo", "tom"), "formercaveat")
@@ -2047,7 +2101,7 @@ func MultipleReadsInRWTTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithData(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
 	ctx := t.Context()
 
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
@@ -2080,7 +2134,7 @@ func WriteAndReadInRWT(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithData(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
 	ctx := t.Context()
 
 	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
@@ -2104,15 +2158,20 @@ func WriteAndReadInRWT(t *testing.T, tester DatastoreTester) {
 	require.NoError(err)
 }
 
-// ConcurrentWriteSerializationTest uses goroutines and channels to intentionally set up a
-// deadlocking dependency between transactions.
+// ConcurrentWriteSerializationTest uses goroutines and channels to deterministically set up a
+// deadlocking dependency between exactly two transactions: one reads a set of resources and then
+// writes, while a second writes an overlapping resource, so the backend must serialize (or abort
+// and retry) one of them. The datastore must resolve the conflict and let both writes complete in
+// bounded time. Unlike ConcurrentWriteDeadlockTest, which floods the same object with many
+// uncoordinated writers to exercise the retry/backoff budget under heavy contention, this test
+// orchestrates a single, precise read-then-write vs. write conflict via channels.
 func ConcurrentWriteSerializationTest(t *testing.T, tester DatastoreTester) {
 	require := require.New(t)
 
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithData(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
 	ctx := t.Context()
 
 	g := errgroup.Group{}
@@ -2166,13 +2225,51 @@ func ConcurrentWriteSerializationTest(t *testing.T, tester DatastoreTester) {
 	require.Less(time.Since(startTime), 10*time.Second)
 }
 
+// ConcurrentWriteDeadlockTest reproduces https://github.com/authzed/spicedb/issues/3172: many
+// concurrent WriteRelationships targeting the same resource object contend for the same locks and
+// some backends (e.g. MySQL under SERIALIZABLE) abort transactions with a deadlock. The datastore's
+// write retry loop must back off between attempts so the contending writers spread out; otherwise
+// the retries keep re-colliding and exhaust the retry budget. Every writer must eventually succeed.
+func ConcurrentWriteDeadlockTest(t *testing.T, tester DatastoreTester) {
+	require := require.New(t)
+
+	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
+	require.NoError(err)
+
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
+	ctx := t.Context()
+
+	const concurrency = 50
+
+	// Each goroutine uses the test's context directly (not a shared cancelable group context) so
+	// that one writer giving up does not abort the others; we want to observe every writer's final
+	// outcome.
+	errs := make([]error, concurrency)
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func(i int) {
+			defer wg.Done()
+			rel := tuple.Touch(makeTestRel("shared", fmt.Sprintf("user-%d", i)))
+			_, errs[i] = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
+				return rwt.WriteRelationships(ctx, []tuple.RelationshipUpdate{rel})
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoErrorf(err, "concurrent write %d to the shared resource should eventually succeed", i)
+	}
+}
+
 func BulkDeleteRelationshipsTest(t *testing.T, tester DatastoreTester) {
 	require := require.New(t)
 
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(err)
 
-	ds, _ := testfixtures.StandardDatastoreWithSchema(rawDS, require)
+	ds, _ := testfixtures.StandardDatastoreWithSchema(t, rawDS)
 	ctx := t.Context()
 
 	// Write a bunch of relationships.
@@ -2239,10 +2336,10 @@ func ensureNotReverseRelationships(ctx context.Context, require *require.Asserti
 }
 
 func ensureReverseRelationshipsStatus(ctx context.Context, require *require.Assertions, ds datastore.Datastore, rels []tuple.Relationship, mustExist bool) {
-	headRev, err := ds.HeadRevision(ctx)
+	headRevResult, err := ds.HeadRevision(ctx)
 	require.NoError(err)
 
-	reader := ds.SnapshotReader(headRev)
+	reader := ds.SnapshotReader(headRevResult.Revision)
 
 	for _, rel := range rels {
 		filter := datastore.SubjectRelationFilter{
@@ -2285,10 +2382,10 @@ func ensureNotRelationships(ctx context.Context, require *require.Assertions, ds
 }
 
 func ensureRelationshipsStatus(ctx context.Context, require *require.Assertions, ds datastore.Datastore, rels []tuple.Relationship, mustExist bool) {
-	headRev, err := ds.HeadRevision(ctx)
+	headRevResult, err := ds.HeadRevision(ctx)
 	require.NoError(err)
 
-	reader := ds.SnapshotReader(headRev)
+	reader := ds.SnapshotReader(headRevResult.Revision)
 
 	for _, rel := range rels {
 		iter, err := reader.QueryRelationships(ctx, datastore.RelationshipsFilter{
@@ -2321,10 +2418,10 @@ func ensureRelationshipsStatus(ctx context.Context, require *require.Assertions,
 }
 
 func ensureRelationshipWithFilter(ctx context.Context, require *require.Assertions, ds datastore.Datastore, filter datastore.RelationshipsFilter, rel tuple.Relationship) {
-	headRev, err := ds.HeadRevision(ctx)
+	headRevResult, err := ds.HeadRevision(ctx)
 	require.NoError(err)
 
-	reader := ds.SnapshotReader(headRev)
+	reader := ds.SnapshotReader(headRevResult.Revision)
 
 	iter, err := reader.QueryRelationships(ctx, filter, options.WithQueryShape(queryshape.Varying))
 	require.NoError(err)
@@ -2338,10 +2435,10 @@ func ensureRelationshipWithFilter(ctx context.Context, require *require.Assertio
 }
 
 func ensureNoRelationshipWithFilter(ctx context.Context, require *require.Assertions, ds datastore.Datastore, filter datastore.RelationshipsFilter) {
-	headRev, err := ds.HeadRevision(ctx)
+	headRevResult, err := ds.HeadRevision(ctx)
 	require.NoError(err)
 
-	reader := ds.SnapshotReader(headRev)
+	reader := ds.SnapshotReader(headRevResult.Revision)
 
 	iter, err := reader.QueryRelationships(ctx, filter, options.WithQueryShape(queryshape.Varying))
 	require.NoError(err)
@@ -2353,10 +2450,10 @@ func ensureNoRelationshipWithFilter(ctx context.Context, require *require.Assert
 }
 
 func countRels(ctx context.Context, require *require.Assertions, ds datastore.Datastore, resourceType string) int {
-	headRev, err := ds.HeadRevision(ctx)
+	headRevResult, err := ds.HeadRevision(ctx)
 	require.NoError(err)
 
-	reader := ds.SnapshotReader(headRev)
+	reader := ds.SnapshotReader(headRevResult.Revision)
 
 	iter, err := reader.QueryRelationships(ctx, datastore.RelationshipsFilter{
 		OptionalResourceType: resourceType,

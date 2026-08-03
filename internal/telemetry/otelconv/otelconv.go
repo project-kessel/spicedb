@@ -47,8 +47,9 @@ const (
 
 	EventDatastoreMySQLTransactionValidated = "spicedb.internal.datastore.mysql.transaction_validated"
 
-	EventDatastoreRevisionsCacheReturned = "spicedb.internal.datastore.revisions.cache_returned"
-	EventDatastoreRevisionsComputed      = "spicedb.internal.datastore.revisions.computed"
+	EventDatastoreRevisionsCacheReturned        = "spicedb.internal.datastore.revisions.cache_returned"
+	EventDatastoreRevisionsComputed             = "spicedb.internal.datastore.revisions.computed"
+	EventDatastoreRevisionsSharedFailedRetrying = "spicedb.internal.datastore.revisions.shared_failed_retrying"
 
 	EventDispatchLookupResources3                          = "spicedb.internal.dispatch.lookupresources3"
 	EventDispatchLR3UnlimitedResults                       = "spicedb.internal.dispatch.lookupresources3.unlimited_results"
@@ -119,4 +120,11 @@ const (
 
 	AttrTestKey    = "spicedb.internal.test.key"
 	AttrTestNumber = "spicedb.internal.test.number"
+
+	AttrSchemaReadFromCache  = "spicedb.internal.schema.read_from_cache"
+	AttrSchemaChunkCount     = "spicedb.internal.schema.chunk_count"
+	AttrSchemaDataSizeBytes  = "spicedb.internal.schema.data_size_bytes"
+	AttrSchemaHash           = "spicedb.internal.schema.hash"
+	AttrSchemaCacheBypassed  = "spicedb.internal.schema.cache_bypassed"
+	AttrSchemaDefinitionName = "spicedb.internal.schema.definition_name"
 )

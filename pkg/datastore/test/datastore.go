@@ -7,8 +7,12 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
+	"github.com/authzed/spicedb/pkg/genutil/slicez"
 	"github.com/authzed/spicedb/pkg/namespace"
+	"github.com/authzed/spicedb/pkg/schemadsl/compiler"
+	"github.com/authzed/spicedb/pkg/schemadsl/generator"
 	"github.com/authzed/spicedb/pkg/tuple"
 )
 
@@ -86,6 +90,11 @@ func (c Categories) WatchCheckpoints() bool {
 	return ok
 }
 
+func (c Categories) ConcurrentWrite() bool {
+	_, ok := c[ConcurrentWriteCategory]
+	return ok
+}
+
 var noException = Categories{}
 
 const (
@@ -95,6 +104,9 @@ const (
 	WatchCheckpointsCategory = "WatchCheckpoints"
 	StatsCategory            = "Stats"
 	TransactionCategory      = "Transaction"
+	// ConcurrentWriteCategory marks tests that open two write transactions concurrently.
+	// Datastores with a global write lock (e.g. memdb) must exclude this category.
+	ConcurrentWriteCategory = "ConcurrentWrite"
 )
 
 func WithCategories(cats ...string) Categories {
@@ -130,6 +142,7 @@ func AllWithExceptions(t *testing.T, tester DatastoreTester, except Categories) 
 
 	t.Run("TestSimple", runner(tester, SimpleTest))
 	t.Run("TestObjectIDs", runner(tester, ObjectIDsTest))
+	t.Run("TestCaseSensitivity", runner(tester, CaseSensitivityTest))
 	t.Run("TestDeleteRelationships", runner(tester, DeleteRelationshipsTest))
 	t.Run("TestDeleteNonExistant", runner(tester, DeleteNotExistantTest))
 	t.Run("TestDeleteAlreadyDeleted", runner(tester, DeleteAlreadyDeletedTest))
@@ -155,7 +168,10 @@ func AllWithExceptions(t *testing.T, tester DatastoreTester, except Categories) 
 	t.Run("TestRelationshipCaveatFiltering", runner(tester, RelationshipCaveatFilteringTest))
 
 	t.Run("TestMultipleReadsInRWT", runner(tester, MultipleReadsInRWTTest))
-	t.Run("TestConcurrentWriteSerialization", runner(tester, ConcurrentWriteSerializationTest))
+	if !except.ConcurrentWrite() {
+		t.Run("TestConcurrentWriteSerialization", runner(tester, ConcurrentWriteSerializationTest))
+		t.Run("TestConcurrentWriteDeadlock", runner(tester, ConcurrentWriteDeadlockTest))
+	}
 
 	t.Run("TestOrdering", runner(tester, OrderingTest))
 	t.Run("TestLimit", runner(tester, LimitTest))
@@ -207,11 +223,16 @@ func AllWithExceptions(t *testing.T, tester DatastoreTester, except Categories) 
 
 	if !except.Watch() && !except.WatchSchema() {
 		t.Run("TestWatchSchema", runner(tester, WatchSchemaTest))
-		t.Run("TestWatchAll", runner(tester, WatchAllTest))
+		t.Run("TestWatchRelationshipsAndSchemaChanges", runner(tester, WatchRelationshipsAndSchemaChangesTest))
 	}
 
 	if !except.Watch() && !except.WatchCheckpoints() {
-		t.Run("TestWatchCheckpoints", runner(tester, WatchCheckpointsTest))
+		t.Run("TestWatchObservesEveryReturnedRevision", runner(tester, WatchObservesEveryReturnedRevisionTest))
+		t.Run("TestWatchEmitsCheckpointAfterWriteWithChanges", runner(tester, WatchEmitsCheckpointAfterWriteWithChangesTest))
+	}
+
+	if !except.Watch() && !except.WatchCheckpoints() && !except.WatchSchema() {
+		t.Run("TestWatchRelationshipsAndSchemaAndCheckpoints", runner(tester, WatchRelationshipsAndSchemaAndCheckpointsTest))
 	}
 
 	if !except.Transaction() {
@@ -224,6 +245,30 @@ func AllWithExceptions(t *testing.T, tester DatastoreTester, except Categories) 
 	t.Run("TestRelationshipCounterOverExpired", runner(tester, RelationshipCounterOverExpiredTest))
 	t.Run("TestRegisterRelationshipCountersInParallel", runner(tester, RegisterRelationshipCountersInParallelTest))
 	t.Run("TestRelationshipCountersWithOddFilter", runner(tester, RelationshipCountersWithOddFilterTest))
+	t.Run("TestCounterCaseSensitivity", runner(tester, CounterCaseSensitivityTest))
+
+	t.Run("TestStoredSchemaNotFound", runner(tester, StoredSchemaNotFoundTest))
+	t.Run("TestStoredSchemaWriteRead", runner(tester, StoredSchemaWriteReadTest))
+	t.Run("TestStoredSchemaRevision", runner(tester, StoredSchemaRevisionTest))
+	t.Run("TestStoredSchemaUpdate", runner(tester, StoredSchemaUpdateTest))
+	t.Run("TestStoredSchemaMultipleRevisions", runner(tester, StoredSchemaMultipleRevisionsTest))
+	if !except.Transaction() {
+		t.Run("TestStoredSchemaReadWithinTransaction", runner(tester, StoredSchemaReadWithinTransactionTest))
+	}
+	t.Run("TestStoredSchemaStableText", runner(tester, StoredSchemaStableTextTest))
+	t.Run("TestStoredSchemaLarge", runner(tester, StoredSchemaLargeTest))
+	t.Run("TestStoredSchemaPhaseMigration", runner(tester, StoredSchemaPhaseMigrationTest))
+	t.Run("TestStoredSchemaViaDataLayer", runner(tester, StoredSchemaViaDataLayerTest))
+	if !except.Transaction() {
+		t.Run("TestStoredSchemaReadInWriteTxMemoized", runner(tester, StoredSchemaReadInWriteTxMemoizedTest))
+	}
+	t.Run("TestStoredSchemaAssertHashPrecondition", runner(tester, StoredSchemaAssertHashPreconditionTest))
+	if !except.ConcurrentWrite() {
+		t.Run("TestStoredSchemaConcurrentSchemaWins", runner(tester, StoredSchemaConcurrentSchemaWinsTest))
+		t.Run("TestStoredSchemaWriteSucceedsUnderRelWriteTraffic", runner(tester, StoredSchemaWriteSucceedsUnderRelWriteTrafficTest))
+	}
+	t.Run("TestHeadRevisionSchemaHash", runner(tester, HeadRevisionSchemaHashTest))
+	t.Run("TestOptimizedRevisionSchemaHash", runner(tester, OptimizedRevisionSchemaHashTest))
 }
 
 func OnlyGCTests(t *testing.T, tester DatastoreTester) {
@@ -268,13 +313,23 @@ func makeTestRel(resourceID, userID string) tuple.Relationship {
 	}
 }
 
-func setupDatastore(ds datastore.Datastore, require *require.Assertions) datastore.Revision {
-	ctx := context.Background()
+func setupDatastore(t *testing.T, ds datastore.Datastore) datastore.Revision {
+	ctx := t.Context()
 
-	revision, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		return rwt.LegacyWriteNamespaces(ctx, testGroupNS, testResourceNS, testUserNS)
+	schemaDefinitions := []datastore.SchemaDefinition{testGroupNS.CloneVT(), testResourceNS.CloneVT(), testUserNS.CloneVT()}
+	compilerDefinitions := slicez.Map(schemaDefinitions, func(def datastore.SchemaDefinition) compiler.SchemaDefinition {
+		return def.(compiler.SchemaDefinition)
 	})
-	require.NoError(err)
+	// TODO: is this really necessary? Might be worth refactoring.
+	schemaText, _, err := generator.GenerateSchema(ctx, compilerDefinitions)
+
+	require.NoError(t, err)
+	revision, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
+		// TODO: add cache to this?
+		_, _, err := datalayer.WriteSchemaViaStoredSchema(ctx, rwt, schemaDefinitions, schemaText)
+		return err
+	})
+	require.NoError(t, err)
 
 	return revision
 }

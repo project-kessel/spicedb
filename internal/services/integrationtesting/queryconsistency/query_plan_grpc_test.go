@@ -13,8 +13,13 @@ import (
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 
+	"github.com/authzed/spicedb/internal/datastore/dsfortesting"
+	"github.com/authzed/spicedb/internal/datastore/memdb"
 	"github.com/authzed/spicedb/internal/services/integrationtesting/consistencytestutil"
+	"github.com/authzed/spicedb/internal/testserver"
+	"github.com/authzed/spicedb/pkg/caveats/types"
 	"github.com/authzed/spicedb/pkg/cmd/server"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/genutil/mapz"
 	"github.com/authzed/spicedb/pkg/tuple"
@@ -59,7 +64,24 @@ func runQueryPlanConsistencyGRPCForFile(t *testing.T, filePath string) {
 		server.WithExperimentalQueryPlan("ls"),
 	}
 
-	cad := consistencytestutil.LoadDataAndCreateClusterForTesting(t, filePath, testTimedelta, options...)
+	ds, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, testTimedelta, memdb.DisableGC)
+	require.NoError(t, err)
+
+	populated, _, err := validationfile.PopulateFromFiles(t.Context(), datalayer.NewDataLayer(ds), types.Default.TypeSet, []string{filePath})
+	require.NoError(t, err)
+
+	connections := testserver.TestClusterWithDispatch(t, 1, ds, options...)
+
+	dl := datalayer.NewDataLayer(ds)
+
+	dsCtx := datalayer.ContextWithHandle(t.Context())
+	require.NoError(t, datalayer.SetInContext(dsCtx, dl))
+	cad := consistencytestutil.ConsistencyClusterAndData{
+		Conn:      connections[0],
+		DataStore: ds,
+		Ctx:       dsCtx,
+		Populated: populated,
+	}
 
 	headRevision, err := cad.DataStore.HeadRevision(cad.Ctx)
 	require.NoError(t, err)
@@ -68,9 +90,9 @@ func runQueryPlanConsistencyGRPCForFile(t *testing.T, filePath string) {
 
 	tester := consistencytestutil.NewServiceTester(cad.Conn)
 	t.Run(tester.Name(), func(t *testing.T) {
-		validateQueryPlanCheck(t, cad, tester, headRevision)
-		validateQueryPlanLookupResources(t, cad, tester, headRevision, accessibilitySet)
-		validateQueryPlanLookupSubjects(t, cad, tester, headRevision, accessibilitySet)
+		validateQueryPlanCheck(t, cad, tester, headRevision.Revision)
+		validateQueryPlanLookupResources(t, cad, tester, headRevision.Revision, accessibilitySet)
+		validateQueryPlanLookupSubjects(t, cad, tester, headRevision.Revision, accessibilitySet)
 	})
 }
 
@@ -168,6 +190,12 @@ func validateQueryPlanLookupResources(
 // pair the query plan handler returns at least the subjects the accessibility
 // set defines as directly accessible. Wildcard exclusion checking is omitted
 // because the query plan handler does not yet populate ExcludedSubjects.
+//
+// It additionally enforces a Check ↔ LookupSubjects consistency invariant:
+// every concrete (non-wildcard) subject returned with HAS_PERMISSION must also
+// pass CheckPermission against the same resource. This catches cases where
+// LookupSubjects re-admits a subject that an upstream wildcard exclusion had
+// removed (e.g. wildcard-main exclusion intersected with a concrete set).
 func validateQueryPlanLookupSubjects(
 	t *testing.T,
 	cad consistencytestutil.ConsistencyClusterAndData,
@@ -191,6 +219,28 @@ func validateQueryPlanLookupSubjects(
 								slices.Collect(maps.Keys(resolvedSubjects)),
 								slices.Collect(maps.Keys(expectedDefinedSubjects)),
 							)
+
+							// Cross-check every concrete (non-wildcard) subject returned with
+							// HAS_PERMISSION against CheckPermission. LookupSubjects must not
+							// claim permission for a subject that Check denies.
+							for subjectID, resp := range resolvedSubjects {
+								if subjectID == tuple.PublicWildcard {
+									continue
+								}
+								if resp.Subject.Permissionship != v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION {
+									continue
+								}
+								subjectONR := tuple.ObjectAndRelation{
+									ObjectType: subjectType.ObjectType,
+									ObjectID:   subjectID,
+									Relation:   subjectType.Relation,
+								}
+								permissionship, err := tester.Check(t.Context(), resource, subjectONR, revision, nil)
+								require.NoError(t, err)
+								require.Equal(t, v1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION, permissionship,
+									"LookupSubjects returned %s as a subject of %s#%s with HAS_PERMISSION, but Check returned %s",
+									subjectID, resource.ObjectType, resource.Relation, permissionship)
+							}
 						})
 				}
 			})
@@ -250,12 +300,10 @@ func testForEachResourceInPopulated(
 }
 
 func requireSubsetOf(t *testing.T, found []string, expected []string) {
-	if len(expected) == 0 {
+	expectedSet := mapz.NewSet(expected...)
+	if expectedSet.IsSubsetOf(mapz.NewSet(found...)) {
 		return
 	}
 
-	foundSet := mapz.NewSet(found...)
-	for _, expectedObjectID := range expected {
-		require.True(t, foundSet.Has(expectedObjectID), "missing expected object ID %s", expectedObjectID)
-	}
+	require.Empty(t, expectedSet.Subtract(mapz.NewSet(found...)).AsSlice(), "missing expected object IDs")
 }

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -515,10 +516,57 @@ func (rd RevisionedDefinition[T]) GetLastWrittenRevision() Revision {
 // RevisionedNamespace is a revisioned version of a namespace definition.
 type RevisionedNamespace = RevisionedDefinition[*core.NamespaceDefinition]
 
+// ReadOnlyStoredSchema wraps a *core.StoredSchema to indicate it is read-only
+// and must not be modified, as it may be shared across multiple callers via caching.
+//
+// A ReadOnlyStoredSchema also hosts lazily-built, schema-derived caches (for example
+// compiled caveats; see LoadOrStoreDerived). Because a single instance is shared across
+// callers for a given schema version via the stored-schema cache, those derived caches
+// live exactly as long as the schema version they belong to and are discarded, together,
+// when the schema changes. The underlying schema itself remains immutable; only the
+// concurrency-safe derived caches are populated on demand.
+type ReadOnlyStoredSchema struct {
+	schema     *core.StoredSchema
+	schemaSize int64    // rough byte size of the schema, used as a cache-cost base (see EstimatedSize)
+	derived    sync.Map // derived-cache kinds keyed by DerivedCacheKey id; see LoadOrStoreDerived
+}
+
+// NewReadOnlyStoredSchema wraps a StoredSchema as read-only. Returns nil if the provided
+// schema is nil. The schema's byte size is estimated cheaply from its schema text; callers
+// that have the exact serialized size on hand (e.g. datastore readers that just unmarshaled
+// it) should prefer NewReadOnlyStoredSchemaWithSize.
+func NewReadOnlyStoredSchema(schema *core.StoredSchema) *ReadOnlyStoredSchema {
+	if schema == nil {
+		return nil
+	}
+	return NewReadOnlyStoredSchemaWithSize(schema, len(schema.GetV1().GetSchemaText()))
+}
+
+// NewReadOnlyStoredSchemaWithSize wraps a StoredSchema as read-only, recording sizeBytes as a
+// rough byte size of the schema for cache-cost accounting (see EstimatedSize). Returns nil if
+// the provided schema is nil. sizeBytes need not be exact; the serialized length the schema
+// was read from is a good value.
+func NewReadOnlyStoredSchemaWithSize(schema *core.StoredSchema, sizeBytes int) *ReadOnlyStoredSchema {
+	if schema == nil {
+		return nil
+	}
+	return &ReadOnlyStoredSchema{schema: schema, schemaSize: int64(sizeBytes)}
+}
+
+// Get returns the underlying StoredSchema. Callers must not modify the returned value.
+func (r *ReadOnlyStoredSchema) Get() *core.StoredSchema {
+	return r.schema
+}
+
 // Reader is an interface for reading relationships from the datastore.
 type Reader interface {
 	LegacySchemaReader
 	CounterReader
+
+	// ReadStoredSchema reads the unified stored schema from the datastore.
+	// The returned ReadOnlyStoredSchema must not be modified, as it may be shared
+	// across callers via caching.
+	ReadStoredSchema(ctx context.Context) (*ReadOnlyStoredSchema, error)
 
 	// QueryRelationships reads relationships, starting from the resource side.
 	QueryRelationships(
@@ -551,6 +599,9 @@ type ReadWriteTransaction interface {
 	DeleteRelationships(ctx context.Context, filter *v1.RelationshipFilter,
 		options ...options.DeleteOptionsOption,
 	) (uint64, bool, error)
+
+	// WriteStoredSchema writes the unified stored schema to the datastore.
+	WriteStoredSchema(ctx context.Context, schema *core.StoredSchema) error
 
 	// BulkLoad takes a relationship source iterator, and writes all of the
 	// relationships to the backing datastore in an optimized fashion. This
@@ -680,11 +731,11 @@ type ReadOnlyDatastore interface {
 
 	// OptimizedRevision gets a revision that will likely already be replicated
 	// and will likely be shared amongst many queries.
-	OptimizedRevision(ctx context.Context) (Revision, error)
+	OptimizedRevision(ctx context.Context) (RevisionWithSchemaHash, error)
 
 	// HeadRevision gets a revision that is guaranteed to be at least as fresh as
 	// right now.
-	HeadRevision(ctx context.Context) (Revision, error)
+	HeadRevision(ctx context.Context) (RevisionWithSchemaHash, error)
 
 	// CheckRevision checks the specified revision to make sure it's valid and
 	// hasn't been garbage collected.
@@ -993,6 +1044,14 @@ func (nilRevision) LessThan(_ Revision) bool {
 
 func (nilRevision) String() string {
 	return "nil"
+}
+
+// RevisionWithSchemaHash is a revision paired with the schema hash that was
+// active at that revision. The schema hash is returned as a raw string from
+// the datastore layer; the datalayer converts it to a typed SchemaHash.
+type RevisionWithSchemaHash struct {
+	Revision   Revision
+	SchemaHash string
 }
 
 // NoRevision is a zero type for the revision that will make changing the

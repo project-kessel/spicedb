@@ -26,8 +26,8 @@ jobs:
       codechange: "${{ steps.code-filter.outputs.codechange }}"
       protochange: "${{ steps.proto-filter.outputs.protochange }}"
     steps:
-      - uses: "actions/checkout@v6"
-      - uses: "dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36" # v3.0.2
+      - uses: "actions/checkout@v7"
+      - uses: "dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706" # v4.0.2
         id: "code-filter"
         with:
           filters: |
@@ -40,7 +40,7 @@ jobs:
               - "pkg/**"
               - "e2e/**"
               - "internal/**"
-      - uses: "dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36" # v3.0.2
+      - uses: "dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706" # v4.0.2
         id: "proto-filter"
         with:
           filters: |
@@ -55,9 +55,9 @@ jobs:
     needs: "paths-filter"
     if: false
     steps:
-      - uses: "actions/checkout@v6"
+      - uses: "actions/checkout@v7"
       - uses: "authzed/actions/setup-go@main"
-      - uses: "docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9" # v3.7.0
+      - uses: "docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4" # v4.3.0
         with:
           username: "${{ env.DOCKERHUB_PUBLIC_USER }}"
           password: "${{ env.DOCKERHUB_PUBLIC_ACCESS_TOKEN }}"
@@ -74,12 +74,12 @@ jobs:
     if: |
       needs.paths-filter.outputs.codechange == 'true'
     steps:
-      - uses: "actions/checkout@v6"
+      - uses: "actions/checkout@v7"
       - uses: "authzed/actions/setup-go@main"
       - name: "Unit tests with coverage"
         run: "go run mage.go test:unitCover"
       - name: "Coverage"
-        uses: "codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de" # v5.5.2
+        uses: "codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f" # v7.0.0
         with:
           files: "./coverage.txt"
           token: "${{ secrets.CODECOV_TOKEN }}"
@@ -91,7 +91,7 @@ jobs:
     needs: "paths-filter"
     if: false
     steps:
-      - uses: "actions/checkout@v6"
+      - uses: "actions/checkout@v7"
       - uses: "authzed/actions/setup-go@main"
       - name: "Steelthread tests"
         run: "go run mage.go test:steelthread"
@@ -104,16 +104,16 @@ jobs:
     if: |
       needs.paths-filter.outputs.codechange == 'true'
     steps:
-      - uses: "actions/checkout@v6"
+      - uses: "actions/checkout@v7"
       - uses: "authzed/actions/setup-go@main"
-      - uses: "docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9" # v3.7.0
+      - uses: "docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4" # v4.3.0
         with:
           username: "${{ env.DOCKERHUB_PUBLIC_USER }}"
           password: "${{ env.DOCKERHUB_PUBLIC_ACCESS_TOKEN }}"
       - name: "Integration tests with coverage"
         run: "go run mage.go test:integrationCover"
       - name: "Coverage"
-        uses: "codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de" # v5.5.2
+        uses: "codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f" # v7.0.0
         with:
           files: "./coverage.txt"
           token: "${{ secrets.CODECOV_TOKEN }}"
@@ -129,13 +129,13 @@ jobs:
       matrix:
         datastore: ["mysql", "spanner"]
     steps:
-      - uses: "actions/checkout@v6"
+      - uses: "actions/checkout@v7"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
       - uses: "authzed/actions/setup-go@main"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-      - uses: "docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9" # v3.7.0
+      - uses: "docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4" # v4.3.0
         if: |
           needs.paths-filter.outputs.codechange == 'true'
         with:
@@ -148,7 +148,7 @@ jobs:
       - name: "Coverage"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-        uses: "codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de" # v5.5.2
+        uses: "codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f" # v7.0.0
         with:
           files: "./coverage.txt"
           token: "${{ secrets.CODECOV_TOKEN }}"
@@ -164,13 +164,13 @@ jobs:
       matrix:
         datastore: ["mysql", "spanner"]
     steps:
-      - uses: "actions/checkout@v6"
+      - uses: "actions/checkout@v7"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
       - uses: "authzed/actions/setup-go@main"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-      - uses: "docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9" # v3.7.0
+      - uses: "docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4" # v4.3.0
         if: |
           needs.paths-filter.outputs.codechange == 'true'
         with:
@@ -183,7 +183,7 @@ jobs:
       - name: "Coverage"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-        uses: "codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de" # v5.5.2
+        uses: "codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f" # v7.0.0
         with:
           files: "./coverage.txt"
           token: "${{ secrets.CODECOV_TOKEN }}"
@@ -199,13 +199,13 @@ jobs:
         datastore: ["postgres", "pgbouncer"]
         pgversion: ["16", "17"]
     steps:
-      - uses: "actions/checkout@v6"
+      - uses: "actions/checkout@v7"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
       - uses: "authzed/actions/setup-go@main"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-      - uses: "docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9" # v3.7.0
+      - uses: "docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4" # v4.3.0
         if: |
           needs.paths-filter.outputs.codechange == 'true'
         with:
@@ -218,7 +218,7 @@ jobs:
       - name: "Coverage"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-        uses: "codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de" # v5.5.2
+        uses: "codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f" # v7.0.0
         with:
           files: "./coverage.txt"
           token: "${{ secrets.CODECOV_TOKEN }}"
@@ -234,13 +234,13 @@ jobs:
         datastore: ["postgres"]
         pgversion: ["16", "17"]
     steps:
-      - uses: "actions/checkout@v6"
+      - uses: "actions/checkout@v7"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
       - uses: "authzed/actions/setup-go@main"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-      - uses: "docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9" # v3.7.0
+      - uses: "docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4" # v4.3.0
         if: |
           needs.paths-filter.outputs.codechange == 'true'
         with:
@@ -253,7 +253,7 @@ jobs:
       - name: "Coverage"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-        uses: "codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de" # v5.5.2
+        uses: "codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f" # v7.0.0
         with:
           files: "./coverage.txt"
           token: "${{ secrets.CODECOV_TOKEN }}"
@@ -274,13 +274,13 @@ jobs:
           # the most recent version
           - "26.1.0"
     steps:
-      - uses: "actions/checkout@v6"
+      - uses: "actions/checkout@v7"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
       - uses: "authzed/actions/setup-go@main"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-      - uses: "docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9" # v3.7.0
+      - uses: "docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4" # v4.3.0
         if: |
           needs.paths-filter.outputs.codechange == 'true'
         with:
@@ -293,7 +293,7 @@ jobs:
       - name: "Coverage"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-        uses: "codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de" # v5.5.2
+        uses: "codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f" # v7.0.0
         with:
           files: "./coverage.txt"
           token: "${{ secrets.CODECOV_TOKEN }}"
@@ -314,13 +314,13 @@ jobs:
           # the most recent version
           - "26.1.0"
     steps:
-      - uses: "actions/checkout@v6"
+      - uses: "actions/checkout@v7"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
       - uses: "authzed/actions/setup-go@main"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-      - uses: "docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9" # v3.7.0
+      - uses: "docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4" # v4.3.0
         if: |
           needs.paths-filter.outputs.codechange == 'true'
         with:
@@ -333,33 +333,34 @@ jobs:
       - name: "Coverage"
         if: |
           needs.paths-filter.outputs.codechange == 'true'
-        uses: "codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de" # v5.5.2
+        uses: "codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f" # v7.0.0
         with:
           files: "./coverage.txt"
           token: "${{ secrets.CODECOV_TOKEN }}"
           fail_ci_if_error: false
 
   e2e:
-    name: "E2E"
+    # NOTE: the name is hardcoded (rather than using a matrix) so that the check context stays
+    # "E2E (22.1.5)" whether the job runs or is skipped. A matrix job that is skipped via a
+    # job-level `if` reports as bare "E2E", which never satisfies the required "E2E (22.1.5)"
+    # branch-protection check, leaving non-code PRs stuck on "Expected — Waiting for status".
+    # TODO update to 25.x when we figure out how to override the clock
+    name: "E2E (22.1.5)"
     # NOTE: the e2e tests can't be run on ARM because chaosd (which is used in the cockroach e2e consistency tests)
     # doesn't support ARM and it doesn't appear that it will.
     runs-on: "ubuntu-latest"
     needs: "paths-filter"
-    strategy:
-      fail-fast: false
-      matrix:
-        crdbversion: ["22.1.5"] # TODO update to 25.x when we figure out how to override the clock
     if: |
       needs.paths-filter.outputs.codechange == 'true'
     steps:
-      - uses: "actions/checkout@v6"
+      - uses: "actions/checkout@v7"
       - uses: "authzed/actions/setup-go@main"
         with:
           go-version-file: "e2e/go.mod"
           cache-dependency-path: "e2e/go.sum"
       - name: "Run e2e"
-        run: "go run mage.go test:e2e ${{ matrix.crdbversion }}"
-      - uses: "actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f" # v7.0.0
+        run: "go run mage.go test:e2e 22.1.5"
+      - uses: "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" # v7.0.1
         if: "always()"
         # this upload step is really flaky, don't fail the job if it fails
         continue-on-error: true
@@ -372,7 +373,7 @@ jobs:
     needs: "paths-filter"
     if: false
     steps:
-      - uses: "actions/checkout@v6"
+      - uses: "actions/checkout@v7"
       - uses: "authzed/actions/setup-go@main"
         with:
           go-version-file: "tools/analyzers/go.mod"
@@ -385,7 +386,7 @@ jobs:
     needs: "paths-filter"
     if: false
     steps:
-      - uses: "actions/checkout@v6"
+      - uses: "actions/checkout@v7"
       - uses: "authzed/actions/setup-go@main"
       - name: "Disable AppArmor"
         if:
@@ -410,11 +411,11 @@ jobs:
     needs: "paths-filter"
     if: false
     steps:
-      - uses: "actions/checkout@v6"
+      - uses: "actions/checkout@v7"
       - uses: "authzed/actions/setup-go@main"
       - name: "Generate Protos"
         run: "go run mage.go gen:proto"
-      - uses: "chainguard-dev/actions/nodiff@71714a76c3df10b544595a2294c16649dc3472e5" # main
+      - uses: "chainguard-dev/actions/nodiff@f0be69916b439d0fcced2451b23d0f27cd46d545" # main
         with:
           path: ""
           fixup-command: "go run mage.go gen:proto"
@@ -438,7 +439,7 @@ jobs:
     permissions:
       pull-requests: "write"
     steps:
-      - uses: "actions/checkout@v6"
+      - uses: "actions/checkout@v7"
         with:
           fetch-depth: 0
 
@@ -459,14 +460,14 @@ jobs:
           echo "sha=$SHA" >> $GITHUB_OUTPUT
 
       - name: "Download benchmark from Main"
-        uses: "actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306" # v5.0.3
+        uses: "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9" # v6.1.0
         id: "downloadbenchmark"
         with:
           path: "./cache/benchmark-data.json"
           key: "${{ steps.get-main-branch-sha.outputs.sha }}-${{ runner.os }}-go-benchmark"
 
       - name: "Compare benchmarks with Main"
-        uses: "benchmark-action/github-action-benchmark@a7bc2366eda11037936ea57d811a43b3418d3073" # v1.21.0
+        uses: "benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba" # v1.22.1
         if: "steps.downloadbenchmark.outputs.cache-hit == 'true'"
         with:
           alert-threshold: "200%"
@@ -486,7 +487,7 @@ jobs:
           summary-always: true
 
       - name: "Run benchmarks but don't compare to Main branch"
-        uses: "benchmark-action/github-action-benchmark@a7bc2366eda11037936ea57d811a43b3418d3073" # v1.21.0
+        uses: "benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba" # v1.22.1
         if: "steps.downloadbenchmark.outputs.cache-hit != 'true'"
         with:
           # What benchmark tool the output.txt came from

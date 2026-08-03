@@ -8,6 +8,7 @@ import (
 	datastore "github.com/authzed/spicedb/pkg/cmd/datastore"
 	util "github.com/authzed/spicedb/pkg/cmd/util"
 	datastore1 "github.com/authzed/spicedb/pkg/datastore"
+	query "github.com/authzed/spicedb/pkg/query"
 	defaults "github.com/creasty/defaults"
 	auth "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/auth"
 	grpc "google.golang.org/grpc"
@@ -56,7 +57,9 @@ func (c *Config) ToOption() ConfigOption {
 		to.EnableExperimentalWatchableSchemaCache = c.EnableExperimentalWatchableSchemaCache
 		to.SchemaWatchHeartbeat = c.SchemaWatchHeartbeat
 		to.NamespaceCacheConfig = c.NamespaceCacheConfig
+		to.StoredSchemaCacheConfig = c.StoredSchemaCacheConfig
 		to.SchemaPrefixesRequired = c.SchemaPrefixesRequired
+		to.ExperimentalSchemaMode = c.ExperimentalSchemaMode
 		to.DispatchServer = c.DispatchServer
 		to.DispatchMaxDepth = c.DispatchMaxDepth
 		to.GlobalDispatchConcurrencyLimit = c.GlobalDispatchConcurrencyLimit
@@ -69,6 +72,7 @@ func (c *Config) ToOption() ConfigOption {
 		to.DispatchClusterMetricsEnabled = c.DispatchClusterMetricsEnabled
 		to.DispatchClusterMetricsPrefix = c.DispatchClusterMetricsPrefix
 		to.Dispatcher = c.Dispatcher
+		to.QueryPlanMetadata = c.QueryPlanMetadata
 		to.DispatchHashringReplicationFactor = c.DispatchHashringReplicationFactor
 		to.DispatchHashringSpread = c.DispatchHashringSpread
 		to.DispatchChunkSize = c.DispatchChunkSize
@@ -107,6 +111,7 @@ func (c *Config) ToOption() ConfigOption {
 		to.TelemetryCAOverridePath = c.TelemetryCAOverridePath
 		to.TelemetryEndpoint = c.TelemetryEndpoint
 		to.TelemetryInterval = c.TelemetryInterval
+		to.OTel = c.OTel
 		to.EnableRequestLogs = c.EnableRequestLogs
 		to.EnableResponseLogs = c.EnableResponseLogs
 		to.DisableGRPCLatencyHistogram = c.DisableGRPCLatencyHistogram
@@ -206,7 +211,19 @@ func (c *Config) DebugMap() map[string]any {
 	} else {
 		debugMap["NamespaceCacheConfig"] = c.NamespaceCacheConfig
 	}
+	if dm, ok := any(&c.StoredSchemaCacheConfig).(interface {
+		DebugMap() map[string]any
+	}); ok {
+		debugMap["StoredSchemaCacheConfig"] = dm.DebugMap()
+	} else {
+		debugMap["StoredSchemaCacheConfig"] = c.StoredSchemaCacheConfig
+	}
 	debugMap["SchemaPrefixesRequired"] = c.SchemaPrefixesRequired
+	if c.ExperimentalSchemaMode == "" {
+		debugMap["ExperimentalSchemaMode"] = "(empty)"
+	} else {
+		debugMap["ExperimentalSchemaMode"] = c.ExperimentalSchemaMode
+	}
 	if dm, ok := any(&c.DispatchServer).(interface {
 		DebugMap() map[string]any
 	}); ok {
@@ -365,6 +382,13 @@ func (c *Config) DebugMap() map[string]any {
 		debugMap["TelemetryInterval"] = dm.DebugMap()
 	} else {
 		debugMap["TelemetryInterval"] = c.TelemetryInterval
+	}
+	if dm, ok := any(&c.OTel).(interface {
+		DebugMap() map[string]any
+	}); ok {
+		debugMap["OTel"] = dm.DebugMap()
+	} else {
+		debugMap["OTel"] = c.OTel
 	}
 	debugMap["EnableRequestLogs"] = c.EnableRequestLogs
 	debugMap["EnableResponseLogs"] = c.EnableResponseLogs
@@ -549,10 +573,24 @@ func WithNamespaceCacheConfig(namespaceCacheConfig CacheConfig) ConfigOption {
 	}
 }
 
+// WithStoredSchemaCacheConfig returns an option that can set StoredSchemaCacheConfig on a Config
+func WithStoredSchemaCacheConfig(storedSchemaCacheConfig CacheConfig) ConfigOption {
+	return func(c *Config) {
+		c.StoredSchemaCacheConfig = storedSchemaCacheConfig
+	}
+}
+
 // WithSchemaPrefixesRequired returns an option that can set SchemaPrefixesRequired on a Config
 func WithSchemaPrefixesRequired(schemaPrefixesRequired bool) ConfigOption {
 	return func(c *Config) {
 		c.SchemaPrefixesRequired = schemaPrefixesRequired
+	}
+}
+
+// WithExperimentalSchemaMode returns an option that can set ExperimentalSchemaMode on a Config
+func WithExperimentalSchemaMode(experimentalSchemaMode string) ConfigOption {
+	return func(c *Config) {
+		c.ExperimentalSchemaMode = experimentalSchemaMode
 	}
 }
 
@@ -637,6 +675,13 @@ func WithDispatchClusterMetricsPrefix(dispatchClusterMetricsPrefix string) Confi
 func WithDispatcher(dispatcher dispatch.Dispatcher) ConfigOption {
 	return func(c *Config) {
 		c.Dispatcher = dispatcher
+	}
+}
+
+// WithQueryPlanMetadata returns an option that can set QueryPlanMetadata on a Config
+func WithQueryPlanMetadata(queryPlanMetadata *query.QueryPlanMetadata) ConfigOption {
+	return func(c *Config) {
+		c.QueryPlanMetadata = queryPlanMetadata
 	}
 }
 
@@ -959,6 +1004,13 @@ func WithTelemetryEndpoint(telemetryEndpoint string) ConfigOption {
 func WithTelemetryInterval(telemetryInterval time.Duration) ConfigOption {
 	return func(c *Config) {
 		c.TelemetryInterval = telemetryInterval
+	}
+}
+
+// WithOTel returns an option that can set OTel on a Config
+func WithOTel(oTel OTelConfig) ConfigOption {
+	return func(c *Config) {
+		c.OTel = oTel
 	}
 }
 

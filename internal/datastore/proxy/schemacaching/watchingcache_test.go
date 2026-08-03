@@ -2,12 +2,14 @@ package schemacaching
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 
@@ -18,6 +20,14 @@ import (
 	"github.com/authzed/spicedb/pkg/testutil"
 )
 
+// assertEventuallyFallback waits for wcache's namespace fallback flag to match want.
+func assertEventuallyFallback(t *testing.T, wcache *watchingCachingProxy, want bool) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return wcache.namespaceCache.isInFallback() == want
+	}, 5*time.Second, 5*time.Millisecond, "cache did not reach inFallbackMode=%v", want)
+}
+
 func TestWatchingCachingProxyUnwrap(t *testing.T) {
 	fakeDS := &fakeDatastore{
 		headRevision: rev("0"),
@@ -27,9 +37,12 @@ func TestWatchingCachingProxyUnwrap(t *testing.T) {
 		errChan:      make(chan error, 1),
 	}
 
-	wcache := createWatchingCacheProxy(fakeDS, cache.NoopCache[cache.StringKey, *cacheEntry](), 1*time.Hour, 100*time.Millisecond)
+	wcache := NewWatchingCacheProxy(fakeDS, NewDefinitionCachingProxy(fakeDS, nil), 1*time.Hour, 100*time.Millisecond)
 	unwrapped := wcache.Unwrap()
 	require.Equal(t, fakeDS, unwrapped)
+	t.Cleanup(func() {
+		wcache.Close()
+	})
 }
 
 func TestOldWatchingCacheBasicOperation(t *testing.T) {
@@ -45,8 +58,9 @@ func TestOldWatchingCacheBasicOperation(t *testing.T) {
 		errChan:      make(chan error, 1),
 	}
 
-	wcache := createWatchingCacheProxy(fakeDS, cache.NoopCache[cache.StringKey, *cacheEntry](), 1*time.Hour, 100*time.Millisecond)
+	wcache := NewWatchingCacheProxy(fakeDS, NewDefinitionCachingProxy(fakeDS, nil), 1*time.Hour, 100*time.Millisecond)
 	require.NoError(t, wcache.startSync(t.Context()))
+	assertEventuallyFallback(t, wcache, false)
 	t.Cleanup(func() {
 		wcache.Close()
 	})
@@ -54,7 +68,7 @@ func TestOldWatchingCacheBasicOperation(t *testing.T) {
 	// Ensure no namespaces are found.
 	_, _, err := wcache.SnapshotReader(rev("1")).LegacyReadNamespaceByName(t.Context(), "somenamespace")
 	require.ErrorAs(t, err, &datastore.NamespaceNotFoundError{})
-	require.False(t, wcache.namespaceCache.inFallbackMode)
+	require.False(t, wcache.namespaceCache.isInFallback())
 
 	// Ensure a re-read also returns not found, even before a checkpoint is received.
 	_, _, err = wcache.SnapshotReader(rev("1")).LegacyReadNamespaceByName(t.Context(), "somenamespace")
@@ -90,7 +104,7 @@ func TestOldWatchingCacheBasicOperation(t *testing.T) {
 
 	// Checkpoint to rev 4.
 	fakeDS.sendCheckpoint(rev("4"))
-	require.False(t, wcache.namespaceCache.inFallbackMode)
+	require.False(t, wcache.namespaceCache.isInFallback())
 
 	// Disable reads.
 	fakeDS.disableReads()
@@ -149,8 +163,9 @@ func TestWatchingCacheBasicOperation(t *testing.T) {
 		errChan:      make(chan error, 1),
 	}
 
-	wcache := createWatchingCacheProxy(fakeDS, cache.NoopCache[cache.StringKey, *cacheEntry](), 1*time.Hour, 100*time.Millisecond)
+	wcache := NewWatchingCacheProxy(fakeDS, NewDefinitionCachingProxy(fakeDS, nil), 1*time.Hour, 100*time.Millisecond)
 	require.NoError(t, wcache.startSync(t.Context()))
+	assertEventuallyFallback(t, wcache, false)
 	t.Cleanup(func() {
 		wcache.Close()
 	})
@@ -158,7 +173,7 @@ func TestWatchingCacheBasicOperation(t *testing.T) {
 	// Ensure no namespaces are found.
 	_, _, err := wcache.SnapshotReader(rev("1")).LegacyReadNamespaceByName(t.Context(), "somenamespace")
 	require.ErrorAs(t, err, &datastore.NamespaceNotFoundError{})
-	require.False(t, wcache.namespaceCache.inFallbackMode)
+	require.False(t, wcache.namespaceCache.isInFallback())
 
 	// Ensure a re-read also returns not found, even before a checkpoint is received.
 	_, _, err = wcache.SnapshotReader(rev("1")).LegacyReadNamespaceByName(t.Context(), "somenamespace")
@@ -194,7 +209,7 @@ func TestWatchingCacheBasicOperation(t *testing.T) {
 
 	// Checkpoint to rev 4.
 	fakeDS.sendCheckpoint(rev("4"))
-	require.False(t, wcache.namespaceCache.inFallbackMode)
+	require.False(t, wcache.namespaceCache.isInFallback())
 
 	// Disable reads.
 	fakeDS.disableReads()
@@ -253,8 +268,9 @@ func TestOldWatchingCacheParallelOperations(t *testing.T) {
 		errChan:      make(chan error, 1),
 	}
 
-	wcache := createWatchingCacheProxy(fakeDS, cache.NoopCache[cache.StringKey, *cacheEntry](), 1*time.Hour, 100*time.Millisecond)
+	wcache := NewWatchingCacheProxy(fakeDS, NewDefinitionCachingProxy(fakeDS, nil), 1*time.Hour, 100*time.Millisecond)
 	require.NoError(t, wcache.startSync(t.Context()))
+	assertEventuallyFallback(t, wcache, false)
 	t.Cleanup(func() {
 		wcache.Close()
 	})
@@ -276,7 +292,7 @@ func TestOldWatchingCacheParallelOperations(t *testing.T) {
 		// Read somenamespace (which should not be found)
 		_, _, err := wcache.SnapshotReader(rev("1")).LegacyReadNamespaceByName(t.Context(), "somenamespace")
 		firstErrs <- err
-		firstFallbackModes <- wcache.namespaceCache.inFallbackMode
+		firstFallbackModes <- wcache.namespaceCache.isInFallback()
 
 		// Write somenamespace.
 		fakeDS.updateNamespace("somenamespace", &corev1.NamespaceDefinition{Name: "somenamespace"}, rev("2"))
@@ -293,12 +309,12 @@ func TestOldWatchingCacheParallelOperations(t *testing.T) {
 		// Read anothernamespace (which should not be found)
 		_, _, err := wcache.SnapshotReader(rev("1")).LegacyReadNamespaceByName(t.Context(), "anothernamespace")
 		secondErrs <- err
-		secondFallbackModes <- wcache.namespaceCache.inFallbackMode
+		secondFallbackModes <- wcache.namespaceCache.isInFallback()
 
 		// Read again (which should still not be found)
 		_, _, err = wcache.SnapshotReader(rev("3")).LegacyReadNamespaceByName(t.Context(), "anothernamespace")
 		secondErrs <- err
-		secondFallbackModes <- wcache.namespaceCache.inFallbackMode
+		secondFallbackModes <- wcache.namespaceCache.isInFallback()
 	})()
 
 	wg.Wait()
@@ -346,8 +362,9 @@ func TestWatchingCacheParallelOperations(t *testing.T) {
 		errChan:      make(chan error, 1),
 	}
 
-	wcache := createWatchingCacheProxy(fakeDS, cache.NoopCache[cache.StringKey, *cacheEntry](), 1*time.Hour, 100*time.Millisecond)
+	wcache := NewWatchingCacheProxy(fakeDS, NewDefinitionCachingProxy(fakeDS, nil), 1*time.Hour, 100*time.Millisecond)
 	require.NoError(t, wcache.startSync(t.Context()))
+	assertEventuallyFallback(t, wcache, false)
 	t.Cleanup(func() {
 		wcache.Close()
 	})
@@ -369,7 +386,7 @@ func TestWatchingCacheParallelOperations(t *testing.T) {
 		// Read somenamespace (which should not be found)
 		_, _, err := wcache.SnapshotReader(rev("1")).LegacyReadNamespaceByName(t.Context(), "somenamespace")
 		firstErrs <- err
-		firstFallbackModes <- wcache.namespaceCache.inFallbackMode
+		firstFallbackModes <- wcache.namespaceCache.isInFallback()
 
 		// Write somenamespace.
 		fakeDS.updateNamespace("somenamespace", &corev1.NamespaceDefinition{Name: "somenamespace"}, rev("2"))
@@ -386,12 +403,12 @@ func TestWatchingCacheParallelOperations(t *testing.T) {
 		// Read anothernamespace (which should not be found)
 		_, _, err := wcache.SnapshotReader(rev("1")).LegacyReadNamespaceByName(t.Context(), "anothernamespace")
 		secondErrs <- err
-		secondFallbackModes <- wcache.namespaceCache.inFallbackMode
+		secondFallbackModes <- wcache.namespaceCache.isInFallback()
 
 		// Read again (which should still not be found)
 		_, _, err = wcache.SnapshotReader(rev("3")).LegacyReadNamespaceByName(t.Context(), "anothernamespace")
 		secondErrs <- err
-		secondFallbackModes <- wcache.namespaceCache.inFallbackMode
+		secondFallbackModes <- wcache.namespaceCache.isInFallback()
 	})()
 
 	wg.Wait()
@@ -439,8 +456,9 @@ func TestWatchingCacheParallelReaderWriter(t *testing.T) {
 		errChan:      make(chan error, 1),
 	}
 
-	wcache := createWatchingCacheProxy(fakeDS, cache.NoopCache[cache.StringKey, *cacheEntry](), 1*time.Hour, 100*time.Millisecond)
+	wcache := NewWatchingCacheProxy(fakeDS, NewDefinitionCachingProxy(fakeDS, nil), 1*time.Hour, 100*time.Millisecond)
 	require.NoError(t, wcache.startSync(t.Context()))
+	assertEventuallyFallback(t, wcache, false)
 	t.Cleanup(func() {
 		wcache.Close()
 	})
@@ -472,7 +490,7 @@ func TestWatchingCacheParallelReaderWriter(t *testing.T) {
 			headRevision, err := fakeDS.HeadRevision(t.Context())
 			headRevisionErrors <- err
 
-			nsDef, _, err := wcache.SnapshotReader(headRevision).LegacyReadNamespaceByName(t.Context(), "somenamespace")
+			nsDef, _, err := wcache.SnapshotReader(headRevision.Revision).LegacyReadNamespaceByName(t.Context(), "somenamespace")
 			snapshotReaderErrors <- err
 			namespaceNames <- nsDef.Name
 		}
@@ -508,8 +526,9 @@ func TestOldWatchingCacheParallelReaderWriter(t *testing.T) {
 		errChan:      make(chan error, 1),
 	}
 
-	wcache := createWatchingCacheProxy(fakeDS, cache.NoopCache[cache.StringKey, *cacheEntry](), 1*time.Hour, 100*time.Millisecond)
+	wcache := NewWatchingCacheProxy(fakeDS, NewDefinitionCachingProxy(fakeDS, nil), 1*time.Hour, 100*time.Millisecond)
 	require.NoError(t, wcache.startSync(t.Context()))
+	assertEventuallyFallback(t, wcache, false)
 	t.Cleanup(func() {
 		wcache.Close()
 	})
@@ -541,7 +560,7 @@ func TestOldWatchingCacheParallelReaderWriter(t *testing.T) {
 			headRevision, err := fakeDS.HeadRevision(t.Context())
 			headRevisionErrors <- err
 
-			nsDef, _, err := wcache.SnapshotReader(headRevision).LegacyReadNamespaceByName(t.Context(), "somenamespace")
+			nsDef, _, err := wcache.SnapshotReader(headRevision.Revision).LegacyReadNamespaceByName(t.Context(), "somenamespace")
 			snapshotReaderErrors <- err
 			namespaceNames <- nsDef.Name
 		}
@@ -577,27 +596,23 @@ func TestWatchingCacheFallbackToStandardCache(t *testing.T) {
 		errChan:      make(chan error, 1),
 	}
 
-	c, err := cache.NewStandardCache[cache.StringKey, *cacheEntry](&cache.Config{
-		NumCounters: 1000,
-		MaxCost:     10000,
-		DefaultTTL:  10000 * time.Second,
-	})
-	require.NoError(t, err)
+	c := NewDefinitionCachingProxy(fakeDS, nil)
 
-	wcache := createWatchingCacheProxy(fakeDS, c, 1*time.Hour, 100*time.Millisecond)
+	wcache := NewWatchingCacheProxy(fakeDS, c, 1*time.Hour, 100*time.Millisecond)
 	require.NoError(t, wcache.startSync(t.Context()))
+	assertEventuallyFallback(t, wcache, false)
 	t.Cleanup(func() {
 		wcache.Close()
 	})
 
 	// Ensure the namespace is not found, but is cached in the fallback caching layer.
 	r := rev("1")
-	_, _, err = wcache.SnapshotReader(r).LegacyReadNamespaceByName(t.Context(), "somenamespace")
+	_, _, err := wcache.SnapshotReader(r).LegacyReadNamespaceByName(t.Context(), "somenamespace")
 	require.ErrorAs(t, err, &datastore.NamespaceNotFoundError{})
-	require.False(t, wcache.namespaceCache.inFallbackMode)
+	require.False(t, wcache.namespaceCache.isInFallback())
 
 	expectedKey := cache.StringKey("n:somenamespace@" + r.String())
-	entry, ok := c.Get(expectedKey)
+	entry, ok := c.c.Get(expectedKey)
 	require.True(t, ok)
 	require.Error(t, entry.notFound)
 
@@ -606,7 +621,87 @@ func TestWatchingCacheFallbackToStandardCache(t *testing.T) {
 
 	_, _, err = wcache.SnapshotReader(rev("1")).LegacyReadNamespaceByName(t.Context(), "somenamespace")
 	require.ErrorAs(t, err, &datastore.NamespaceNotFoundError{})
-	require.False(t, wcache.namespaceCache.inFallbackMode)
+	require.False(t, wcache.namespaceCache.isInFallback())
+}
+
+// While a watch cycle is in flight — entries are reset and prepopulate has
+// not finished — the cache must report as in fallback, because reads from
+// the watch-backed cache would otherwise see an empty tracker and return
+// spurious not-found errors for definitions that exist in the datastore.
+// Gating LegacyListAllNamespaces holds the supervisor inside runWatchOnce
+// past reset() but before startAtRevision, making this assertion deterministic.
+func TestWatchingCacheStaysInFallbackDuringPrepopulate(t *testing.T) {
+	listGate := make(chan struct{})
+	fakeDS := &fakeDatastore{
+		headRevision:       rev("4"),
+		namespaces:         map[string][]fakeEntry[datastore.RevisionedNamespace, *corev1.NamespaceDefinition]{},
+		caveats:            map[string][]fakeEntry[datastore.RevisionedCaveat, *corev1.CaveatDefinition]{},
+		schemaChan:         make(chan datastore.RevisionChanges, 1),
+		errChan:            make(chan error, 1),
+		listNamespacesGate: listGate,
+		existingNamespaces: []datastore.RevisionedNamespace{
+			datastore.RevisionedDefinition[*corev1.NamespaceDefinition]{
+				Definition:          &corev1.NamespaceDefinition{Name: "somenamespace"},
+				LastWrittenRevision: rev("1"),
+			},
+		},
+	}
+
+	wcache := NewWatchingCacheProxy(fakeDS, NewDefinitionCachingProxy(fakeDS, nil), 1*time.Hour, 100*time.Millisecond)
+	require.NoError(t, wcache.startSync(t.Context()))
+
+	// Ensure cleanup completes even if the assertion fails — close the gate
+	// so the supervisor can exit through Close().
+	gateClosed := false
+	releaseGate := func() {
+		if !gateClosed {
+			close(listGate)
+			gateClosed = true
+		}
+	}
+	t.Cleanup(func() {
+		releaseGate()
+		wcache.Close()
+	})
+
+	// The supervisor is now blocked inside LegacyListAllNamespaces. While
+	// prepopulate is in flight, isInFallback() must report true for the
+	// entire 200ms observation window.
+	require.Never(t, func() bool {
+		return !wcache.namespaceCache.isInFallback()
+	}, 200*time.Millisecond, 10*time.Millisecond,
+		"cache must stay in fallback while prepopulate is in flight")
+
+	// Release prepopulate and confirm the cache exits fallback after
+	// startAtRevision runs.
+	releaseGate()
+	assertEventuallyFallback(t, wcache, false)
+}
+
+func TestWatchingCacheRecoversFromTransientError(t *testing.T) {
+	fakeDS := &fakeDatastore{
+		headRevision: rev("0"),
+		namespaces:   map[string][]fakeEntry[datastore.RevisionedNamespace, *corev1.NamespaceDefinition]{},
+		caveats:      map[string][]fakeEntry[datastore.RevisionedCaveat, *corev1.CaveatDefinition]{},
+		schemaChan:   make(chan datastore.RevisionChanges, 16),
+		errChan:      make(chan error, 1),
+	}
+
+	wcache := NewWatchingCacheProxy(fakeDS, NewDefinitionCachingProxy(fakeDS, nil), 1*time.Hour, 100*time.Millisecond)
+	require.NoError(t, wcache.startSync(t.Context()))
+	t.Cleanup(func() { wcache.Close() })
+
+	assertEventuallyFallback(t, wcache, false)
+
+	fakeDS.errChan <- fmt.Errorf("transaction error: %w",
+		errors.New("FATAL: terminating connection due to administrator command (SQLSTATE 57P01)"))
+
+	assertEventuallyFallback(t, wcache, true)
+
+	fakeDS.updateNamespace("ns_after_recovery",
+		&corev1.NamespaceDefinition{Name: "ns_after_recovery"}, rev("1"))
+
+	assertEventuallyFallback(t, wcache, false)
 }
 
 func TestOldWatchingCacheFallbackToStandardCache(t *testing.T) {
@@ -622,27 +717,23 @@ func TestOldWatchingCacheFallbackToStandardCache(t *testing.T) {
 		errChan:      make(chan error, 1),
 	}
 
-	c, err := cache.NewStandardCache[cache.StringKey, *cacheEntry](&cache.Config{
-		NumCounters: 1000,
-		MaxCost:     10000,
-		DefaultTTL:  10000 * time.Second,
-	})
-	require.NoError(t, err)
+	def := NewDefinitionCachingProxy(fakeDS, nil)
 
-	wcache := createWatchingCacheProxy(fakeDS, c, 1*time.Hour, 100*time.Millisecond)
+	wcache := NewWatchingCacheProxy(fakeDS, def, 1*time.Hour, 100*time.Millisecond)
 	require.NoError(t, wcache.startSync(t.Context()))
+	assertEventuallyFallback(t, wcache, false)
 	t.Cleanup(func() {
 		wcache.Close()
 	})
 
 	// Ensure the namespace is not found, but is cached in the fallback caching layer.
 	r := rev("1")
-	_, _, err = wcache.SnapshotReader(r).LegacyReadNamespaceByName(t.Context(), "somenamespace")
+	_, _, err := wcache.SnapshotReader(r).LegacyReadNamespaceByName(t.Context(), "somenamespace")
 	require.ErrorAs(t, err, &datastore.NamespaceNotFoundError{})
-	require.False(t, wcache.namespaceCache.inFallbackMode)
+	require.False(t, wcache.namespaceCache.isInFallback())
 
 	expectedKey := cache.StringKey("n:somenamespace@" + r.String())
-	entry, ok := c.Get(expectedKey)
+	entry, ok := def.c.Get(expectedKey)
 	require.True(t, ok)
 	require.Error(t, entry.notFound)
 
@@ -651,7 +742,7 @@ func TestOldWatchingCacheFallbackToStandardCache(t *testing.T) {
 
 	_, _, err = wcache.SnapshotReader(rev("1")).LegacyReadNamespaceByName(t.Context(), "somenamespace")
 	require.ErrorAs(t, err, &datastore.NamespaceNotFoundError{})
-	require.False(t, wcache.namespaceCache.inFallbackMode)
+	require.False(t, wcache.namespaceCache.isInFallback())
 }
 
 func TestOldWatchingCachePrepopulated(t *testing.T) {
@@ -681,15 +772,9 @@ func TestOldWatchingCachePrepopulated(t *testing.T) {
 		},
 	}
 
-	c, err := cache.NewStandardCache[cache.StringKey, *cacheEntry](&cache.Config{
-		NumCounters: 1000,
-		MaxCost:     1000,
-		DefaultTTL:  1000 * time.Second,
-	})
-	require.NoError(t, err)
-
-	wcache := createWatchingCacheProxy(fakeDS, c, 1*time.Hour, 100*time.Millisecond)
+	wcache := NewWatchingCacheProxy(fakeDS, NewDefinitionCachingProxy(fakeDS, nil), 1*time.Hour, 100*time.Millisecond)
 	require.NoError(t, wcache.startSync(t.Context()))
+	assertEventuallyFallback(t, wcache, false)
 	t.Cleanup(func() {
 		wcache.Close()
 	})
@@ -727,15 +812,9 @@ func TestWatchingCachePrepopulated(t *testing.T) {
 		},
 	}
 
-	c, err := cache.NewStandardCache[cache.StringKey, *cacheEntry](&cache.Config{
-		NumCounters: 1000,
-		MaxCost:     1000,
-		DefaultTTL:  1000 * time.Second,
-	})
-	require.NoError(t, err)
-
-	wcache := createWatchingCacheProxy(fakeDS, c, 1*time.Hour, 100*time.Millisecond)
+	wcache := NewWatchingCacheProxy(fakeDS, NewDefinitionCachingProxy(fakeDS, nil), 1*time.Hour, 100*time.Millisecond)
 	require.NoError(t, wcache.startSync(t.Context()))
+	assertEventuallyFallback(t, wcache, false)
 	t.Cleanup(func() {
 		wcache.Close()
 	})
@@ -758,6 +837,12 @@ type fakeDatastore struct {
 	errChan    chan error
 
 	existingNamespaces []datastore.RevisionedNamespace
+
+	// listNamespacesGate, if non-nil, makes LegacyListAllNamespaces block
+	// until the channel is closed (or receives a value). Tests use it to
+	// hold the supervisor inside prepopulate so they can observe in-flight
+	// cache state deterministically.
+	listNamespacesGate chan struct{}
 }
 
 func (fds *fakeDatastore) MetricsID() (string, error) {
@@ -918,11 +1003,11 @@ func (fds *fakeDatastore) SnapshotReader(rev datastore.Revision) datastore.Reade
 	return &fakeSnapshotReader{fds, rev}
 }
 
-func (fds *fakeDatastore) HeadRevision(context.Context) (datastore.Revision, error) {
+func (fds *fakeDatastore) HeadRevision(context.Context) (datastore.RevisionWithSchemaHash, error) {
 	fds.lock.RLock()
 	defer fds.lock.RUnlock()
 
-	return fds.headRevision, nil
+	return datastore.RevisionWithSchemaHash{Revision: fds.headRevision}, nil
 }
 
 func (*fakeDatastore) ReadWriteTx(context.Context, datastore.TxUserFunc, ...options.RWTOptionsOption) (datastore.Revision, error) {
@@ -945,8 +1030,8 @@ func (*fakeDatastore) OfflineFeatures() (*datastore.Features, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (*fakeDatastore) OptimizedRevision(context.Context) (datastore.Revision, error) {
-	return nil, fmt.Errorf("not implemented")
+func (*fakeDatastore) OptimizedRevision(context.Context) (datastore.RevisionWithSchemaHash, error) {
+	return datastore.RevisionWithSchemaHash{}, fmt.Errorf("not implemented")
 }
 
 func (*fakeDatastore) ReadyState(context.Context) (datastore.ReadyState, error) {
@@ -1018,7 +1103,15 @@ func (*fakeSnapshotReader) LegacyListAllCaveats(context.Context) ([]datastore.Re
 	return []datastore.RevisionedDefinition[*corev1.CaveatDefinition]{}, nil
 }
 
-func (fsr *fakeSnapshotReader) LegacyListAllNamespaces(context.Context) ([]datastore.RevisionedDefinition[*corev1.NamespaceDefinition], error) {
+func (fsr *fakeSnapshotReader) LegacyListAllNamespaces(ctx context.Context) ([]datastore.RevisionedDefinition[*corev1.NamespaceDefinition], error) {
+	if gate := fsr.fds.listNamespacesGate; gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
 	if fsr.fds.existingNamespaces != nil {
 		return fsr.fds.existingNamespaces, nil
 	}
@@ -1032,4 +1125,214 @@ func (*fakeSnapshotReader) QueryRelationships(context.Context, datastore.Relatio
 
 func (*fakeSnapshotReader) ReverseQueryRelationships(context.Context, datastore.SubjectsFilter, ...options.ReverseQueryOptionsOption) (datastore.RelationshipIterator, error) {
 	return nil, fmt.Errorf("not implemented")
+}
+
+func (*fakeSnapshotReader) ReadStoredSchema(_ context.Context) (*datastore.ReadOnlyStoredSchema, error) {
+	return nil, nil
+}
+
+func TestWatchingCacheTerminatesOnWatchDisabled(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
+
+	fakeDS := &fakeDatastore{
+		headRevision: rev("0"),
+		namespaces:   map[string][]fakeEntry[datastore.RevisionedNamespace, *corev1.NamespaceDefinition]{},
+		caveats:      map[string][]fakeEntry[datastore.RevisionedCaveat, *corev1.CaveatDefinition]{},
+		schemaChan:   make(chan datastore.RevisionChanges, 16),
+		errChan:      make(chan error, 1),
+	}
+
+	wcache := NewWatchingCacheProxy(fakeDS, NewDefinitionCachingProxy(fakeDS, nil), 1*time.Hour, 100*time.Millisecond)
+	require.NoError(t, wcache.startSync(t.Context()))
+	t.Cleanup(func() { wcache.Close() })
+
+	stable := promtestutil.ToFloat64(cycleRestartsCounter)
+	fakeDS.errChan <- datastore.NewWatchDisabledErr("test-disabled")
+
+	assertEventuallyFallback(t, wcache, true)
+
+	require.Never(t, func() bool {
+		return promtestutil.ToFloat64(cycleRestartsCounter) > stable
+	}, 300*time.Millisecond, 10*time.Millisecond,
+		"cycleRestartsCounter must not advance after a terminal WatchDisabledError")
+}
+
+func TestWatchingCacheTerminatesOnContextCancellation(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
+
+	fakeDS := &fakeDatastore{
+		headRevision: rev("0"),
+		namespaces:   map[string][]fakeEntry[datastore.RevisionedNamespace, *corev1.NamespaceDefinition]{},
+		caveats:      map[string][]fakeEntry[datastore.RevisionedCaveat, *corev1.CaveatDefinition]{},
+		schemaChan:   make(chan datastore.RevisionChanges, 16),
+		errChan:      make(chan error, 1),
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	wcache := NewWatchingCacheProxy(fakeDS, NewDefinitionCachingProxy(fakeDS, nil), 1*time.Hour, 100*time.Millisecond)
+	require.NoError(t, wcache.startSync(ctx))
+
+	assertEventuallyFallback(t, wcache, false)
+
+	cancel()
+	// Witness that the supervisor processed the cancellation via its terminal
+	// path (which sets fallback) before Close() runs and would set it anyway.
+	assertEventuallyFallback(t, wcache, true)
+	require.NoError(t, wcache.Close())
+}
+
+func TestWatchingCacheRecoversAcrossMultipleErrors(t *testing.T) {
+	fakeDS := &fakeDatastore{
+		headRevision: rev("0"),
+		namespaces:   map[string][]fakeEntry[datastore.RevisionedNamespace, *corev1.NamespaceDefinition]{},
+		caveats:      map[string][]fakeEntry[datastore.RevisionedCaveat, *corev1.CaveatDefinition]{},
+		schemaChan:   make(chan datastore.RevisionChanges, 16),
+		errChan:      make(chan error, 1),
+	}
+
+	wcache := NewWatchingCacheProxy(fakeDS, NewDefinitionCachingProxy(fakeDS, nil), 1*time.Hour, 100*time.Millisecond)
+	require.NoError(t, wcache.startSync(t.Context()))
+	t.Cleanup(func() { wcache.Close() })
+
+	// With backoff Reset() working each restart starts at InitialInterval
+	// (~100 ms) so 5 iterations finish under 2 s; without it the 5th
+	// iteration's backoff alone is ~1.6 s and the total exceeds 3 s.
+	const iterations = 5
+	startCount := promtestutil.ToFloat64(cycleRestartsCounter)
+	startTime := time.Now()
+
+	for i := 0; i < iterations; i++ {
+		before := promtestutil.ToFloat64(cycleRestartsCounter)
+		fakeDS.updateNamespace(fmt.Sprintf("ns_%d", i),
+			&corev1.NamespaceDefinition{Name: fmt.Sprintf("ns_%d", i)}, rev(fmt.Sprintf("%d", i+1)))
+		fakeDS.errChan <- fmt.Errorf("transient %d", i)
+
+		require.Eventually(t, func() bool {
+			return promtestutil.ToFloat64(cycleRestartsCounter) > before
+		}, 5*time.Second, 5*time.Millisecond, "supervisor should restart after error %d", i)
+	}
+
+	elapsed := time.Since(startTime)
+	require.GreaterOrEqual(t,
+		promtestutil.ToFloat64(cycleRestartsCounter)-startCount, float64(iterations),
+		"expected at least %d cycle restarts", iterations)
+	require.Less(t, elapsed, 2*time.Second,
+		"5 restarts took %s; backoff is not being reset on successful events", elapsed)
+}
+
+func TestWatchingCacheUpdatesLastEventTimestamp(t *testing.T) {
+	fakeDS := &fakeDatastore{
+		headRevision: rev("0"),
+		namespaces:   map[string][]fakeEntry[datastore.RevisionedNamespace, *corev1.NamespaceDefinition]{},
+		caveats:      map[string][]fakeEntry[datastore.RevisionedCaveat, *corev1.CaveatDefinition]{},
+		schemaChan:   make(chan datastore.RevisionChanges, 16),
+		errChan:      make(chan error, 1),
+	}
+
+	wcache := NewWatchingCacheProxy(fakeDS, NewDefinitionCachingProxy(fakeDS, nil), 1*time.Hour, 100*time.Millisecond)
+	require.NoError(t, wcache.startSync(t.Context()))
+	t.Cleanup(func() { wcache.Close() })
+
+	assertEventuallyFallback(t, wcache, false)
+
+	before := promtestutil.ToFloat64(lastEventTimestampGauge)
+	fakeDS.updateNamespace("ns", &corev1.NamespaceDefinition{Name: "ns"}, rev("1"))
+
+	require.Eventually(t, func() bool {
+		return promtestutil.ToFloat64(lastEventTimestampGauge) > before
+	}, 5*time.Second, 10*time.Millisecond, "lastEventTimestampGauge should advance after a schema event")
+}
+
+func TestWatchingCacheIncrementsCycleRestartsOnRecovery(t *testing.T) {
+	fakeDS := &fakeDatastore{
+		headRevision: rev("0"),
+		namespaces:   map[string][]fakeEntry[datastore.RevisionedNamespace, *corev1.NamespaceDefinition]{},
+		caveats:      map[string][]fakeEntry[datastore.RevisionedCaveat, *corev1.CaveatDefinition]{},
+		schemaChan:   make(chan datastore.RevisionChanges, 16),
+		errChan:      make(chan error, 1),
+	}
+
+	wcache := NewWatchingCacheProxy(fakeDS, NewDefinitionCachingProxy(fakeDS, nil), 1*time.Hour, 100*time.Millisecond)
+	require.NoError(t, wcache.startSync(t.Context()))
+	t.Cleanup(func() { wcache.Close() })
+
+	before := promtestutil.ToFloat64(cycleRestartsCounter)
+	fakeDS.errChan <- errors.New("transient")
+
+	require.Eventually(t, func() bool {
+		return promtestutil.ToFloat64(cycleRestartsCounter) > before
+	}, 5*time.Second, 10*time.Millisecond, "cycleRestartsCounter should increment after a transient error")
+}
+
+func TestNewSupervisorBackoff(t *testing.T) {
+	bo := newSupervisorBackoff()
+	require.Equal(t, 100*time.Millisecond, bo.InitialInterval)
+	require.InEpsilon(t, 2.0, bo.Multiplier, 1e-9)
+	require.InEpsilon(t, 0.5, bo.RandomizationFactor, 1e-9)
+	require.Equal(t, 30*time.Second, bo.MaxInterval)
+
+	bo.NextBackOff()
+	bo.NextBackOff()
+	bo.Reset()
+	d := bo.NextBackOff()
+	require.LessOrEqual(t, d, 150*time.Millisecond) // 100ms +50% jitter
+	require.GreaterOrEqual(t, d, 50*time.Millisecond)
+}
+
+func TestSleepHelper(t *testing.T) {
+	t.Run("returns true after duration", func(t *testing.T) {
+		ok := sleep(t.Context(), 10*time.Millisecond)
+		require.True(t, ok)
+	})
+
+	t.Run("returns false when context already canceled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		ok := sleep(ctx, time.Second)
+		require.False(t, ok)
+	})
+
+	t.Run("returns false when canceled while sleeping", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		go func() {
+			time.Sleep(5 * time.Millisecond)
+			cancel()
+		}()
+		ok := sleep(ctx, time.Second)
+		require.False(t, ok)
+	})
+
+	t.Run("non-positive duration short-circuits", func(t *testing.T) {
+		start := time.Now()
+		ok := sleep(t.Context(), 0)
+		require.True(t, ok)
+		require.Less(t, time.Since(start), 5*time.Millisecond)
+	})
+}
+
+func TestIsTerminalWatchError(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		terminal bool
+	}{
+		{"nil", nil, false},
+		{"watch_canceled", datastore.NewWatchCanceledErr(), true},
+		{"watch_disabled", datastore.NewWatchDisabledErr("test"), true},
+		{"context_canceled", context.Canceled, true},
+		{"context_deadline_exceeded", context.DeadlineExceeded, true},
+		{"wrapped_context_canceled", fmt.Errorf("transaction: %w", context.Canceled), true},
+		{"watch_retryable", datastore.NewWatchTemporaryErr(errors.New("transient")), false},
+		{"watch_disconnected", datastore.NewWatchDisconnectedErr(), false},
+		{"bare_error", errors.New("FATAL: terminating connection"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.terminal, isTerminalWatchError(tc.err))
+		})
+	}
 }
