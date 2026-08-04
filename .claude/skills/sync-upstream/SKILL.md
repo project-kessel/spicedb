@@ -176,6 +176,37 @@ Commit the update.
 4. Commit the cleanup
 5. Re-run `./scripts/redhat-diff.sh --stat` to confirm clean output
 
+### Step 5b: Align Dockerfile.fips grpc-health-probe pin
+
+`Dockerfile.fips` is Red Hat–only and is not updated by the merge. After cleanup,
+align its `grpc-health-probe` clone tag with the version upstream pins in
+`Dockerfile` (preferred) or `Dockerfile.release`.
+
+1. Extract the upstream probe version from the synced tree:
+   ```bash
+   # Prefer Dockerfile (ghcr image pin)
+   grep -Eo 'ghcr\.io/grpc-ecosystem/grpc-health-probe:v[0-9.]+' Dockerfile \
+     | head -1 | grep -Eo 'v[0-9.]+'
+
+   # Fallback: Dockerfile.release (GitHub release download)
+   grep -Eo 'grpc-ecosystem/grpc-health-probe/releases/download/v[0-9.]+' Dockerfile.release \
+     | head -1 | grep -Eo 'v[0-9.]+'
+   ```
+2. Read the current pin from `Dockerfile.fips`:
+   ```bash
+   grep -Eo 'git clone --branch v[0-9.]+' Dockerfile.fips | grep -Eo 'v[0-9.]+'
+   ```
+3. If the upstream version cannot be parsed, **stop and ask the user** — the
+   upstream Dockerfile format may have changed.
+4. If the versions differ, update `Dockerfile.fips` so the clone uses the
+   upstream tag, for example:
+   ```dockerfile
+   RUN git clone --branch vX.Y.Z --depth 1 https://github.com/grpc-ecosystem/grpc-health-probe.git
+   ```
+   Keep building from source with the FIPS Go toolchain. Do **not** switch to
+   `COPY --from=ghcr.io/grpc-ecosystem/grpc-health-probe:...`.
+5. If `Dockerfile.fips` changed, commit the update on the sync branch.
+
 ### Step 6: Push and Create PR
 
 1. Push the branch to your fork:
@@ -196,6 +227,7 @@ Commit the update.
 Report:
 - Old tag → new tag
 - Upgrade path validation result (steps and migrations required)
+- grpc-health-probe pin in `Dockerfile.fips`: old tag → new tag (or unchanged)
 - PR link
 - Number of Red Hat changes, stale files cleaned, diverged files reset
 - Remind the user to review the PR and check CI before merging

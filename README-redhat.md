@@ -34,7 +34,7 @@ The table below captures all changes to our fork from upstream. Each entry inclu
 | `.github/workflows/wasm.yaml` | Removed | Not applicable to our fork | Delete |
 | `.github/workflows/security-scanning.yml` | Added | Required ConsoleDot platform security workflow for CVE scanning | Red Hat only |
 | `.tekton/spicedb-pull-request.yaml`, `.tekton/spicedb-push.yaml` | Added | Konflux PR and merge build pipelines | Red Hat only |
-| `Dockerfile.fips` | Added | FIPS-compliant builds using Hummingbird base images for Konflux | Red Hat only |
+| `Dockerfile.fips` | Added | FIPS-compliant builds using Hummingbird base images for Konflux; grpc-health-probe built from source (pinned to a `grpc-ecosystem/grpc-health-probe` tag matching upstream `Dockerfile`, updated during syncs) to enable FIPS compilation | Red Hat only |
 | `magefiles/test.go` | Increased timeouts (unit: 20m, integration: 30m, consistency: 20m) | Tests fail with short timeouts on smaller runners | Re-apply |
 | `scripts/redhat-diff.sh` | Added | Script to isolate Red Hat-specific changes from upstream sync PRs for easier code review | Red Hat only |
 | `CLAUDE.md` | Replaced with our own | Contains Red Hat-specific merge conflict resolution rules for upstream syncs | Keep ours |
