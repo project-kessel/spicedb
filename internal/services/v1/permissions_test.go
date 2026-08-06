@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,7 +38,9 @@ import (
 	v1svc "github.com/authzed/spicedb/internal/services/v1"
 	tf "github.com/authzed/spicedb/internal/testfixtures"
 	"github.com/authzed/spicedb/internal/testserver"
+	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
+	"github.com/authzed/spicedb/pkg/datastore/options"
 	"github.com/authzed/spicedb/pkg/genutil/mapz"
 	pgraph "github.com/authzed/spicedb/pkg/graph"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
@@ -65,6 +69,10 @@ func sub(subType string, subID string, subRel string) *v1.SubjectReference {
 }
 
 func TestCheckPermissions(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
+
 	testCases := []struct {
 		resource       *v1.ObjectReference
 		permission     string
@@ -264,9 +272,10 @@ func TestCheckPermissions(t *testing.T) {
 							tc.subject.OptionalRelation,
 						), func(t *testing.T) {
 							require := require.New(t)
-							conn, cleanup, _, revision := testserver.NewTestServer(require, delta, memdb.DisableGC, true, tf.StandardDatastoreWithData)
+							conn, _, revision := testserver.NewTestServerWithConfig(t, delta, memdb.DisableGC, true,
+								testserver.DefaultTestServerConfig,
+								tf.StandardDatastoreWithData)
 							client := v1.NewPermissionsServiceClient(conn)
-							t.Cleanup(cleanup)
 
 							ctx := t.Context()
 							if debug {
@@ -277,7 +286,7 @@ func TestCheckPermissions(t *testing.T) {
 							checkResp, err := client.CheckPermission(ctx, &v1.CheckPermissionRequest{
 								Consistency: &v1.Consistency{
 									Requirement: &v1.Consistency_AtLeastAsFresh{
-										AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+										AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 									},
 								},
 								Resource:   tc.resource,
@@ -320,11 +329,297 @@ func TestCheckPermissions(t *testing.T) {
 	}
 }
 
+func TestCheckPermissionSchemaLoadedOnce(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
+
+	counter := &readStoredSchemaCounter{}
+	conn, _, _ := testserver.NewTestServerWithConfig(
+		t,
+		0,
+		memdb.DisableGC,
+		true,
+		testserver.ServerConfig{
+			MaxUpdatesPerWrite:    1000,
+			MaxPreconditionsCount: 1000,
+			StreamingAPITimeout:   30 * time.Second,
+			DataLayerOpts: []datalayer.DataLayerOption{
+				datalayer.WithSchemaMode(datalayer.SchemaModeReadNewWriteBoth),
+				datalayer.WithSchemaCache(&simpleSchemaCache{items: make(map[datalayer.SchemaCacheKey]*datastore.ReadOnlyStoredSchema)}),
+			},
+		},
+		func(t testing.TB, ds datastore.Datastore) (datastore.Datastore, datastore.Revision) {
+			wrapped := counter.wrap(ds)
+			rev, err := wrapped.HeadRevision(t.Context())
+			require.NoError(t, err)
+			return wrapped, rev.Revision
+		},
+	)
+
+	schemaClient := v1.NewSchemaServiceClient(conn)
+	permClient := v1.NewPermissionsServiceClient(conn)
+
+	// Write schema and a relationship through the API so it goes through the DataLayer.
+	_, err := schemaClient.WriteSchema(t.Context(), &v1.WriteSchemaRequest{
+		Schema: `definition user {}
+
+		definition document {
+			relation viewer: user
+			permission view = viewer
+		}`,
+	})
+	require.NoError(t, err)
+
+	_, err = permClient.WriteRelationships(t.Context(), &v1.WriteRelationshipsRequest{
+		Updates: []*v1.RelationshipUpdate{tuple.MustUpdateToV1RelationshipUpdate(tuple.Create(
+			tuple.MustParse("document:doc1#viewer@user:tom#..."),
+		))},
+	})
+	require.NoError(t, err)
+
+	// Reset the counter after setup. The cache was warmed by WriteSchema.
+	counter.reset()
+
+	// Make a CheckPermission call — schema should come from the cache.
+	checkResp, err := permClient.CheckPermission(t.Context(), &v1.CheckPermissionRequest{
+		Consistency: &v1.Consistency{
+			Requirement: &v1.Consistency_FullyConsistent{FullyConsistent: true},
+		},
+		Resource:   obj("document", "doc1"),
+		Permission: "view",
+		Subject:    sub("user", "tom", ""),
+	})
+	require.NoError(t, err)
+	require.Equal(t, v1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION, checkResp.Permissionship)
+
+	// With caching, the schema written via WriteSchema is already cached, so
+	// ReadStoredSchema on the underlying datastore should not be called.
+	require.Equal(t, 0, counter.count(), "ReadStoredSchema should not be called when schema is cached")
+
+	// Make several more CheckPermission calls with different resources so the
+	// dispatch cache doesn't short-circuit the schema load path.
+	for i := range 5 {
+		checkResp, err = permClient.CheckPermission(t.Context(), &v1.CheckPermissionRequest{
+			Consistency: &v1.Consistency{
+				Requirement: &v1.Consistency_FullyConsistent{FullyConsistent: true},
+			},
+			Resource:   obj("document", fmt.Sprintf("doc-%d", i)),
+			Permission: "view",
+			Subject:    sub("user", "tom", ""),
+		})
+		require.NoError(t, err)
+		require.Equal(t, v1.CheckPermissionResponse_PERMISSIONSHIP_NO_PERMISSION, checkResp.Permissionship)
+	}
+
+	require.Equal(t, 0, counter.count(), "ReadStoredSchema should not be called across multiple CheckPermission calls")
+
+	// Sanity-check the counter: call ReadStoredSchema directly on the wrapped
+	// datastore (bypassing the DataLayer's schema cache entirely) and confirm
+	// the counter increments. This ensures the zero counts above reflect cache
+	// hits, not a broken counter.
+	counter.reset()
+	headRev, err := counter.HeadRevision(t.Context())
+	require.NoError(t, err)
+	_, err = counter.SnapshotReader(headRev.Revision).ReadStoredSchema(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, 1, counter.count(), "counter should increment when ReadStoredSchema is called directly")
+}
+
+func TestCheckPermissionSchemaLoadedOnceMinLatency(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
+	counter := &readStoredSchemaCounter{}
+	conn, _, _ := testserver.NewTestServerWithConfig(
+		t,
+		time.Nanosecond, // effectively no quantization, but non-zero to avoid memdb divide-by-zero
+		memdb.DisableGC,
+		true,
+		testserver.ServerConfig{
+			MaxUpdatesPerWrite:    1000,
+			MaxPreconditionsCount: 1000,
+			StreamingAPITimeout:   30 * time.Second,
+			DataLayerOpts: []datalayer.DataLayerOption{
+				datalayer.WithSchemaMode(datalayer.SchemaModeReadNewWriteBoth),
+				datalayer.WithSchemaCache(&simpleSchemaCache{items: make(map[datalayer.SchemaCacheKey]*datastore.ReadOnlyStoredSchema)}),
+			},
+		},
+		func(t testing.TB, ds datastore.Datastore) (datastore.Datastore, datastore.Revision) {
+			wrapped := counter.wrap(ds)
+			rev, err := wrapped.HeadRevision(t.Context())
+			require.NoError(t, err)
+			return wrapped, rev.Revision
+		},
+	)
+
+	schemaClient := v1.NewSchemaServiceClient(conn)
+	permClient := v1.NewPermissionsServiceClient(conn)
+
+	_, err := schemaClient.WriteSchema(t.Context(), &v1.WriteSchemaRequest{
+		Schema: `definition user {}
+
+		definition document {
+			relation viewer: user
+			permission view = viewer
+		}`,
+	})
+	require.NoError(t, err)
+
+	_, err = permClient.WriteRelationships(t.Context(), &v1.WriteRelationshipsRequest{
+		Updates: []*v1.RelationshipUpdate{tuple.MustUpdateToV1RelationshipUpdate(tuple.Create(
+			tuple.MustParse("document:doc1#viewer@user:tom#..."),
+		))},
+	})
+	require.NoError(t, err)
+
+	// Reset the counter after setup. The cache was warmed by WriteSchema.
+	counter.reset()
+
+	// CheckPermission with MinimizeLatency exercises the OptimizedRevision
+	// path in the consistency middleware. For the cache to be hit, the
+	// datastore's OptimizedRevision must return the current schema hash.
+	for i := range 5 {
+		checkResp, err := permClient.CheckPermission(t.Context(), &v1.CheckPermissionRequest{
+			Consistency: &v1.Consistency{
+				Requirement: &v1.Consistency_MinimizeLatency{MinimizeLatency: true},
+			},
+			Resource:   obj("document", fmt.Sprintf("doc-min-%d", i)),
+			Permission: "view",
+			Subject:    sub("user", "tom", ""),
+		})
+		require.NoError(t, err)
+		require.Equal(t, v1.CheckPermissionResponse_PERMISSIONSHIP_NO_PERMISSION, checkResp.Permissionship)
+	}
+
+	require.Equal(t, 0, counter.count(), "ReadStoredSchema should not be called with MinimizeLatency when schema is cached")
+}
+
+// readStoredSchemaCounter wraps a datastore and counts ReadStoredSchema calls.
+type readStoredSchemaCounter struct {
+	ds        datastore.Datastore
+	callCount atomic.Int32
+}
+
+func (c *readStoredSchemaCounter) wrap(ds datastore.Datastore) datastore.Datastore {
+	c.ds = ds
+	return c
+}
+
+func (c *readStoredSchemaCounter) reset() {
+	c.callCount.Store(0)
+}
+
+func (c *readStoredSchemaCounter) count() int {
+	return int(c.callCount.Load())
+}
+
+func (c *readStoredSchemaCounter) SnapshotReader(rev datastore.Revision) datastore.Reader {
+	return &countingReader{
+		Reader:  c.ds.SnapshotReader(rev),
+		counter: c,
+	}
+}
+
+func (c *readStoredSchemaCounter) ReadWriteTx(ctx context.Context, fn datastore.TxUserFunc, opts ...options.RWTOptionsOption) (datastore.Revision, error) {
+	return c.ds.ReadWriteTx(ctx, fn, opts...)
+}
+
+func (c *readStoredSchemaCounter) OptimizedRevision(ctx context.Context) (datastore.RevisionWithSchemaHash, error) {
+	return c.ds.OptimizedRevision(ctx)
+}
+
+func (c *readStoredSchemaCounter) HeadRevision(ctx context.Context) (datastore.RevisionWithSchemaHash, error) {
+	return c.ds.HeadRevision(ctx)
+}
+
+func (c *readStoredSchemaCounter) CheckRevision(ctx context.Context, revision datastore.Revision) error {
+	return c.ds.CheckRevision(ctx, revision)
+}
+
+func (c *readStoredSchemaCounter) RevisionFromString(serialized string) (datastore.Revision, error) {
+	return c.ds.RevisionFromString(serialized)
+}
+
+func (c *readStoredSchemaCounter) Watch(ctx context.Context, afterRevision datastore.Revision, opts datastore.WatchOptions) (<-chan datastore.RevisionChanges, <-chan error) {
+	return c.ds.Watch(ctx, afterRevision, opts)
+}
+
+func (c *readStoredSchemaCounter) ReadyState(ctx context.Context) (datastore.ReadyState, error) {
+	return c.ds.ReadyState(ctx)
+}
+
+func (c *readStoredSchemaCounter) Features(ctx context.Context) (*datastore.Features, error) {
+	return c.ds.Features(ctx)
+}
+
+func (c *readStoredSchemaCounter) OfflineFeatures() (*datastore.Features, error) {
+	return c.ds.OfflineFeatures()
+}
+
+func (c *readStoredSchemaCounter) Statistics(ctx context.Context) (datastore.Stats, error) {
+	return c.ds.Statistics(ctx)
+}
+
+func (c *readStoredSchemaCounter) UniqueID(ctx context.Context) (string, error) {
+	return c.ds.UniqueID(ctx)
+}
+
+func (c *readStoredSchemaCounter) MetricsID() (string, error) {
+	return c.ds.MetricsID()
+}
+
+func (c *readStoredSchemaCounter) Close() error {
+	return c.ds.Close()
+}
+
+func (c *readStoredSchemaCounter) Unwrap() datastore.Datastore {
+	return c.ds
+}
+
+// countingReader wraps a datastore.Reader and counts ReadStoredSchema calls.
+type countingReader struct {
+	datastore.Reader
+	counter *readStoredSchemaCounter
+}
+
+func (r *countingReader) ReadStoredSchema(ctx context.Context) (*datastore.ReadOnlyStoredSchema, error) {
+	r.counter.callCount.Add(1)
+	return r.Reader.ReadStoredSchema(ctx)
+}
+
+// simpleSchemaCache is a minimal SchemaCache for testing.
+type simpleSchemaCache struct {
+	mu    sync.Mutex
+	items map[datalayer.SchemaCacheKey]*datastore.ReadOnlyStoredSchema // GUARDED_BY(mu)
+}
+
+func (c *simpleSchemaCache) Get(key datalayer.SchemaCacheKey) (*datastore.ReadOnlyStoredSchema, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v, ok := c.items[key]
+	return v, ok
+}
+
+func (c *simpleSchemaCache) Set(key datalayer.SchemaCacheKey, entry *datastore.ReadOnlyStoredSchema, _ int64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.items[key] = entry
+	return true
+}
+
+func (c *simpleSchemaCache) Wait() {}
+
 func TestCheckPermissionWithWildcardSubject(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
+
 	require := require.New(t)
-	conn, cleanup, _, revision := testserver.NewTestServer(require, testTimedeltas[0], memdb.DisableGC, true, tf.StandardDatastoreWithData)
+	conn, _, revision := testserver.NewTestServerWithConfig(t, testTimedeltas[0], memdb.DisableGC, true,
+		testserver.DefaultTestServerConfig,
+		tf.StandardDatastoreWithData)
 	client := v1.NewPermissionsServiceClient(conn)
-	t.Cleanup(cleanup)
 
 	ctx := t.Context()
 	ctx = requestmeta.AddRequestHeaders(ctx, requestmeta.RequestDebugInformation)
@@ -332,7 +627,7 @@ func TestCheckPermissionWithWildcardSubject(t *testing.T) {
 	_, err := client.CheckPermission(ctx, &v1.CheckPermissionRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 			},
 		},
 		Resource:   obj("document", "masterplan"),
@@ -346,10 +641,14 @@ func TestCheckPermissionWithWildcardSubject(t *testing.T) {
 }
 
 func TestCheckPermissionWithDebugInfo(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
 	require := require.New(t)
-	conn, cleanup, _, revision := testserver.NewTestServer(require, testTimedeltas[0], memdb.DisableGC, true, tf.StandardDatastoreWithData)
+	conn, _, revision := testserver.NewTestServerWithConfig(t, testTimedeltas[0], memdb.DisableGC, true,
+		testserver.DefaultTestServerConfig,
+		tf.StandardDatastoreWithData)
 	client := v1.NewPermissionsServiceClient(conn)
-	t.Cleanup(cleanup)
 
 	ctx := t.Context()
 	ctx = requestmeta.AddRequestHeaders(ctx, requestmeta.RequestDebugInformation)
@@ -358,7 +657,7 @@ func TestCheckPermissionWithDebugInfo(t *testing.T) {
 	checkResp, err := client.CheckPermission(ctx, &v1.CheckPermissionRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 			},
 		},
 		Resource:   obj("document", "masterplan"),
@@ -389,30 +688,32 @@ func TestCheckPermissionWithDebugInfo(t *testing.T) {
 }
 
 func TestCheckPermissionWithDebugInfoInError(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
 	req := require.New(t)
-	conn, cleanup, _, revision := testserver.NewTestServer(req, testTimedeltas[0], memdb.DisableGC, true,
-		func(ds datastore.Datastore, assertions *require.Assertions) (datastore.Datastore, datastore.Revision) {
+	conn, _, revision := testserver.NewTestServerWithConfig(t, testTimedeltas[0], memdb.DisableGC, true,
+		testserver.DefaultTestServerConfig,
+		func(t testing.TB, ds datastore.Datastore) (datastore.Datastore, datastore.Revision) {
 			return tf.DatastoreFromSchemaAndTestRelationships(
+				t,
 				ds,
 				`definition user {}
-
-				 definition document {
-					relation viewer: user | document#view
-					permission view = viewer
-				 }
-				`,
+		
+						 definition document {
+							relation viewer: user | document#view
+							permission view = viewer
+						 }
+						`,
 				[]tuple.Relationship{
 					tuple.MustParse("document:doc1#viewer@user:tom"),
 					tuple.MustParse("document:doc1#viewer@document:doc2#view"),
 					tuple.MustParse("document:doc2#viewer@document:doc3#view"),
 					tuple.MustParse("document:doc3#viewer@document:doc1#view"),
 				},
-				assertions,
 			)
-		},
-	)
+		})
 	client := v1.NewPermissionsServiceClient(conn)
-	t.Cleanup(cleanup)
 
 	ctx := t.Context()
 	ctx = requestmeta.AddRequestHeaders(ctx, requestmeta.RequestDebugInformation)
@@ -420,7 +721,7 @@ func TestCheckPermissionWithDebugInfoInError(t *testing.T) {
 	_, err := client.CheckPermission(ctx, &v1.CheckPermissionRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 			},
 		},
 		Resource:   obj("document", "doc1"),
@@ -456,6 +757,9 @@ func TestCheckPermissionWithDebugInfoInError(t *testing.T) {
 }
 
 func TestLookupResources(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
 	testCases := []struct {
 		objectType           string
 		permission           string
@@ -626,8 +930,8 @@ func TestLookupResources(t *testing.T) {
 					for _, useV2 := range []bool{false, true} {
 						t.Run(fmt.Sprintf("v2:%v", useV2), func(t *testing.T) {
 							require := require.New(t)
-							conn, cleanup, _, revision := testserver.NewTestServerWithConfig(
-								require,
+							conn, _, revision := testserver.NewTestServerWithConfig(
+								t,
 								delta,
 								memdb.DisableGC,
 								true,
@@ -640,9 +944,6 @@ func TestLookupResources(t *testing.T) {
 								tf.StandardDatastoreWithData,
 							)
 							client := v1.NewPermissionsServiceClient(conn)
-							defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
-							defer cleanup()
-
 							var trailer metadata.MD
 							lookupClient, err := client.LookupResources(t.Context(), &v1.LookupResourcesRequest{
 								ResourceObjectType: tc.objectType,
@@ -650,7 +951,7 @@ func TestLookupResources(t *testing.T) {
 								Subject:            tc.subject,
 								Consistency: &v1.Consistency{
 									Requirement: &v1.Consistency_AtLeastAsFresh{
-										AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+										AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 									},
 								},
 							}, grpc.Trailer(&trailer))
@@ -692,6 +993,9 @@ func TestLookupResources(t *testing.T) {
 }
 
 func TestExpand(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
 	testCases := []struct {
 		startObjectType    string
 		startObjectID      string
@@ -712,9 +1016,10 @@ func TestExpand(t *testing.T) {
 			for _, tc := range testCases {
 				t.Run(fmt.Sprintf("%s:%s#%s", tc.startObjectType, tc.startObjectID, tc.startPermission), func(t *testing.T) {
 					require := require.New(t)
-					conn, cleanup, _, revision := testserver.NewTestServer(require, delta, memdb.DisableGC, true, tf.StandardDatastoreWithData)
+					conn, _, revision := testserver.NewTestServerWithConfig(t, delta, memdb.DisableGC, true,
+						testserver.DefaultTestServerConfig,
+						tf.StandardDatastoreWithData)
 					client := v1.NewPermissionsServiceClient(conn)
-					t.Cleanup(cleanup)
 
 					var trailer metadata.MD
 					expanded, err := client.ExpandPermissionTree(t.Context(), &v1.ExpandPermissionTreeRequest{
@@ -725,7 +1030,7 @@ func TestExpand(t *testing.T) {
 						Permission: tc.startPermission,
 						Consistency: &v1.Consistency{
 							Requirement: &v1.Consistency_AtLeastAsFresh{
-								AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+								AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 							},
 						},
 					}, grpc.Trailer(&trailer))
@@ -769,6 +1074,10 @@ func DS(objectType string, objectID string, objectRelation string) *core.DirectS
 }
 
 func TestTranslateExpansionTree(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
+
 	table := []struct {
 		name  string
 		input *core.RelationTupleTreeNode
@@ -845,9 +1154,13 @@ func TestTranslateExpansionTree(t *testing.T) {
 }
 
 func TestLookupSubjectsWithConcreteLimit(t *testing.T) {
-	conn, cleanup, _, revision := testserver.NewTestServer(require.New(t), testTimedeltas[0], memdb.DisableGC, true, tf.StandardDatastoreWithData)
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
+	conn, _, revision := testserver.NewTestServerWithConfig(t, testTimedeltas[0], memdb.DisableGC, true,
+		testserver.DefaultTestServerConfig,
+		tf.StandardDatastoreWithData)
 	client := v1.NewPermissionsServiceClient(conn)
-	t.Cleanup(cleanup)
 
 	ctx := t.Context()
 
@@ -860,7 +1173,7 @@ func TestLookupSubjectsWithConcreteLimit(t *testing.T) {
 		SubjectObjectType: "user",
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 			},
 		},
 		OptionalConcreteLimit: 2,
@@ -875,6 +1188,9 @@ func TestLookupSubjectsWithConcreteLimit(t *testing.T) {
 }
 
 func TestLookupSubjects(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
 	testCases := []struct {
 		resource        *v1.ObjectReference
 		permission      string
@@ -979,10 +1295,10 @@ func TestLookupSubjects(t *testing.T) {
 			for _, tc := range testCases {
 				t.Run(fmt.Sprintf("%s:%s#%s for %s#%s", tc.resource.ObjectType, tc.resource.ObjectId, tc.permission, tc.subjectType, tc.subjectRelation), func(t *testing.T) {
 					require := require.New(t)
-					conn, cleanup, _, revision := testserver.NewTestServer(require, delta, memdb.DisableGC, true, tf.StandardDatastoreWithData)
+					conn, _, revision := testserver.NewTestServerWithConfig(t, delta, memdb.DisableGC, true,
+						testserver.DefaultTestServerConfig,
+						tf.StandardDatastoreWithData)
 					client := v1.NewPermissionsServiceClient(conn)
-					defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
-					defer cleanup()
 
 					var trailer metadata.MD
 					lookupClient, err := client.LookupSubjects(t.Context(), &v1.LookupSubjectsRequest{
@@ -992,7 +1308,7 @@ func TestLookupSubjects(t *testing.T) {
 						OptionalSubjectRelation: tc.subjectRelation,
 						Consistency: &v1.Consistency{
 							Requirement: &v1.Consistency_AtLeastAsFresh{
-								AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+								AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 							},
 						},
 					}, grpc.Trailer(&trailer))
@@ -1030,17 +1346,21 @@ func TestLookupSubjects(t *testing.T) {
 }
 
 func TestCheckWithCaveats(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
 	req := require.New(t)
-	conn, cleanup, _, revision := testserver.NewTestServer(req, testTimedeltas[0], memdb.DisableGC, true, tf.StandardDatastoreWithCaveatedData)
+	conn, _, revision := testserver.NewTestServerWithConfig(t, testTimedeltas[0], memdb.DisableGC, true,
+		testserver.DefaultTestServerConfig,
+		tf.StandardDatastoreWithCaveatedData)
 	client := v1.NewPermissionsServiceClient(conn)
-	t.Cleanup(cleanup)
 
 	ctx := t.Context()
 
 	request := &v1.CheckPermissionRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 			},
 		},
 		Resource:   obj("document", "caveatedplan"),
@@ -1081,33 +1401,32 @@ func TestCheckWithCaveats(t *testing.T) {
 }
 
 func TestCheckWithCaveatErrors(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
 	req := require.New(t)
-	conn, cleanup, _, revision := testserver.NewTestServer(
-		req,
-		testTimedeltas[0],
-		memdb.DisableGC,
-		true,
-		func(ds datastore.Datastore, assertions *require.Assertions) (datastore.Datastore, datastore.Revision) {
+	conn, _, revision := testserver.NewTestServerWithConfig(t, testTimedeltas[0], memdb.DisableGC, true,
+		testserver.DefaultTestServerConfig,
+		func(t testing.TB, ds datastore.Datastore) (datastore.Datastore, datastore.Revision) {
 			return tf.DatastoreFromSchemaAndTestRelationships(
+				t,
 				ds,
 				`definition user {}
-
-				 caveat somecaveat(somemap map<any>) {
-					  somemap.first == 42 && somemap.second < 56
-				 }
-
-				 definition document {
-					relation viewer: user with somecaveat
-					permission view = viewer
-				 }
-				`,
+		
+						 caveat somecaveat(somemap map<any>) {
+							  somemap.first == 42 && somemap.second < 56
+						 }
+		
+						 definition document {
+							relation viewer: user with somecaveat
+							permission view = viewer
+						 }
+						`,
 				[]tuple.Relationship{tuple.MustParse("document:firstdoc#viewer@user:tom[somecaveat]")},
-				assertions,
 			)
 		})
 
 	client := v1.NewPermissionsServiceClient(conn)
-	t.Cleanup(cleanup)
 
 	ctx := t.Context()
 
@@ -1151,7 +1470,7 @@ func TestCheckWithCaveatErrors(t *testing.T) {
 			request := &v1.CheckPermissionRequest{
 				Consistency: &v1.Consistency{
 					Requirement: &v1.Consistency_AtLeastAsFresh{
-						AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+						AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 					},
 				},
 				Resource:   obj("document", "firstdoc"),
@@ -1172,28 +1491,31 @@ func TestCheckWithCaveatErrors(t *testing.T) {
 }
 
 func TestLookupResourcesWithCaveats(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
 	req := require.New(t)
-	conn, cleanup, _, revision := testserver.NewTestServer(req, testTimedeltas[0], memdb.DisableGC, true,
-		func(ds datastore.Datastore, require *require.Assertions) (datastore.Datastore, datastore.Revision) {
-			return tf.DatastoreFromSchemaAndTestRelationships(ds, `
-				definition user {}
-
-				caveat testcaveat(somecondition int) {
-					somecondition == 42
-				}
-
-				definition document {
-					relation viewer: user | user with testcaveat
-					permission view = viewer
-				}
-			`, []tuple.Relationship{
+	conn, _, revision := testserver.NewTestServerWithConfig(t, testTimedeltas[0], memdb.DisableGC, true,
+		testserver.DefaultTestServerConfig,
+		func(t testing.TB, ds datastore.Datastore) (datastore.Datastore, datastore.Revision) {
+			return tf.DatastoreFromSchemaAndTestRelationships(t, ds, `
+						definition user {}
+		
+						caveat testcaveat(somecondition int) {
+							somecondition == 42
+						}
+		
+						definition document {
+							relation viewer: user | user with testcaveat
+							permission view = viewer
+						}
+					`, []tuple.Relationship{
 				tuple.MustParse("document:first#viewer@user:tom"),
 				tuple.MustWithCaveat(tuple.MustParse("document:second#viewer@user:tom"), "testcaveat"),
-			}, require)
+			})
 		})
 
 	client := v1.NewPermissionsServiceClient(conn)
-	t.Cleanup(cleanup)
 
 	ctx := t.Context()
 
@@ -1204,7 +1526,7 @@ func TestLookupResourcesWithCaveats(t *testing.T) {
 	request := &v1.LookupResourcesRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 			},
 		},
 		ResourceObjectType: "document",
@@ -1250,7 +1572,7 @@ func TestLookupResourcesWithCaveats(t *testing.T) {
 	request = &v1.LookupResourcesRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 			},
 		},
 		ResourceObjectType: "document",
@@ -1291,28 +1613,31 @@ func byIDAndPermission(a, b *v1.LookupResourcesResponse) int {
 }
 
 func TestLookupSubjectsWithCaveats(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
 	req := require.New(t)
-	conn, cleanup, _, revision := testserver.NewTestServer(req, testTimedeltas[0], memdb.DisableGC, true,
-		func(ds datastore.Datastore, require *require.Assertions) (datastore.Datastore, datastore.Revision) {
-			return tf.DatastoreFromSchemaAndTestRelationships(ds, `
-				definition user {}
-
-				caveat testcaveat(somecondition int) {
-					somecondition == 42
-				}
-
-				definition document {
-					relation viewer: user | user with testcaveat
-					permission view = viewer
-				}
-			`, []tuple.Relationship{
+	conn, _, revision := testserver.NewTestServerWithConfig(t, testTimedeltas[0], memdb.DisableGC, true,
+		testserver.DefaultTestServerConfig,
+		func(t testing.TB, ds datastore.Datastore) (datastore.Datastore, datastore.Revision) {
+			return tf.DatastoreFromSchemaAndTestRelationships(t, ds, `
+						definition user {}
+		
+						caveat testcaveat(somecondition int) {
+							somecondition == 42
+						}
+		
+						definition document {
+							relation viewer: user | user with testcaveat
+							permission view = viewer
+						}
+					`, []tuple.Relationship{
 				tuple.MustParse("document:first#viewer@user:tom"),
 				tuple.MustWithCaveat(tuple.MustParse("document:first#viewer@user:sarah"), "testcaveat"),
-			}, require)
+			})
 		})
 
 	client := v1.NewPermissionsServiceClient(conn)
-	t.Cleanup(cleanup)
 
 	ctx := t.Context()
 
@@ -1323,7 +1648,7 @@ func TestLookupSubjectsWithCaveats(t *testing.T) {
 	request := &v1.LookupSubjectsRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 			},
 		},
 		Resource:          obj("document", "first"),
@@ -1368,7 +1693,7 @@ func TestLookupSubjectsWithCaveats(t *testing.T) {
 	request = &v1.LookupSubjectsRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 			},
 		},
 		Resource:          obj("document", "first"),
@@ -1413,7 +1738,7 @@ func TestLookupSubjectsWithCaveats(t *testing.T) {
 	request = &v1.LookupSubjectsRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 			},
 		},
 		Resource:          obj("document", "first"),
@@ -1450,33 +1775,36 @@ func TestLookupSubjectsWithCaveats(t *testing.T) {
 }
 
 func TestLookupSubjectsWithCaveatedWildcards(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
 	req := require.New(t)
-	conn, cleanup, _, revision := testserver.NewTestServer(req, testTimedeltas[0], memdb.DisableGC, true,
-		func(ds datastore.Datastore, require *require.Assertions) (datastore.Datastore, datastore.Revision) {
-			return tf.DatastoreFromSchemaAndTestRelationships(ds, `
-				definition user {}
-
-				caveat testcaveat(somecondition int) {
-					somecondition == 42
-				}
-
-				caveat anothercaveat(anothercondition int) {
-					anothercondition == 42
-				}
-
-				definition document {
-					relation viewer: user:* with testcaveat
-					relation banned: user with testcaveat
-					permission view = viewer - banned
-				}
-			`, []tuple.Relationship{
+	conn, _, revision := testserver.NewTestServerWithConfig(t, testTimedeltas[0], memdb.DisableGC, true,
+		testserver.DefaultTestServerConfig,
+		func(t testing.TB, ds datastore.Datastore) (datastore.Datastore, datastore.Revision) {
+			return tf.DatastoreFromSchemaAndTestRelationships(t, ds, `
+						definition user {}
+		
+						caveat testcaveat(somecondition int) {
+							somecondition == 42
+						}
+		
+						caveat anothercaveat(anothercondition int) {
+							anothercondition == 42
+						}
+		
+						definition document {
+							relation viewer: user:* with testcaveat
+							relation banned: user with testcaveat
+							permission view = viewer - banned
+						}
+					`, []tuple.Relationship{
 				tuple.MustWithCaveat(tuple.MustParse("document:first#viewer@user:*"), "testcaveat"),
 				tuple.MustWithCaveat(tuple.MustParse("document:first#banned@user:bannedguy"), "anothercaveat"),
-			}, require)
+			})
 		})
 
 	client := v1.NewPermissionsServiceClient(conn)
-	t.Cleanup(cleanup)
 
 	ctx := t.Context()
 
@@ -1487,7 +1815,7 @@ func TestLookupSubjectsWithCaveatedWildcards(t *testing.T) {
 	request := &v1.LookupSubjectsRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 			},
 		},
 		Resource:          obj("document", "first"),
@@ -1526,7 +1854,7 @@ func TestLookupSubjectsWithCaveatedWildcards(t *testing.T) {
 	request = &v1.LookupSubjectsRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 			},
 		},
 		Resource:          obj("document", "first"),
@@ -1583,6 +1911,10 @@ func randString(length int) string {
 }
 
 func TestGetCaveatContext(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
+
 	strct, err := structpb.NewStruct(map[string]any{"foo": "bar"})
 	require.NoError(t, err)
 
@@ -1599,6 +1931,9 @@ func TestGetCaveatContext(t *testing.T) {
 }
 
 func TestLookupResourcesWithCursors(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
 	testCases := []struct {
 		objectType        string
 		permission        string
@@ -1649,10 +1984,10 @@ func TestLookupResourcesWithCursors(t *testing.T) {
 					for _, tc := range testCases {
 						t.Run(fmt.Sprintf("%s::%s from %s:%s#%s", tc.objectType, tc.permission, tc.subject.Object.ObjectType, tc.subject.Object.ObjectId, tc.subject.OptionalRelation), func(t *testing.T) {
 							require := require.New(t)
-							conn, cleanup, _, revision := testserver.NewTestServer(require, delta, memdb.DisableGC, true, tf.StandardDatastoreWithData)
+							conn, _, revision := testserver.NewTestServerWithConfig(t, delta, memdb.DisableGC, true,
+								testserver.DefaultTestServerConfig,
+								tf.StandardDatastoreWithData)
 							client := v1.NewPermissionsServiceClient(conn)
-							defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
-							defer cleanup()
 
 							var currentCursor *v1.Cursor
 							foundObjectIds := mapz.NewSet[string]()
@@ -1667,7 +2002,7 @@ func TestLookupResourcesWithCursors(t *testing.T) {
 									Subject:            tc.subject,
 									Consistency: &v1.Consistency{
 										Requirement: &v1.Consistency_AtLeastAsFresh{
-											AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+											AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 										},
 									},
 									OptionalLimit:  uintLimit,
@@ -1710,25 +2045,28 @@ func TestLookupResourcesWithCursors(t *testing.T) {
 }
 
 func TestLookupResourcesDeduplication(t *testing.T) {
-	req := require.New(t)
-	conn, cleanup, _, revision := testserver.NewTestServer(req, testTimedeltas[0], memdb.DisableGC, true,
-		func(ds datastore.Datastore, require *require.Assertions) (datastore.Datastore, datastore.Revision) {
-			return tf.DatastoreFromSchemaAndTestRelationships(ds, `
-				definition user {}
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
 
-				definition document {
-					relation viewer: user
-					relation editor: user
-					permission view = viewer + editor
-				}
-			`, []tuple.Relationship{
+	conn, _, revision := testserver.NewTestServerWithConfig(t, testTimedeltas[0], memdb.DisableGC, true,
+		testserver.DefaultTestServerConfig,
+		func(t testing.TB, ds datastore.Datastore) (datastore.Datastore, datastore.Revision) {
+			return tf.DatastoreFromSchemaAndTestRelationships(t, ds, `
+						definition user {}
+		
+						definition document {
+							relation viewer: user
+							relation editor: user
+							permission view = viewer + editor
+						}
+					`, []tuple.Relationship{
 				tuple.MustParse("document:first#viewer@user:tom"),
 				tuple.MustParse("document:first#editor@user:tom"),
-			}, require)
+			})
 		})
 
 	client := v1.NewPermissionsServiceClient(conn)
-	t.Cleanup(cleanup)
 
 	lookupClient, err := client.LookupResources(t.Context(), &v1.LookupResourcesRequest{
 		ResourceObjectType: "document",
@@ -1736,7 +2074,7 @@ func TestLookupResourcesDeduplication(t *testing.T) {
 		Subject:            sub("user", "tom", ""),
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevisionForTesting(revision, datalayer.NoSchemaHashInLegacyZedToken),
 			},
 		},
 	})
@@ -1758,10 +2096,15 @@ func TestLookupResourcesDeduplication(t *testing.T) {
 }
 
 func TestLookupResourcesBeyondAllowedLimit(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
 	require := require.New(t)
-	conn, cleanup, _, _ := testserver.NewTestServer(require, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
+
+	conn, _, _ := testserver.NewTestServerWithConfig(t, 0, memdb.DisableGC, true,
+		testserver.DefaultTestServerConfig,
+		tf.StandardDatastoreWithData)
 	client := v1.NewPermissionsServiceClient(conn)
-	t.Cleanup(cleanup)
 
 	resp, err := client.LookupResources(t.Context(), &v1.LookupResourcesRequest{
 		ResourceObjectType: "document",
@@ -1777,11 +2120,14 @@ func TestLookupResourcesBeyondAllowedLimit(t *testing.T) {
 }
 
 func TestCheckBulkPermissions(t *testing.T) {
-	defer goleak.VerifyNone(t, append(testutil.GoLeakIgnores(), goleak.IgnoreCurrent())...)
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
 
-	conn, cleanup, _, _ := testserver.NewTestServer(require.New(t), 0, memdb.DisableGC, true, tf.StandardDatastoreWithCaveatedData)
+	conn, _, _ := testserver.NewTestServerWithConfig(t, 0, memdb.DisableGC, true,
+		testserver.DefaultTestServerConfig,
+		tf.StandardDatastoreWithCaveatedData)
 	client := v1.NewPermissionsServiceClient(conn)
-	defer cleanup()
 
 	testCases := []struct {
 		name     string
@@ -2060,6 +2406,9 @@ func mustRelToCheckBulkRequestItem(rel string) *v1.CheckBulkPermissionsRequestIt
 }
 
 func TestImportBulkRelationships(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
 	testCases := []struct {
 		name       string
 		batchSize  func() uint64
@@ -2079,9 +2428,10 @@ func TestImportBulkRelationships(t *testing.T) {
 				t.Run(fmt.Sprintf("withTrait=%s", withTrait), func(t *testing.T) {
 					require := require.New(t)
 
-					conn, cleanup, _, _ := testserver.NewTestServer(require, 0, memdb.DisableGC, true, tf.StandardDatastoreWithSchema)
+					conn, _, _ := testserver.NewTestServerWithConfig(t, 0, memdb.DisableGC, true,
+						testserver.DefaultTestServerConfig,
+						tf.StandardDatastoreWithSchema)
 					client := v1.NewPermissionsServiceClient(conn)
-					t.Cleanup(cleanup)
 
 					ctx := t.Context()
 
@@ -2178,10 +2528,15 @@ func TestImportBulkRelationships(t *testing.T) {
 }
 
 func TestExportBulkRelationshipsBeyondAllowedLimit(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
 	require := require.New(t)
-	conn, cleanup, _, _ := testserver.NewTestServer(require, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
+
+	conn, _, _ := testserver.NewTestServerWithConfig(t, 0, memdb.DisableGC, true,
+		testserver.DefaultTestServerConfig,
+		tf.StandardDatastoreWithData)
 	client := v1.NewPermissionsServiceClient(conn)
-	t.Cleanup(cleanup)
 
 	resp, err := client.ExportBulkRelationships(t.Context(), &v1.ExportBulkRelationshipsRequest{
 		OptionalLimit: 10000005,
@@ -2190,13 +2545,18 @@ func TestExportBulkRelationshipsBeyondAllowedLimit(t *testing.T) {
 
 	_, err = resp.Recv()
 	require.Error(err)
-	require.Contains(err.Error(), "provided limit 10000005 is greater than maximum allowed of 100000")
+	require.Contains(err.Error(), "provided limit 10000005 is greater than maximum allowed of 10000")
 }
 
 func TestExportBulkRelationships(t *testing.T) {
-	conn, cleanup, _, _ := testserver.NewTestServer(require.New(t), 0, memdb.DisableGC, true, tf.StandardDatastoreWithSchema)
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
+
+	conn, _, _ := testserver.NewTestServerWithConfig(t, 0, memdb.DisableGC, true,
+		testserver.DefaultTestServerConfig,
+		tf.StandardDatastoreWithSchema)
 	client := v1.NewPermissionsServiceClient(conn)
-	t.Cleanup(cleanup)
 
 	nsAndRels := []struct {
 		namespace string
@@ -2296,6 +2656,9 @@ func TestExportBulkRelationships(t *testing.T) {
 }
 
 func TestExportBulkRelationshipsWithFilter(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
 	testCases := []struct {
 		name          string
 		filter        *v1.RelationshipFilter
@@ -2345,9 +2708,10 @@ func TestExportBulkRelationshipsWithFilter(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			require := require.New(t)
 
-			conn, cleanup, _, _ := testserver.NewTestServer(require, 0, memdb.DisableGC, true, tf.StandardDatastoreWithSchema)
+			conn, _, _ := testserver.NewTestServerWithConfig(t, 0, memdb.DisableGC, true,
+				testserver.DefaultTestServerConfig,
+				tf.StandardDatastoreWithSchema)
 			client := v1.NewPermissionsServiceClient(conn)
-			t.Cleanup(cleanup)
 
 			nsAndRels := []struct {
 				namespace string
@@ -2450,7 +2814,10 @@ func TestExportBulkRelationshipsWithFilter(t *testing.T) {
 // TestBulkCheckCaveatContextCollision is a regression test for an issue with
 // caveat hash collision.
 func TestBulkCheckCaveatContextCollision(t *testing.T) {
-	dsInit := func(ds datastore.Datastore, r *require.Assertions) (datastore.Datastore, datastore.Revision) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, testutil.GoLeakIgnores()...)
+	})
+	dsInit := func(t testing.TB, ds datastore.Datastore) (datastore.Datastore, datastore.Revision) {
 		schema := `
 		definition user {}
 		caveat shape(x list<any>) {
@@ -2463,10 +2830,13 @@ func TestBulkCheckCaveatContextCollision(t *testing.T) {
 		rels := []tuple.Relationship{
 			tuple.MustParse(`document:doc#viewer@user:alice[shape]`),
 		}
-		return tf.DatastoreFromSchemaAndTestRelationships(ds, schema, rels, r)
+		return tf.DatastoreFromSchemaAndTestRelationships(t, ds, schema, rels)
 	}
-	conn, cleanup, _, _ := testserver.NewTestServer(require.New(t), 0, memdb.DisableGC, true, dsInit)
-	t.Cleanup(cleanup)
+
+	conn, _, _ := testserver.NewTestServerWithConfig(t, 0, memdb.DisableGC, true,
+		testserver.DefaultTestServerConfig,
+		dsInit)
+
 	client := v1.NewPermissionsServiceClient(conn)
 
 	goodStruct, err := structpb.NewStruct(map[string]any{"x": []any{[]any{"a"}, "b"}})

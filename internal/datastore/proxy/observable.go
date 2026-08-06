@@ -34,8 +34,13 @@ var (
 		Namespace: "spicedb",
 		Subsystem: "datastore",
 		Name:      "query_latency",
-		Buckets:   []float64{.0005, .001, .002, .005, .01, .02, .05, .1, .2, .5},
-		Help:      "response latency for a database query",
+		Buckets: []float64{
+			// same as grpc_server_handling_seconds
+			.0005, .001, .002, .005, .01, .02, .05, .1, .2, .5, 1, 5, 30,
+		},
+		Help:                           "response latency for a database query, in seconds",
+		NativeHistogramBucketFactor:    1.1, // At most 10% increase from bucket to bucket.
+		NativeHistogramMaxBucketNumber: 100,
 	}, []string{
 		"operation", "query_shape",
 	})
@@ -93,7 +98,7 @@ func (p *observableProxy) ReadWriteTx(
 	}, opts...)
 }
 
-func (p *observableProxy) OptimizedRevision(ctx context.Context) (datastore.Revision, error) {
+func (p *observableProxy) OptimizedRevision(ctx context.Context) (datastore.RevisionWithSchemaHash, error) {
 	ctx, closer := observe(ctx, "OptimizedRevision", "")
 	defer closer()
 
@@ -109,7 +114,7 @@ func (p *observableProxy) CheckRevision(ctx context.Context, revision datastore.
 	return p.delegate.CheckRevision(ctx, revision)
 }
 
-func (p *observableProxy) HeadRevision(ctx context.Context) (datastore.Revision, error) {
+func (p *observableProxy) HeadRevision(ctx context.Context) (datastore.RevisionWithSchemaHash, error) {
 	ctx, closer := observe(ctx, "HeadRevision", "")
 	defer closer()
 
@@ -277,6 +282,12 @@ func (r *observableReader) ReverseQueryRelationships(ctx context.Context, subjec
 	}, nil
 }
 
+func (r *observableReader) ReadStoredSchema(ctx context.Context) (*datastore.ReadOnlyStoredSchema, error) {
+	ctx, closer := observe(ctx, "ReadStoredSchema", "")
+	defer closer()
+	return r.delegate.ReadStoredSchema(ctx)
+}
+
 type observableRWT struct {
 	*observableReader
 	delegate datastore.ReadWriteTransaction
@@ -380,6 +391,12 @@ func (rwt *observableRWT) BulkLoad(ctx context.Context, iter datastore.BulkWrite
 	defer closer()
 
 	return rwt.delegate.BulkLoad(ctx, iter)
+}
+
+func (rwt *observableRWT) WriteStoredSchema(ctx context.Context, schema *core.StoredSchema) error {
+	ctx, closer := observe(ctx, "WriteStoredSchema", "")
+	defer closer()
+	return rwt.delegate.WriteStoredSchema(ctx, schema)
 }
 
 // nolint:spancheck

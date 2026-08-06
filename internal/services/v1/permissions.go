@@ -75,12 +75,12 @@ func (ps *permissionServer) CheckPermission(ctx context.Context, req *v1.CheckPe
 		return ps.checkPermissionWithQueryPlan(ctx, req)
 	}
 
-	atRevision, checkedAt, err := consistency.RevisionFromContext(ctx)
+	atRevision, schemaHash, checkedAt, err := consistency.RevisionFromContext(ctx)
 	if err != nil {
 		return nil, ps.rewriteError(ctx, err)
 	}
 
-	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision)
+	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision, schemaHash)
 
 	caveatContext, err := GetCaveatContext(ctx, req.Context, ps.config.MaxCaveatContextSize)
 	if err != nil {
@@ -130,6 +130,7 @@ func (ps *permissionServer) CheckPermission(ctx context.Context, req *v1.CheckPe
 			AtRevision:    atRevision,
 			MaximumDepth:  ps.config.MaximumAPIDepth,
 			DebugOption:   debugOption,
+			SchemaHash:    schemaHash,
 		},
 		req.Resource.ObjectId,
 		ps.config.DispatchChunkSize,
@@ -165,6 +166,7 @@ func (ps *permissionServer) CheckPermission(ctx context.Context, req *v1.CheckPe
 	}
 
 	permissionship, partialCaveat := checkResultToAPITypes(cr)
+	ps.metrics.RecordCheckResult("CheckPermission", permissionship)
 
 	return &v1.CheckPermissionResponse{
 		CheckedAt:         checkedAt,
@@ -193,7 +195,7 @@ func (ps *permissionServer) CheckBulkPermissions(ctx context.Context, req *v1.Ch
 	// NOTE: perfinsights are added for the individual check results as well, so there is no shape here.
 	perfinsights.SetInContext(ctx, perfinsights.NoLabels)
 
-	res, err := ps.bulkChecker.checkBulkPermissions(ctx, req)
+	res, err := ps.bulkChecker.checkBulkPermissions(ctx, req, ps.metrics)
 	if err != nil {
 		return nil, ps.rewriteError(ctx, err)
 	}
@@ -201,8 +203,9 @@ func (ps *permissionServer) CheckBulkPermissions(ctx context.Context, req *v1.Ch
 	return res, nil
 }
 
-func pairItemFromCheckResult(checkResult *dispatch.ResourceCheckResult, debugTrace *v1.DebugInformation) *v1.CheckBulkPermissionsPair_Item {
+func pairItemFromCheckResult(checkResult *dispatch.ResourceCheckResult, debugTrace *v1.DebugInformation, metrics *Metrics) *v1.CheckBulkPermissionsPair_Item {
 	permissionship, partialCaveat := checkResultToAPITypes(checkResult)
+	metrics.RecordCheckResult("CheckBulkPermissions", permissionship)
 	return &v1.CheckBulkPermissionsPair_Item{
 		Item: &v1.CheckBulkPermissionsResponseItem{
 			Permissionship:    permissionship,
@@ -247,12 +250,12 @@ func (ps *permissionServer) ExpandPermissionTree(ctx context.Context, req *v1.Ex
 
 	telemetry.LogicalChecks.Inc()
 
-	atRevision, expandedAt, err := consistency.RevisionFromContext(ctx)
+	atRevision, schemaHash, expandedAt, err := consistency.RevisionFromContext(ctx)
 	if err != nil {
 		return nil, ps.rewriteError(ctx, err)
 	}
 
-	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision)
+	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision, schemaHash)
 
 	sr, err := dl.ReadSchema(ctx)
 	if err != nil {
@@ -274,6 +277,7 @@ func (ps *permissionServer) ExpandPermissionTree(ctx context.Context, req *v1.Ex
 			AtRevision:     atRevision.String(),
 			DepthRemaining: ps.config.MaximumAPIDepth,
 			TraversalBloom: bf,
+			SchemaHash:     []byte(schemaHash),
 		},
 		ResourceAndRelation: &core.ObjectAndRelation{
 			Namespace: req.Resource.ObjectType,
@@ -494,12 +498,12 @@ func (ps *permissionServer) lookupResources3(req *v1.LookupResourcesRequest, res
 
 	ctx := resp.Context()
 
-	atRevision, revisionReadAt, err := consistency.RevisionFromContext(ctx)
+	atRevision, schemaHash, revisionReadAt, err := consistency.RevisionFromContext(ctx)
 	if err != nil {
 		return ps.rewriteError(ctx, err)
 	}
 
-	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision)
+	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision, schemaHash)
 
 	sr, err := dl.ReadSchema(ctx)
 	if err != nil {
@@ -574,7 +578,7 @@ func (ps *permissionServer) lookupResources3(req *v1.LookupResourcesRequest, res
 			if len(item.AfterResponseCursorSections) > 0 {
 				currentCursor = item.AfterResponseCursorSections
 
-				ec, err := cursor.EncodeFromDispatchCursorSections(currentCursor, lrRequestHash, atRevision, map[string]string{
+				ec, err := cursor.EncodeFromDispatchCursorSections(currentCursor, lrRequestHash, atRevision, schemaHash, map[string]string{
 					lrv3CursorFlag: "1",
 				})
 				if err != nil {
@@ -611,6 +615,7 @@ func (ps *permissionServer) lookupResources3(req *v1.LookupResourcesRequest, res
 				AtRevision:     atRevision.String(),
 				DepthRemaining: ps.config.MaximumAPIDepth,
 				TraversalBloom: bf,
+				SchemaHash:     []byte(schemaHash),
 			},
 			ResourceRelation: &core.RelationReference{
 				Namespace: req.ResourceObjectType,
@@ -656,12 +661,12 @@ func (ps *permissionServer) lookupResources2(req *v1.LookupResourcesRequest, res
 
 	ctx := resp.Context()
 
-	atRevision, revisionReadAt, err := consistency.RevisionFromContext(ctx)
+	atRevision, schemaHash, revisionReadAt, err := consistency.RevisionFromContext(ctx)
 	if err != nil {
 		return ps.rewriteError(ctx, err)
 	}
 
-	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision)
+	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision, schemaHash)
 
 	sr, err := dl.ReadSchema(ctx)
 	if err != nil {
@@ -736,7 +741,7 @@ func (ps *permissionServer) lookupResources2(req *v1.LookupResourcesRequest, res
 			alreadyPublishedPermissionedResourceIds[found.ResourceId] = struct{}{}
 		}
 
-		encodedCursor, err := cursor.EncodeFromDispatchCursor(result.AfterResponseCursor, lrRequestHash, atRevision, map[string]string{
+		encodedCursor, err := cursor.EncodeFromDispatchCursor(result.AfterResponseCursor, lrRequestHash, atRevision, schemaHash, map[string]string{
 			lrv2CursorFlag: "1",
 		})
 		if err != nil {
@@ -769,6 +774,7 @@ func (ps *permissionServer) lookupResources2(req *v1.LookupResourcesRequest, res
 				AtRevision:     atRevision.String(),
 				DepthRemaining: ps.config.MaximumAPIDepth,
 				TraversalBloom: bf,
+				SchemaHash:     []byte(schemaHash),
 			},
 			ResourceRelation: &core.RelationReference{
 				Namespace: req.ResourceObjectType,
@@ -827,12 +833,12 @@ func (ps *permissionServer) LookupSubjects(req *v1.LookupSubjectsRequest, resp v
 		return ps.rewriteError(ctx, status.Errorf(codes.Unimplemented, "concrete limit is not yet supported"))
 	}
 
-	atRevision, revisionReadAt, err := consistency.RevisionFromContext(ctx)
+	atRevision, schemaHash, revisionReadAt, err := consistency.RevisionFromContext(ctx)
 	if err != nil {
 		return ps.rewriteError(ctx, err)
 	}
 
-	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision)
+	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision, schemaHash)
 
 	caveatContext, err := GetCaveatContext(ctx, req.Context, ps.config.MaxCaveatContextSize)
 	if err != nil {
@@ -937,6 +943,7 @@ func (ps *permissionServer) LookupSubjects(req *v1.LookupSubjectsRequest, resp v
 				AtRevision:     atRevision.String(),
 				DepthRemaining: ps.config.MaximumAPIDepth,
 				TraversalBloom: bf,
+				SchemaHash:     []byte(schemaHash),
 			},
 			ResourceRelation: &core.RelationReference{
 				Namespace: req.Resource.ObjectType,
@@ -1172,6 +1179,8 @@ func (ps *permissionServer) ImportBulkRelationships(stream grpc.ClientStreamingS
 		DispatchCount: 1,
 	})
 
+	ps.metrics.RecordBulkImportedRelationships(numWritten)
+
 	return stream.SendAndClose(&v1.ImportBulkRelationshipsResponse{
 		NumLoaded: numWritten,
 	})
@@ -1186,34 +1195,38 @@ func (ps *permissionServer) ExportBulkRelationships(
 		return labelsForFilter(req.OptionalRelationshipFilter)
 	})
 
-	atRevision, _, err := consistency.RevisionFromContext(ctx)
+	atRevision, schemaHash, _, err := consistency.RevisionFromContext(ctx)
 	if err != nil {
 		return shared.RewriteErrorWithoutConfig(ctx, err)
 	}
 
-	return ExportBulk(ctx, datalayer.MustFromContext(ctx), uint64(ps.config.MaxBulkExportRelationshipsLimit), req, atRevision, resp.Send)
+	return ExportBulk(ctx, datalayer.MustFromContext(ctx), uint64(ps.config.MaxBulkExportRelationshipsLimit), req, atRevision, schemaHash, resp.Send)
 }
 
 // ExportBulk implements the ExportBulkRelationships API functionality. Given a datalayer.DataLayer, it will
 // export stream via the sender all relationships matched by the incoming request.
 // If no cursor is provided, it will fallback to the provided revision.
-func ExportBulk(ctx context.Context, dl datalayer.DataLayer, batchSize uint64, req *v1.ExportBulkRelationshipsRequest, fallbackRevision datastore.Revision, sender func(response *v1.ExportBulkRelationshipsResponse) error) error {
+func ExportBulk(ctx context.Context, dl datalayer.DataLayer, batchSize uint64, req *v1.ExportBulkRelationshipsRequest, fallbackRevision datastore.Revision, fallbackSchemaHash datalayer.SchemaHash, sender func(response *v1.ExportBulkRelationshipsResponse) error) error {
 	if req.OptionalLimit > 0 && uint64(req.OptionalLimit) > batchSize {
 		return shared.RewriteErrorWithoutConfig(ctx, NewExceedsMaximumLimitErr(uint64(req.OptionalLimit), batchSize))
 	}
 
 	atRevision := fallbackRevision
+	schemaHash := fallbackSchemaHash
 	var curNamespace string
 	var cur dsoptions.Cursor
 	if req.OptionalCursor != nil {
-		var err error
-		atRevision, curNamespace, cur, err = decodeCursor(dl, req.OptionalCursor)
+		dc, err := decodeBulkExportCursor(dl, req.OptionalCursor)
 		if err != nil {
 			return shared.RewriteErrorWithoutConfig(ctx, err)
 		}
+		atRevision = dc.revision
+		curNamespace = dc.namespace
+		cur = dc.cursor
+		schemaHash = dc.schemaHash
 	}
 
-	reader := dl.SnapshotReader(atRevision)
+	reader := dl.SnapshotReader(atRevision, schemaHash)
 
 	readerSchema, err := reader.ReadSchema(ctx)
 	if err != nil {

@@ -2,8 +2,10 @@ package testserver
 
 import (
 	"context"
+	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/middleware/consistency"
 	"github.com/authzed/spicedb/pkg/middleware/logging"
+	"github.com/authzed/spicedb/pkg/query"
 )
 
 // ServerConfig is configuration for the test server.
@@ -27,54 +30,29 @@ type ServerConfig struct {
 	StreamingAPITimeout                time.Duration
 	CaveatTypeSet                      *caveattypes.TypeSet
 	EnableExperimentalLookupResources3 bool
+	DataLayerOpts                      []datalayer.DataLayerOption
+
+	// MetricsRegistry, when non-nil, is the Prometheus registry the server's
+	// metrics are registered with, allowing tests to make assertions on them.
+	MetricsRegistry prometheus.Registerer
 }
 
 var DefaultTestServerConfig = ServerConfig{
-	MaxUpdatesPerWrite:                 1000,
-	MaxPreconditionsCount:              1000,
-	StreamingAPITimeout:                30 * time.Second,
-	MaxRelationshipContextSize:         25000,
 	EnableExperimentalLookupResources3: true,
 }
 
-type DatastoreInitFunc func(datastore.Datastore, *require.Assertions) (datastore.Datastore, datastore.Revision)
-
-// NewTestServer creates a new test server, using defaults for the config.
-func NewTestServer(require *require.Assertions,
-	revisionQuantization time.Duration,
-	gcWindow time.Duration,
-	schemaPrefixRequired bool,
-	dsInitFunc DatastoreInitFunc,
-) (*grpc.ClientConn, func(), datastore.Datastore, datastore.Revision) {
-	return NewTestServerWithConfig(require, revisionQuantization, gcWindow, schemaPrefixRequired,
-		DefaultTestServerConfig,
-		dsInitFunc)
-}
+type DatastoreInitFunc func(testing.TB, datastore.Datastore) (datastore.Datastore, datastore.Revision)
 
 // NewTestServerWithConfig creates as new test server with the specified config.
-func NewTestServerWithConfig(require *require.Assertions,
-	revisionQuantization time.Duration,
-	gcWindow time.Duration,
-	schemaPrefixRequired bool,
-	config ServerConfig,
-	dsInitFunc DatastoreInitFunc,
-) (*grpc.ClientConn, func(), datastore.Datastore, datastore.Revision) {
+func NewTestServerWithConfig(t testing.TB, revisionQuantization time.Duration, gcWindow time.Duration, schemaPrefixRequired bool, config ServerConfig, dsInitFunc DatastoreInitFunc) (*grpc.ClientConn, datastore.Datastore, datastore.Revision) {
 	emptyDS, err := memdb.NewMemdbDatastore(0, revisionQuantization, gcWindow)
-	require.NoError(err)
+	require.NoError(t, err)
 
-	return NewTestServerWithConfigAndDatastore(require, revisionQuantization, gcWindow, schemaPrefixRequired, config, emptyDS, dsInitFunc)
+	return NewTestServerWithConfigAndDatastore(t, schemaPrefixRequired, config, emptyDS, dsInitFunc)
 }
 
-func NewTestServerWithConfigAndDatastore(require *require.Assertions,
-	revisionQuantization time.Duration,
-	gcWindow time.Duration,
-	schemaPrefixRequired bool,
-	config ServerConfig,
-	emptyDS datastore.Datastore,
-	dsInitFunc DatastoreInitFunc,
-) (*grpc.ClientConn, func(), datastore.Datastore, datastore.Revision) {
-	ds, revision := dsInitFunc(emptyDS, require)
-	ctx, cancel := context.WithCancel(context.Background())
+func NewTestServerWithConfigAndDatastore(t testing.TB, schemaPrefixRequired bool, config ServerConfig, emptyDS datastore.Datastore, dsInitFunc DatastoreInitFunc) (*grpc.ClientConn, datastore.Datastore, datastore.Revision) {
+	ds, revision := dsInitFunc(t, emptyDS)
 	cts := caveattypes.TypeSetOrDefault(config.CaveatTypeSet)
 
 	lrver := ""
@@ -83,21 +61,32 @@ func NewTestServerWithConfigAndDatastore(require *require.Assertions,
 	}
 
 	params, err := graph.NewDefaultDispatcherParametersForTesting()
-	require.NoError(err)
+	require.NoError(t, err)
 
 	params.TypeSet = cts
+	queryPlanMetadata := query.NewQueryPlanMetadata()
+	params.QueryPlanMetadata = queryPlanMetadata
 
 	dispatcher, err := graph.NewLocalOnlyDispatcher(params)
-	require.NoError(err)
+	require.NoError(t, err)
 
-	srv, err := server.NewConfigWithOptionsAndDefaults(
+	metricsRegistry := config.MetricsRegistry
+	if metricsRegistry == nil {
+		metricsRegistry = prometheus.NewRegistry()
+	}
+
+	cfg := server.NewConfigWithOptionsAndDefaults(
 		server.WithDatastore(ds),
 		server.WithDispatcher(dispatcher),
-		server.WithDispatchMaxDepth(50),
+		server.WithOTel(*server.NewOTelConfigWithOptionsAndDefaults(
+			server.WithPrometheusRegistry(metricsRegistry),
+		)),
+		server.WithTelemetryEndpoint(""),
+		server.WithSilentlyDisableTelemetry(true),
+		server.WithQueryPlanMetadata(queryPlanMetadata),
 		server.WithMaximumPreconditionCount(config.MaxPreconditionsCount),
 		server.WithMaximumUpdatesPerWrite(config.MaxUpdatesPerWrite),
 		server.WithStreamingAPITimeout(config.StreamingAPITimeout),
-		server.WithMaxCaveatContextSize(4096),
 		server.WithMaxRelationshipContextSize(config.MaxRelationshipContextSize),
 		server.WithExperimentalLookupResourcesVersion(lrver),
 		server.WithGRPCServer(util.GRPCServerConfig{
@@ -121,7 +110,7 @@ func NewTestServerWithConfigAndDatastore(require *require.Assertions,
 					},
 					{
 						Name:       "datastore",
-						Middleware: datalayer.UnaryServerInterceptor(datalayer.NewDataLayer(ds)),
+						Middleware: datalayer.UnaryServerInterceptor(datalayer.NewDataLayer(ds, config.DataLayerOpts...)),
 					},
 					{
 						Name:       "consistency",
@@ -144,7 +133,7 @@ func NewTestServerWithConfigAndDatastore(require *require.Assertions,
 					},
 					{
 						Name:       "datastore",
-						Middleware: datalayer.StreamServerInterceptor(datalayer.NewDataLayer(ds)),
+						Middleware: datalayer.StreamServerInterceptor(datalayer.NewDataLayer(ds, config.DataLayerOpts...)),
 					},
 					{
 						Name:       "consistency",
@@ -157,21 +146,22 @@ func NewTestServerWithConfigAndDatastore(require *require.Assertions,
 				},
 			},
 		}),
-	).Complete(ctx)
-	require.NoError(err)
+	)
+	srv, err := cfg.Complete(t.Context())
+	require.NoError(t, err)
 
+	done := make(chan bool, 1)
 	go func() {
-		require.NoError(srv.Run(ctx))
+		_ = srv.Run(t.Context())
+		done <- true
 	}()
 
-	// TODO: move off of WithBlock
-	conn, err := srv.GRPCDialContext(ctx, grpc.WithBlock()) // nolint: staticcheck
-	require.NoError(err)
+	conn, err := srv.NewClient()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		conn.Close()
+		<-done
+	})
 
-	return conn, func() {
-		if conn != nil {
-			require.NoError(conn.Close())
-		}
-		cancel()
-	}, ds, revision
+	return conn, ds, revision
 }

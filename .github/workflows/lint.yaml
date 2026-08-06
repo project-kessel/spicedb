@@ -22,7 +22,7 @@ jobs:
     runs-on: "ubuntu-latest"
     if: false
     steps:
-      - uses: "actions/checkout@v6"
+      - uses: "actions/checkout@v7"
       - uses: "authzed/actions/setup-go@main"
       - name: "Check Licenses"
         uses: "authzed/actions/go-license-check@11667c9b2e8b3649ad2af4d788e57d18f8e8eaf1" # main
@@ -33,11 +33,11 @@ jobs:
     runs-on: "ubuntu-latest"
     if: false
     steps:
-      - uses: "actions/checkout@v6"
+      - uses: "actions/checkout@v7"
       - uses: "authzed/actions/setup-go@main"
       - name: "Generate docs"
         run: "go run mage.go gen:docs"
-      - uses: "chainguard-dev/actions/nodiff@71714a76c3df10b544595a2294c16649dc3472e5" # main
+      - uses: "chainguard-dev/actions/nodiff@f0be69916b439d0fcced2451b23d0f27cd46d545" # main
         with:
           path: ""
           fixup-command: "mage gen:docs"
@@ -46,11 +46,11 @@ jobs:
     runs-on: "ubuntu-latest"
     if: false
     steps:
-      - uses: "actions/checkout@v6"
+      - uses: "actions/checkout@v7"
       - uses: "authzed/actions/setup-go@main"
       - name: "Lint Everything"
         run: "go run mage.go lint:all"
-      - uses: "chainguard-dev/actions/nodiff@71714a76c3df10b544595a2294c16649dc3472e5" # main
+      - uses: "chainguard-dev/actions/nodiff@f0be69916b439d0fcced2451b23d0f27cd46d545" # main
         with:
           path: ""
           fixup-command: "go run mage.go lint:all"

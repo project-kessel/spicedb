@@ -45,10 +45,10 @@ type bulkChecker struct {
 
 const maxBulkCheckCount = 10000
 
-func (bc *bulkChecker) checkBulkPermissions(ctx context.Context, req *v1.CheckBulkPermissionsRequest) (*v1.CheckBulkPermissionsResponse, error) {
+func (bc *bulkChecker) checkBulkPermissions(ctx context.Context, req *v1.CheckBulkPermissionsRequest, metrics *Metrics) (*v1.CheckBulkPermissionsResponse, error) {
 	telemetry.LogicalChecks.Add(float64(len(req.Items)))
 
-	atRevision, checkedAt, err := consistency.RevisionFromContext(ctx)
+	atRevision, schemaHash, checkedAt, err := consistency.RevisionFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -77,6 +77,7 @@ func (bc *bulkChecker) checkBulkPermissions(ctx context.Context, req *v1.CheckBu
 	// the dispatching system already internally supports this kind of batching for performance.
 	groupedItems, err := groupItems(ctx, groupingParameters{
 		atRevision:           atRevision,
+		schemaHash:           schemaHash,
 		maxCaveatContextSize: bc.maxCaveatContextSize,
 		maximumAPIDepth:      bc.maxAPIDepth,
 		withTracing:          req.WithTracing,
@@ -163,7 +164,7 @@ func (bc *bulkChecker) checkBulkPermissions(ctx context.Context, req *v1.CheckBu
 		bulkResponseMutex.Lock()
 		defer bulkResponseMutex.Unlock()
 
-		dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision)
+		dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision, schemaHash)
 
 		sr, err := dl.ReadSchema(ctx)
 		if err != nil {
@@ -185,6 +186,9 @@ func (bc *bulkChecker) checkBulkPermissions(ctx context.Context, req *v1.CheckBu
 				// Find the debug info that matches the resource ID.
 				var debugInfo *dispatchv1.DebugInformation
 				for _, di := range debugInfos {
+					if di.Check == nil || di.Check.Request == nil {
+						continue
+					}
 					if slices.Contains(di.Check.Request.ResourceIds, resourceID) {
 						debugInfo = di
 						break
@@ -235,7 +239,7 @@ func (bc *bulkChecker) checkBulkPermissions(ctx context.Context, req *v1.CheckBu
 
 			if err := addPair(&v1.CheckBulkPermissionsPair{
 				Request:  reqItem,
-				Response: pairItemFromCheckResult(results[resourceID], debugTrace),
+				Response: pairItemFromCheckResult(results[resourceID], debugTrace, metrics),
 			}); err != nil {
 				return err
 			}
@@ -251,7 +255,7 @@ func (bc *bulkChecker) checkBulkPermissions(ctx context.Context, req *v1.CheckBu
 			tr.Add(func(ctx context.Context) error {
 				startTime := time.Now()
 
-				dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision)
+				dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision, schemaHash)
 
 				sr, err := dl.ReadSchema(ctx)
 				if err != nil {

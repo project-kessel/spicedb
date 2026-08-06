@@ -19,7 +19,6 @@ import (
 	grpclog "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/logging"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/selector"
 	"github.com/jzelinskie/cobrautil/v2"
-	"github.com/jzelinskie/cobrautil/v2/cobraotel"
 	"github.com/jzelinskie/cobrautil/v2/cobraproclimits"
 	"github.com/jzelinskie/cobrautil/v2/cobrazerolog"
 	"github.com/prometheus/client_golang/prometheus"
@@ -66,8 +65,8 @@ func ServeExample(programName string) string {
 	)
 }
 
-// DefaultPreRunE sets up viper, zerolog, and OpenTelemetry flag handling for a
-// command.
+// DefaultPreRunE sets up viper dotenv loading, zerolog, memory and process
+// limits, release version checks, and runtime instrumentation for a command.
 func DefaultPreRunE(programName string) cobrautil.CobraRunFunc {
 	return cobrautil.CommandStack(
 		cobrautil.SyncViperDotEnvPreRunE(programName, "spicedb.env", zerologr.New(&logging.Logger)),
@@ -82,9 +81,6 @@ func DefaultPreRunE(programName string) cobrautil.CobraRunFunc {
 		// and zero under the same load and 0.9
 		cobraproclimits.SetMemLimitRunE(memlimit.WithRatio(0.9)),
 		cobraproclimits.SetProcLimitRunE(),
-		cobraotel.New("spicedb",
-			cobraotel.WithLogger(zerologr.New(&logging.Logger)),
-		).RunE(),
 		releases.CheckAndLogRunE(),
 		runtime.RunE(),
 	)
@@ -95,7 +91,15 @@ func DefaultPreRunE(programName string) cobrautil.CobraRunFunc {
 func MetricsHandler(telemetryRegistry *prometheus.Registry, c *Config) http.Handler {
 	mux := http.NewServeMux()
 
-	mux.Handle("/metrics", promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{
+	// TODO(miparnisari): use a custom registry instead of the default one!
+	gatherer := prometheus.DefaultGatherer
+	if c != nil {
+		if serverGatherer, ok := c.OTel.PrometheusRegistry.(prometheus.Gatherer); ok {
+			gatherer = prometheus.Gatherers{prometheus.DefaultGatherer, serverGatherer}
+		}
+	}
+
+	mux.Handle("/metrics", promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{
 		// Opt into OpenMetrics e.g. to support exemplars.
 		EnableOpenMetrics: true,
 	}))
@@ -176,11 +180,10 @@ const (
 	DefaultMiddlewareServerVersion    = "serverversion"
 	DefaultMiddlewareMemoryProtection = "memoryprotection"
 
-	DefaultInternalMiddlewareDispatch          = "dispatch"
-	DefaultInternalMiddlewareDatastore         = "datastore"
-	DefaultInternalMiddlewareDatastoreCounting = "datastore-counting"
-	DefaultInternalMiddlewareConsistency       = "consistency"
-	DefaultInternalMiddlewareServerSpecific    = "servicespecific"
+	DefaultInternalMiddlewareDispatch       = "dispatch"
+	DefaultInternalMiddlewareDatastore      = "datastore"
+	DefaultInternalMiddlewareConsistency    = "consistency"
+	DefaultInternalMiddlewareServerSpecific = "servicespecific"
 )
 
 //go:generate go run github.com/ecordell/optgen -output zz_generated.middlewareoption.go . MiddlewareOption
@@ -225,8 +228,8 @@ func (m MiddlewareOption) WithDatastoreMiddleware(middleware Middleware) Middlew
 	return m
 }
 
-func (m MiddlewareOption) WithDatastore(ds datastore.Datastore) MiddlewareOption {
-	dl := datalayer.NewDataLayer(ds)
+func (m MiddlewareOption) WithDatastore(ds datastore.Datastore, dlOpts ...datalayer.DataLayerOption) MiddlewareOption {
+	dl := datalayer.NewDataLayer(ds, dlOpts...)
 	unary := NewUnaryMiddleware().
 		WithName(DefaultInternalMiddlewareDatastore).
 		WithInternal(true).
@@ -338,12 +341,6 @@ func DefaultUnaryMiddleware(opts MiddlewareOption) (*MiddlewareChain[grpc.UnaryS
 		*opts.unaryDatastoreMiddleware,
 
 		NewUnaryMiddleware().
-			WithName(DefaultInternalMiddlewareDatastoreCounting).
-			WithInternal(true).
-			WithInterceptor(datalayer.UnaryCountingInterceptor(nil)).
-			Done(),
-
-		NewUnaryMiddleware().
 			WithName(DefaultInternalMiddlewareConsistency).
 			WithInterceptor(consistencymw.UnaryServerInterceptor(opts.MiddlewareServiceLabel, opts.MismatchingZedTokenOption)).
 			Done(),
@@ -417,12 +414,6 @@ func DefaultStreamingMiddleware(opts MiddlewareOption) (*MiddlewareChain[grpc.St
 		*opts.streamDatastoreMiddleware,
 
 		NewStreamMiddleware().
-			WithName(DefaultInternalMiddlewareDatastoreCounting).
-			WithInternal(true).
-			WithInterceptor(datalayer.StreamCountingInterceptor(nil)).
-			Done(),
-
-		NewStreamMiddleware().
 			WithName(DefaultInternalMiddlewareConsistency).
 			WithInterceptor(consistencymw.StreamServerInterceptor(opts.MiddlewareServiceLabel, opts.MismatchingZedTokenOption)).
 			Done(),
@@ -450,10 +441,10 @@ func determineEventsToLog(opts MiddlewareOption) grpclog.Option {
 }
 
 // DefaultDispatchMiddleware generates the default middleware chain used for the internal dispatch SpiceDB gRPC API
-func DefaultDispatchMiddleware(logger zerolog.Logger, authFunc grpcauth.AuthFunc, ds datastore.Datastore, disableGRPCLatencyHistogram bool, memoryUsageProvider memoryprotection.MemoryUsageProvider) ([]grpc.UnaryServerInterceptor, []grpc.StreamServerInterceptor) {
+func DefaultDispatchMiddleware(logger zerolog.Logger, authFunc grpcauth.AuthFunc, ds datastore.Datastore, disableGRPCLatencyHistogram bool, memoryUsageProvider memoryprotection.MemoryUsageProvider, dlOpts ...datalayer.DataLayerOption) ([]grpc.UnaryServerInterceptor, []grpc.StreamServerInterceptor) {
 	grpcMetricsUnaryInterceptor, grpcMetricsStreamingInterceptor := GRPCMetrics(disableGRPCLatencyHistogram)
 	dispatchMemoryProtection := memoryprotection.New(memoryUsageProvider, "dispatch-middleware")
-	dl := datalayer.NewDataLayer(ds)
+	dl := datalayer.NewDataLayer(ds, dlOpts...)
 
 	return []grpc.UnaryServerInterceptor{
 			requestid.UnaryServerInterceptor(requestid.GenerateIfMissing(true)),
@@ -505,7 +496,8 @@ func createServerMetrics(disableHistogram bool) (grpc.UnaryServerInterceptor, gr
 				NativeHistogramBucketFactor:    1.1, // At most 10% increase from bucket to bucket.
 				NativeHistogramMaxBucketNumber: 100,
 				Buckets: []float64{
-					.001, .003, .006, .010, .018, .024, .032, .042, .056, .075, .100, .178, .316, .562, 1, 5,
+					// grpc_server_handling_seconds, same as spicedb_datastore_query_latency
+					.0005, .001, .002, .005, .01, .02, .05, .1, .2, .5, 1, 5, 30,
 				},
 			}),
 		))

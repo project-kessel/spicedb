@@ -21,7 +21,7 @@ func RelationshipCounterOverExpiredTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(t, err)
 
-	ds, _ := testfixtures.StandardDatastoreWithData(rawDS, require.New(t))
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
 
 	// Register the filter.
 	_, err = ds.ReadWriteTx(t.Context(), func(ctx context.Context, tx datastore.ReadWriteTransaction) error {
@@ -72,7 +72,7 @@ func RegisterRelationshipCountersInParallelTest(t *testing.T, tester DatastoreTe
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(t, err)
 
-	ds, _ := testfixtures.StandardDatastoreWithData(rawDS, require.New(t))
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
 
 	// Run multiple registrations of the counter in parallel and ensure only
 	// one succeeds.
@@ -115,7 +115,7 @@ func RelationshipCountersTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(t, err)
 
-	ds, rev := testfixtures.StandardDatastoreWithData(rawDS, require.New(t))
+	ds, rev := testfixtures.StandardDatastoreWithData(t, rawDS)
 
 	// Try calling count without the filter being registered.
 	reader := ds.SnapshotReader(rev)
@@ -217,7 +217,7 @@ func RelationshipCountersTest(t *testing.T, tester DatastoreTester) {
 func RelationshipCountersWithOddFilterTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(t, err)
-	ds, _ := testfixtures.StandardDatastoreWithData(rawDS, require.New(t))
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
 
 	// Register the filter.
 	updatedRev, err := ds.ReadWriteTx(t.Context(), func(ctx context.Context, tx datastore.ReadWriteTransaction) error {
@@ -260,7 +260,7 @@ func UpdateRelationshipCounterTest(t *testing.T, tester DatastoreTester) {
 	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
 	require.NoError(t, err)
 
-	ds, rev := testfixtures.StandardDatastoreWithData(rawDS, require.New(t))
+	ds, rev := testfixtures.StandardDatastoreWithData(t, rawDS)
 
 	reader := ds.SnapshotReader(rev)
 	filters, err := reader.LookupCounters(t.Context())
@@ -333,4 +333,63 @@ func UpdateRelationshipCounterTest(t *testing.T, tester DatastoreTester) {
 	filters, err = reader.LookupCounters(t.Context())
 	require.NoError(t, err)
 	require.Len(t, filters, 2)
+}
+
+// CounterCaseSensitivityTest verifies that relationship counter names are treated as
+// case-sensitive: counters whose names differ only in letter case are distinct. Counter
+// names are not constrained to lowercase by the API (unlike definition, relation, and caveat
+// names), so this is a reachable regression test for datastores whose default collation is
+// case-insensitive (e.g. MySQL's utf8mb4_0900_ai_ci), which would otherwise collide
+// "casecounter" with "CaseCounter".
+func CounterCaseSensitivityTest(t *testing.T, tester DatastoreTester) {
+	rawDS, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
+	require.NoError(t, err)
+
+	ds, _ := testfixtures.StandardDatastoreWithData(t, rawDS)
+
+	filter := &core.RelationshipFilter{ResourceType: testfixtures.DocumentNS.Name}
+
+	// Register two counters whose names differ only in letter case. Both must be accepted as
+	// distinct; on a case-insensitive store the second registration would collide with the
+	// first on the (name) unique constraint.
+	registeredRev, err := ds.ReadWriteTx(t.Context(), func(ctx context.Context, tx datastore.ReadWriteTransaction) error {
+		if err := tx.RegisterCounter(ctx, "casecounter", filter); err != nil {
+			return err
+		}
+		return tx.RegisterCounter(ctx, "CaseCounter", filter)
+	})
+	require.NoError(t, err)
+
+	// Both distinct counters must be present.
+	reader := ds.SnapshotReader(registeredRev)
+	counters, err := reader.LookupCounters(t.Context())
+	require.NoError(t, err)
+
+	names := make([]string, 0, len(counters))
+	for _, c := range counters {
+		names = append(names, c.Name)
+	}
+	require.ElementsMatch(t, []string{"casecounter", "CaseCounter"}, names)
+
+	// Storing a value against one name must not affect the other.
+	updatedRev, err := ds.ReadWriteTx(t.Context(), func(ctx context.Context, tx datastore.ReadWriteTransaction) error {
+		return tx.StoreCounterValue(ctx, "casecounter", 1234, registeredRev)
+	})
+	require.NoError(t, err)
+
+	reader = ds.SnapshotReader(updatedRev)
+	counters, err = reader.LookupCounters(t.Context())
+	require.NoError(t, err)
+	require.Len(t, counters, 2)
+
+	for _, c := range counters {
+		switch c.Name {
+		case "casecounter":
+			require.Equal(t, 1234, c.Count)
+		case "CaseCounter":
+			require.Equal(t, 0, c.Count)
+		default:
+			require.Failf(t, "unexpected counter name", "got %q", c.Name)
+		}
+	}
 }

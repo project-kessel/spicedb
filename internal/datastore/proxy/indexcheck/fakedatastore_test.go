@@ -14,8 +14,13 @@ import (
 )
 
 type fakeDatastore struct {
-	revision    datastore.Revision
+	revision datastore.Revision
+	// indexesUsed is reported as the expected indexes for the query shape.
 	indexesUsed []string
+	// parsedIndexes is what ParseExplain reports as actually used by the query. If empty, it defaults to []string{"testindex"}.
+	parsedIndexes []string
+	// shapeServingIndexes is reported as the set of indexes that serve some query shape.
+	shapeServingIndexes []string
 }
 
 func (f fakeDatastore) MetricsID() (string, error) {
@@ -28,8 +33,10 @@ func (f fakeDatastore) UniqueID(_ context.Context) (string, error) {
 
 func (f fakeDatastore) SnapshotReader(revision datastore.Revision) datastore.Reader {
 	return fakeSnapshotReader{
-		revision:    revision,
-		indexesUsed: f.indexesUsed,
+		revision:            revision,
+		indexesUsed:         f.indexesUsed,
+		parsedIndexes:       f.parsedIndexes,
+		shapeServingIndexes: f.shapeServingIndexes,
 	}
 }
 
@@ -39,12 +46,12 @@ func (f fakeDatastore) ReadWriteTx(ctx context.Context, fn datastore.TxUserFunc,
 	})
 }
 
-func (f fakeDatastore) OptimizedRevision(_ context.Context) (datastore.Revision, error) {
-	return nil, nil
+func (f fakeDatastore) OptimizedRevision(_ context.Context) (datastore.RevisionWithSchemaHash, error) {
+	return datastore.RevisionWithSchemaHash{}, nil
 }
 
-func (f fakeDatastore) HeadRevision(_ context.Context) (datastore.Revision, error) {
-	return nil, nil
+func (f fakeDatastore) HeadRevision(_ context.Context) (datastore.RevisionWithSchemaHash, error) {
+	return datastore.RevisionWithSchemaHash{}, nil
 }
 
 func (f fakeDatastore) CheckRevision(_ context.Context, rev datastore.Revision) error {
@@ -93,8 +100,12 @@ func (f fakeDatastore) BuildExplainQuery(sql string, args []any) (string, []any,
 
 // ParseExplain parses the output of an EXPLAIN statement.
 func (f fakeDatastore) ParseExplain(explain string) (datastore.ParsedExplain, error) {
+	parsed := f.parsedIndexes
+	if len(parsed) == 0 {
+		parsed = []string{"testindex"}
+	}
 	return datastore.ParsedExplain{
-		IndexesUsed: []string{"testindex"},
+		IndexesUsed: parsed,
 	}, nil
 }
 
@@ -103,8 +114,10 @@ func (f fakeDatastore) PreExplainStatements() []string {
 }
 
 type fakeSnapshotReader struct {
-	revision    datastore.Revision
-	indexesUsed []string
+	revision            datastore.Revision
+	indexesUsed         []string
+	parsedIndexes       []string
+	shapeServingIndexes []string
 }
 
 func (fsr fakeSnapshotReader) LegacyLookupNamespacesWithNames(_ context.Context, nsNames []string) ([]datastore.RevisionedDefinition[*corev1.NamespaceDefinition], error) {
@@ -155,11 +168,16 @@ func (fakeSnapshotReader) LookupCounters(ctx context.Context) ([]datastore.Relat
 	return nil, fmt.Errorf("not implemented")
 }
 
+func (fakeSnapshotReader) ReadStoredSchema(_ context.Context) (*datastore.ReadOnlyStoredSchema, error) {
+	return nil, nil
+}
+
 func fakeIterator(fsr fakeSnapshotReader, explainCallback options.SQLExplainCallbackForTest) datastore.RelationshipIterator {
 	return func(yield func(tuple.Relationship, error) bool) {
 		if explainCallback != nil {
 			if err := explainCallback(context.Background(), "SOME QUERY", nil, queryshape.CheckPermissionSelectDirectSubjects, "EXPLAIN IS FAKE", options.SQLIndexInformation{
-				ExpectedIndexNames: fsr.indexesUsed,
+				ExpectedIndexNames:     fsr.indexesUsed,
+				ShapeServingIndexNames: fsr.shapeServingIndexes,
 			}); err != nil {
 				yield(tuple.Relationship{}, err)
 				return
@@ -217,4 +235,8 @@ func (f *fakeRWT) DeleteRelationships(ctx context.Context, filter *v1.Relationsh
 
 func (f *fakeRWT) BulkLoad(ctx context.Context, iter datastore.BulkWriteRelationshipSource) (uint64, error) {
 	return 0, nil
+}
+
+func (f *fakeRWT) WriteStoredSchema(ctx context.Context, schema *corev1.StoredSchema) error {
+	return nil
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/authzed/spicedb/internal/testfixtures"
 	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
+	"github.com/authzed/spicedb/pkg/genutil/slicez"
 	corev1 "github.com/authzed/spicedb/pkg/proto/core/v1"
 	"github.com/authzed/spicedb/pkg/schema/v2"
 	"github.com/authzed/spicedb/pkg/tuple"
@@ -21,7 +22,7 @@ func TestCheck(t *testing.T) {
 	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
 
-	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require)
+	ds, revision := testfixtures.StandardDatastoreWithData(t, rawDS)
 
 	// This stands in for the step of fetching and caching the schema locally.
 	objectDefs := []*corev1.NamespaceDefinition{testfixtures.UserNS.CloneVT(), testfixtures.FolderNS.CloneVT(), testfixtures.DocumentNS.CloneVT()}
@@ -40,7 +41,7 @@ func TestCheck(t *testing.T) {
 	it := NewIntersectionIterator(vande, edit)
 
 	ctx := NewLocalContext(t.Context(),
-		WithRevisionedReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
+		WithRevisionedReader(datalayer.NewDataLayer(ds).SnapshotReader(revision, datalayer.NoSchemaHashForTesting)))
 
 	_, err = ctx.Check(it, NewObject("document", "specialplan"), NewObject("user", "multiroleguy").WithEllipses())
 	require.NoError(err)
@@ -51,7 +52,7 @@ func TestBaseIterSubjects(t *testing.T) {
 	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
 
-	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require)
+	ds, revision := testfixtures.StandardDatastoreWithData(t, rawDS)
 
 	// This stands in for the step of fetching and caching the schema locally.
 	objectDefs := []*corev1.NamespaceDefinition{testfixtures.UserNS.CloneVT(), testfixtures.FolderNS.CloneVT(), testfixtures.DocumentNS.CloneVT()}
@@ -63,7 +64,7 @@ func TestBaseIterSubjects(t *testing.T) {
 	vande := NewDatastoreIterator(vandeRel.BaseRelations()[0])
 
 	ctx := NewLocalContext(t.Context(),
-		WithRevisionedReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
+		WithRevisionedReader(datalayer.NewDataLayer(ds).SnapshotReader(revision, datalayer.NoSchemaHashForTesting)))
 
 	relSeq, err := ctx.IterSubjects(vande, NewObject("document", "specialplan"), NoObjectFilter())
 	require.NoError(err)
@@ -77,7 +78,7 @@ func TestCheckArrow(t *testing.T) {
 	rawDS, err := dsfortesting.NewMemDBDatastoreForTesting(t, 0, 0, memdb.DisableGC)
 	require.NoError(err)
 
-	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require)
+	ds, revision := testfixtures.StandardDatastoreWithData(t, rawDS)
 
 	// This stands in for the step of fetching and caching the schema locally.
 	objectDefs := []*corev1.NamespaceDefinition{testfixtures.UserNS.CloneVT(), testfixtures.FolderNS.CloneVT(), testfixtures.DocumentNS.CloneVT()}
@@ -94,7 +95,7 @@ func TestCheckArrow(t *testing.T) {
 	it := NewArrowIterator(folders, view)
 
 	ctx := NewLocalContext(t.Context(),
-		WithRevisionedReader(datalayer.NewDataLayer(ds).SnapshotReader(revision)))
+		WithRevisionedReader(datalayer.NewDataLayer(ds).SnapshotReader(revision, datalayer.NoSchemaHashForTesting)))
 
 	_, err = ctx.Check(it, NewObject("document", "companyplan"), NewObject("user", "legal").WithEllipses())
 	require.NoError(err)
@@ -133,7 +134,7 @@ func TestCyclicLookupResources(t *testing.T) {
 		tuple.MustParse("folder:a#parent@folder:b"),
 		tuple.MustParse("folder:b#parent@folder:a"),
 	}
-	ds, revision := testfixtures.DatastoreFromSchemaAndTestRelationships(rawDS, cyclicSchema, relationships, require)
+	ds, revision := testfixtures.DatastoreFromSchemaAndTestRelationships(t, rawDS, cyclicSchema, relationships)
 
 	dsSchema, err := ReadSchema(ctx, ds, revision)
 	require.NoError(err)
@@ -146,7 +147,7 @@ func TestCyclicLookupResources(t *testing.T) {
 	subject := NewObject("user", "tom").WithEllipses()
 	filterResourceType := NoObjectFilter()
 
-	reader := NewQueryDatastoreReader(datalayer.NewDataLayer(ds).SnapshotReader(revision))
+	reader := NewQueryDatastoreReader(datalayer.NewDataLayer(ds).SnapshotReader(revision, datalayer.NoSchemaHashForTesting))
 
 	opts := []ContextOption{
 		WithReader(reader),
@@ -179,7 +180,7 @@ func TestCyclicLookupSubjects(t *testing.T) {
 		tuple.MustParse("folder:b#parent@folder:a"),
 		tuple.MustParse("resource:foo#parent@folder:a"),
 	}
-	ds, revision := testfixtures.DatastoreFromSchemaAndTestRelationships(rawDS, cyclicSchema, relationships, require)
+	ds, revision := testfixtures.DatastoreFromSchemaAndTestRelationships(t, rawDS, cyclicSchema, relationships)
 
 	dsSchema, err := ReadSchema(ctx, ds, revision)
 	require.NoError(err)
@@ -192,7 +193,7 @@ func TestCyclicLookupSubjects(t *testing.T) {
 	object := NewObject("resource", "foo")
 	filterSubjectType := NewType("user")
 
-	reader := NewQueryDatastoreReader(datalayer.NewDataLayer(ds).SnapshotReader(revision))
+	reader := NewQueryDatastoreReader(datalayer.NewDataLayer(ds).SnapshotReader(revision, datalayer.NoSchemaHashForTesting))
 
 	opts := []ContextOption{
 		WithReader(reader),
@@ -228,7 +229,7 @@ func TestCyclicCheck(t *testing.T) {
 		tuple.MustParse("folder:b#parent@folder:a"),
 		tuple.MustParse("resource:foo#parent@folder:a"),
 	}
-	ds, revision := testfixtures.DatastoreFromSchemaAndTestRelationships(rawDS, cyclicSchema, relationships, require)
+	ds, revision := testfixtures.DatastoreFromSchemaAndTestRelationships(t, rawDS, cyclicSchema, relationships)
 
 	dsSchema, err := ReadSchema(ctx, ds, revision)
 	require.NoError(err)
@@ -241,7 +242,7 @@ func TestCyclicCheck(t *testing.T) {
 	object := NewObject("resource", "foo")
 	subject := NewObject("user", "tom").WithEllipses()
 
-	reader := NewQueryDatastoreReader(datalayer.NewDataLayer(ds).SnapshotReader(revision))
+	reader := NewQueryDatastoreReader(datalayer.NewDataLayer(ds).SnapshotReader(revision, datalayer.NoSchemaHashForTesting))
 
 	opts := []ContextOption{
 		WithReader(reader),
@@ -256,28 +257,40 @@ func TestCyclicCheck(t *testing.T) {
 
 // ReadSchema reads all namespace and caveat definitions from the datastore at
 // the given revision and returns the compiled schema.
+// NOTE: This is a duplicate of the logic in the benchmark package. Find a common
+// place to put them and dedupe
+// TODO: It seems like there ought to be a better way to construct this schema object
+// after reading from the datastore.
 func ReadSchema(ctx context.Context, ds datastore.Datastore, rev datastore.Revision) (*schema.Schema, error) {
-	reader := ds.SnapshotReader(rev)
+	dl := datalayer.NewDataLayer(ds)
 
-	nsDefs, err := reader.LegacyListAllNamespaces(ctx)
+	revision, hash, err := dl.HeadRevision(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	caveatDefs, err := reader.LegacyListAllCaveats(ctx)
+	reader := dl.SnapshotReader(revision, hash)
+	schemaReader, err := reader.ReadSchema(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	objectDefs := make([]*corev1.NamespaceDefinition, len(nsDefs))
-	for i, ns := range nsDefs {
-		objectDefs[i] = ns.Definition
+	caveats, err := schemaReader.ListAllCaveatDefinitions(ctx)
+	if err != nil {
+		return nil, err
 	}
 
-	caveatProtos := make([]*corev1.CaveatDefinition, len(caveatDefs))
-	for i, c := range caveatDefs {
-		caveatProtos[i] = c.Definition
+	defs, err := schemaReader.ListAllTypeDefinitions(ctx)
+	if err != nil {
+		return nil, err
 	}
 
-	return schema.BuildSchemaFromDefinitions(objectDefs, caveatProtos)
+	return schema.BuildSchemaFromDefinitions(
+		slicez.Map(defs, func(def datastore.RevisionedTypeDefinition) *corev1.NamespaceDefinition {
+			return def.Definition
+		}),
+		slicez.Map(caveats, func(caveat datastore.RevisionedCaveat) *corev1.CaveatDefinition {
+			return caveat.Definition
+		}),
+	)
 }

@@ -144,6 +144,13 @@ func newCRDBDatastore(ctx context.Context, url string, options ...Option) (datas
 		config.gcWindow = time.Duration(clusterTTLNanos) * time.Nanosecond
 	}
 
+	// If watch is enabled, ensure the relationship tables suppress row-level TTL
+	// deletes from changefeeds, so that the Watch API does not emit deletions
+	// performed by CockroachDB's TTL job for expired relationships.
+	if !config.watchDisabled {
+		ensureTTLChangefeedReplicationDisabled(initCtx, initPool, version)
+	}
+
 	keySetInit := newKeySet
 	var keyer overlapKeyer
 	switch config.overlapStrategy {
@@ -199,6 +206,7 @@ func newCRDBDatastore(ctx context.Context, url string, options ...Option) (datas
 		schema:                       *schema.Schema(config.columnOptimizationOption, config.withIntegrity, false),
 	}
 	ds.SetNowFunc(ds.headRevisionInternal)
+	ds.SetNowOnlyFunc(ds.headRevisionInternalNoHash)
 
 	// this ctx and cancel is tied to the lifetime of the datastore
 	ds.ctx, ds.cancel = context.WithCancel(context.Background())
@@ -345,29 +353,22 @@ func (cds *crdbDatastore) ReadWriteTx(
 			reader,
 			tx,
 			0,
-			false,
+		}
+
+		if config.SchemaHashPrecondition != "" {
+			if err := assertSchemaHash(ctx, tx, config.SchemaHashPrecondition); err != nil {
+				return err
+			}
 		}
 
 		if err := f(ctx, rwt); err != nil {
 			return err
 		}
 
-		// A transaction metadata entry is required if either:
-		// 1) len(metadata) > 0, which requires writing the metadata provided
-		// 2) metadata is required to mark the transaction as not matching
-		//    a deletion of expired relationships.
-		//
-		//    A transaction is marked as such IF and only IF the operations in the transaction
-		//    consist solely of deletions, as in that scenario, we cannot be certain in the Watch
-		//    changefeed that the transaction is not a deletion of expired relationships performed
-		//    by CRDB itself. This is also only necessary if both expiration and watch are enabled.
+		// If the user supplied transaction metadata, write it to the metadata
+		// table so the Watch API can attach it to the revision's changes.
 		metadata := config.Metadata.AsMap()
-		requiresMetadata := len(metadata) > 0 || (cds.watchEnabled && (config.IncludesExpiredAt || !rwt.hasNonExpiredDeletionChange))
-		if requiresMetadata {
-			// Mark the transaction as coming from SpiceDB. See the comment in watch.go
-			// for why this is necessary.
-			metadata[spicedbTransactionKey] = true
-
+		if len(metadata) > 0 {
 			expiresAt := time.Now().Add(cds.gcWindow).Add(1 * time.Minute)
 			insertTransactionMetadata := psql.Insert(schema.TableTransactionMetadata).
 				Columns(schema.ColExpiresAt, schema.ColMetadata).
@@ -490,20 +491,57 @@ func (cds *crdbDatastore) Close() error {
 	return errors.Join(errs...)
 }
 
-func (cds *crdbDatastore) HeadRevision(ctx context.Context) (datastore.Revision, error) {
-	return cds.headRevisionInternal(ctx)
-}
-
-func (cds *crdbDatastore) headRevisionInternal(ctx context.Context) (datastore.Revision, error) {
-	var hlcNow datastore.Revision
-
-	var fnErr error
-	hlcNow, fnErr = readCRDBNow(ctx, cds.readPool)
-	if fnErr != nil {
-		return datastore.NoRevision, fmt.Errorf(errRevision, fnErr)
+func (cds *crdbDatastore) HeadRevision(ctx context.Context) (datastore.RevisionWithSchemaHash, error) {
+	rev, schemaHash, err := cds.headRevisionWithSchemaHash(ctx)
+	if err != nil {
+		return datastore.RevisionWithSchemaHash{}, err
 	}
 
-	return hlcNow, fnErr
+	return datastore.RevisionWithSchemaHash{Revision: rev, SchemaHash: schemaHash}, nil
+}
+
+func (cds *crdbDatastore) headRevisionInternal(ctx context.Context) (datastore.Revision, string, error) {
+	return cds.headRevisionWithSchemaHash(ctx)
+}
+
+func (cds *crdbDatastore) headRevisionInternalNoHash(ctx context.Context) (datastore.Revision, error) {
+	ctx, span := tracer.Start(ctx, "headRevisionInternalNoHash")
+	defer span.End()
+
+	var hlcNow decimal.Decimal
+	if err := cds.readPool.QueryRowFunc(ctx, func(ctx context.Context, row pgx.Row) error {
+		return row.Scan(&hlcNow)
+	}, querySelectNow); err != nil {
+		return datastore.NoRevision, fmt.Errorf(errRevision, err)
+	}
+
+	rev, err := revisions.NewForHLC(hlcNow)
+	if err != nil {
+		return datastore.NoRevision, fmt.Errorf(errRevision, err)
+	}
+	return rev, nil
+}
+
+const querySelectNowWithSchemaHash = "SELECT cluster_logical_timestamp(), COALESCE((SELECT hash FROM schema_revision WHERE name = 'current' LIMIT 1), ''::bytea)"
+
+func (cds *crdbDatastore) headRevisionWithSchemaHash(ctx context.Context) (datastore.Revision, string, error) {
+	ctx, span := tracer.Start(ctx, "headRevisionWithSchemaHash")
+	defer span.End()
+
+	var hlcNow decimal.Decimal
+	var schemaHash []byte
+	if err := cds.readPool.QueryRowFunc(ctx, func(ctx context.Context, row pgx.Row) error {
+		return row.Scan(&hlcNow, &schemaHash)
+	}, querySelectNowWithSchemaHash); err != nil {
+		return datastore.NoRevision, "", fmt.Errorf(errRevision, err)
+	}
+
+	rev, err := revisions.NewForHLC(hlcNow)
+	if err != nil {
+		return datastore.NoRevision, "", fmt.Errorf(errRevision, err)
+	}
+
+	return rev, string(schemaHash), nil
 }
 
 func (cds *crdbDatastore) OfflineFeatures() (*datastore.Features, error) {
@@ -595,7 +633,7 @@ func (cds *crdbDatastore) features(ctx context.Context) (*datastore.Features, er
 			features.Watch.Status = datastore.FeatureUnsupported
 			features.Watch.Reason = "Range feeds must be enabled in CockroachDB and the user must have permission to create them in order to enable the Watch API: " + err.Error()
 			return nil
-		}, fmt.Sprintf(cds.beginChangefeedQuery, cds.schema.RelationshipTableName, head, "-1s"))
+		}, fmt.Sprintf(cds.beginChangefeedQuery, cds.schema.RelationshipTableName, head.Revision, "-1s"))
 	} else {
 		features.Watch.Status = datastore.FeatureUnsupported
 	}
@@ -611,20 +649,6 @@ func (cds *crdbDatastore) readTransactionCommitRev(ctx context.Context, reader p
 	if err := reader.QueryRowFunc(ctx, func(ctx context.Context, row pgx.Row) error {
 		return row.Scan(&hlcNow)
 	}, cds.transactionNowQuery); err != nil {
-		return datastore.NoRevision, fmt.Errorf("unable to read timestamp: %w", err)
-	}
-
-	return revisions.NewForHLC(hlcNow)
-}
-
-func readCRDBNow(ctx context.Context, reader pgxcommon.DBFuncQuerier) (datastore.Revision, error) {
-	ctx, span := tracer.Start(ctx, "readCRDBNow")
-	defer span.End()
-
-	var hlcNow decimal.Decimal
-	if err := reader.QueryRowFunc(ctx, func(ctx context.Context, row pgx.Row) error {
-		return row.Scan(&hlcNow)
-	}, querySelectNow); err != nil {
 		return datastore.NoRevision, fmt.Errorf("unable to read timestamp: %w", err)
 	}
 

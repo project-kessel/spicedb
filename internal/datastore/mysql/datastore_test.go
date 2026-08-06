@@ -49,6 +49,7 @@ func (dst *datastoreTester) createDatastore(tb testing.TB, revisionQuantization,
 			TablePrefix(dst.prefix),
 			DebugAnalyzeBeforeStatistics(),
 			OverrideLockWaitTimeout(1),
+			MaxRetries(3),
 		)
 		require.NoError(tb, err)
 		return indexcheck.WrapWithIndexCheckingDatastoreProxyIfApplicable(ds)
@@ -69,6 +70,7 @@ var defaultOptions = []Option{
 	DebugAnalyzeBeforeStatistics(),
 	OverrideLockWaitTimeout(1),
 	WithEnablePrometheusStats(true),
+	MaxRetries(3),
 }
 
 type datastoreTestFunc func(t *testing.T, ds datastore.Datastore)
@@ -116,14 +118,14 @@ func TestMySQLDatastoreDSNWithoutParseTime(t *testing.T) {
 }
 
 func TestMySQL8Datastore(t *testing.T) {
-	b := testdatastore.RunMySQLForTestingWithOptions(t, testdatastore.MySQLTesterOptions{MigrateForNewDatastore: true}, "")
+	b := testdatastore.RunMySQLForTestingWithOptions(t, testdatastore.MySQLTesterOptions{MigrateForNewDatastore: true})
 	dst := datastoreTester{b: b}
-	test.AllWithExceptions(t, mysqlFactory.NewTester(test.DatastoreTesterFunc(dst.createDatastore)), test.WithCategories(test.WatchSchemaCategory, test.WatchCheckpointsCategory))
+	test.AllWithExceptions(t, mysqlFactory.NewTester(test.DatastoreTesterFunc(dst.createDatastore)), test.WithCategories(test.WatchSchemaCategory))
 	additionalMySQLTests(t, b)
 }
 
 func TestMySQLRevisionTimestamps(t *testing.T) {
-	b := testdatastore.RunMySQLForTestingWithOptions(t, testdatastore.MySQLTesterOptions{MigrateForNewDatastore: true}, "")
+	b := testdatastore.RunMySQLForTestingWithOptions(t, testdatastore.MySQLTesterOptions{MigrateForNewDatastore: true})
 	t.Run("TransactionTimestamps", createDatastoreTest(b, TransactionTimestampsTest, defaultOptions...))
 }
 
@@ -706,11 +708,13 @@ func QuantizedRevisionTest(t *testing.T, b testdatastore.RunningEngineForTest) {
 				colTimestamp,
 				tc.quantization.Nanoseconds(),
 				tc.followerReadDelay.Nanoseconds(),
+				mds.driver.SchemaRevision(),
 			)
 
 			var revision uint64
 			var validFor time.Duration
-			err = tx.QueryRowContext(ctx, queryRevision).Scan(&revision, &validFor)
+			var schemaHash []byte
+			err = tx.QueryRowContext(ctx, queryRevision).Scan(&revision, &validFor, &schemaHash)
 			require.NoError(err)
 			require.Greater(validFor, time.Duration(0))
 			require.LessOrEqual(validFor, tc.quantization.Nanoseconds())
@@ -760,9 +764,9 @@ func TransactionTimestampsTest(t *testing.T, ds datastore.Datastore) {
 	// Let's make sure both Now() and transactionCreated() have timezones aligned
 	req.Less(ts.Sub(startTimeUTC), 5*time.Minute)
 
-	revision, err := ds.OptimizedRevision(ctx)
+	revisionResult, err := ds.OptimizedRevision(ctx)
 	req.NoError(err)
-	req.Equal(revisions.NewForTransactionID(txID), revision)
+	req.Equal(revisions.NewForTransactionID(txID), revisionResult.Revision)
 }
 
 func TestMySQLMigrations(t *testing.T) {
@@ -840,7 +844,7 @@ func TestMySQLWithAWSIAMCredentialsProvider(t *testing.T) {
 
 func datastoreDB(t *testing.T, migrate bool) *sql.DB {
 	var databaseURI string
-	testdatastore.RunMySQLForTestingWithOptions(t, testdatastore.MySQLTesterOptions{MigrateForNewDatastore: migrate}, "").NewDatastore(t, func(engine, uri string) datastore.Datastore {
+	testdatastore.RunMySQLForTestingWithOptions(t, testdatastore.MySQLTesterOptions{MigrateForNewDatastore: migrate}).NewDatastore(t, func(engine, uri string) datastore.Datastore {
 		databaseURI = uri
 		return nil
 	})

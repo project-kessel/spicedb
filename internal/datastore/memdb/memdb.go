@@ -62,15 +62,16 @@ func NewMemdbDatastore(
 	}
 
 	uniqueID := uuid.NewString()
-	return &memdbDatastore{
+	mdb := &memdbDatastore{
 		CommonDecoder: revisions.CommonDecoder{
 			Kind: revisions.Timestamp,
 		},
 		db: db,
 		revisions: []snapshot{
 			{
-				revision: nowRevision(),
-				db:       db,
+				revision:   nowRevision(),
+				schemaHash: "",
+				db:         db,
 			},
 		},
 
@@ -79,7 +80,9 @@ func NewMemdbDatastore(
 		watchBufferLength:       watchBufferLength,
 		watchBufferWriteTimeout: 100 * time.Millisecond,
 		uniqueID:                uniqueID,
-	}, nil
+	}
+	mdb.writeTxReady = sync.NewCond(&mdb.RWMutex)
+	return mdb, nil
 }
 
 type memdbDatastore struct {
@@ -90,6 +93,7 @@ type memdbDatastore struct {
 	db             *memdb.MemDB // GUARDED_BY(RWMutex)
 	revisions      []snapshot   // GUARDED_BY(RWMutex)
 	activeWriteTxn *memdb.Txn   // GUARDED_BY(RWMutex)
+	writeTxReady   *sync.Cond   // broadcast when activeWriteTxn becomes nil
 
 	negativeGCWindow        int64
 	quantizationPeriod      int64
@@ -99,8 +103,9 @@ type memdbDatastore struct {
 }
 
 type snapshot struct {
-	revision revisions.TimestampRevision
-	db       *memdb.MemDB
+	revision   revisions.TimestampRevision
+	schemaHash string
+	db         *memdb.MemDB
 }
 
 func (mdb *memdbDatastore) MetricsID() (string, error) {
@@ -149,6 +154,23 @@ func (mdb *memdbDatastore) SnapshotReader(dr datastore.Revision) datastore.Reade
 	return &memdbReader{noopTryLocker{}, txSrc, nil, time.Now()}
 }
 
+func (mdb *memdbDatastore) getCurrentSchemaHashNoLock() string {
+	txn := mdb.db.Txn(false)
+	defer txn.Abort()
+
+	raw, err := txn.First(tableSchemaRevision, indexID, "current")
+	if err != nil || raw == nil {
+		return ""
+	}
+
+	srd, ok := raw.(*schemaRevisionData)
+	if !ok {
+		return ""
+	}
+
+	return string(srd.hash)
+}
+
 func (mdb *memdbDatastore) SupportsIntegrity() bool {
 	return true
 }
@@ -173,9 +195,10 @@ func (mdb *memdbDatastore) ReadWriteTx(
 				mdb.Lock()
 				defer mdb.Unlock()
 
-				if mdb.activeWriteTxn != nil {
-					err = ErrSerialization
-					return
+				// Block until any active write transaction finishes rather than
+				// returning ErrSerialization and busy-retrying with sleeps.
+				for mdb.activeWriteTxn != nil {
+					mdb.writeTxReady.Wait()
 				}
 
 				if err = mdb.checkNotClosed(); err != nil {
@@ -192,25 +215,34 @@ func (mdb *memdbDatastore) ReadWriteTx(
 
 		newRevision := mdb.newRevisionID()
 		rwt := &memdbReadWriteTx{memdbReader{&sync.Mutex{}, txSrc, nil, time.Now()}, newRevision}
+		if config.SchemaHashPrecondition != "" {
+			if err := assertSchemaHash(ctx, rwt, config.SchemaHashPrecondition); err != nil {
+				mdb.Lock()
+				if tx != nil {
+					tx.Abort()
+					mdb.activeWriteTxn = nil
+					mdb.writeTxReady.Signal()
+				}
+				mdb.Unlock()
+				return datastore.NoRevision, err
+			}
+		}
 		if err := f(ctx, rwt); err != nil {
 			mdb.Lock()
 			if tx != nil {
 				tx.Abort()
 				mdb.activeWriteTxn = nil
+				mdb.writeTxReady.Signal()
 			}
 
-			// If the error was a serialization error, retry the transaction
+			// If the error was a serialization error, retry the transaction.
+			// We *must* return the inner error unmodified in case it's not an error type
+			// that supports unwrapping (e.g. gRPC errors)
 			if errors.Is(err, ErrSerialization) {
 				mdb.Unlock()
-
-				// If we don't sleep here, we run out of retries instantaneously
-				time.Sleep(1 * time.Millisecond)
 				continue
 			}
 			defer mdb.Unlock()
-
-			// We *must* return the inner error unmodified in case it's not an error type
-			// that supports unwrapping (e.g. gRPC errors)
 			return datastore.NoRevision, err
 		}
 
@@ -294,13 +326,13 @@ func (mdb *memdbDatastore) ReadWriteTx(
 			}
 
 			changes := tracked.AsRevisionChanges(revisions.TimestampIDKeyLessThanFunc)
-			isFirstChange := true
+			wroteChangelog := false
 			for rc, err := range changes {
 				if err != nil {
 					return datastore.NoRevision, err
 				}
 
-				if !isFirstChange {
+				if wroteChangelog {
 					return datastore.NoRevision, spiceerrors.MustBugf("unexpected MemDB transaction with multiple revision changes")
 				}
 
@@ -312,20 +344,37 @@ func (mdb *memdbDatastore) ReadWriteTx(
 					return datastore.NoRevision, fmt.Errorf("error writing changelog: %w", err)
 				}
 
-				isFirstChange = false
+				wroteChangelog = true
+			}
+
+			// Always emit a changelog entry for the committed revision, even
+			// when the transaction produced no observable changes (e.g., a
+			// TOUCH that matched the existing relationship). The changes
+			// payload is intentionally empty — the watch goroutine constructs the
+			// checkpoint event itself based on each consumer's options.
+			if !wroteChangelog {
+				change := &changelog{
+					revisionNanos: newRevision.TimestampNanoSec(),
+					changes:       datastore.RevisionChanges{},
+				}
+				if err := tx.Insert(tableChangelog, change); err != nil {
+					return datastore.NoRevision, fmt.Errorf("error writing changelog: %w", err)
+				}
 			}
 
 			tx.Commit()
 		}
 		mdb.activeWriteTxn = nil
+		mdb.writeTxReady.Signal()
 
 		if err := mdb.checkNotClosed(); err != nil {
 			return datastore.NoRevision, err
 		}
 
 		// Create a snapshot and add it to the revisions slice
+		schemaHash := mdb.getCurrentSchemaHashNoLock()
 		snap := mdb.db.Snapshot()
-		mdb.revisions = append(mdb.revisions, snapshot{newRevision, snap})
+		mdb.revisions = append(mdb.revisions, snapshot{newRevision, schemaHash, snap})
 		return newRevision, nil
 	}
 
@@ -370,8 +419,9 @@ func (mdb *memdbDatastore) Close() error {
 	if db := mdb.db; db != nil {
 		mdb.revisions = []snapshot{
 			{
-				revision: nowRevision(),
-				db:       db,
+				revision:   nowRevision(),
+				schemaHash: "",
+				db:         db,
 			},
 		}
 	} else {

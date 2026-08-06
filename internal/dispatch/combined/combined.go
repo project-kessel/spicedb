@@ -1,7 +1,6 @@
 package combined
 
 import (
-	"context"
 	"fmt"
 	"time"
 
@@ -16,19 +15,18 @@ import (
 	"github.com/authzed/spicedb/internal/dispatch/keys"
 	"github.com/authzed/spicedb/internal/dispatch/remote"
 	"github.com/authzed/spicedb/internal/dispatch/singleflight"
-	"github.com/authzed/spicedb/internal/grpchelpers"
 	log "github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/pkg/cache"
 	caveattypes "github.com/authzed/spicedb/pkg/caveats/types"
 	v1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
+	"github.com/authzed/spicedb/pkg/query"
 )
 
 // Option is a function-style option for configuring a combined Dispatcher.
 type Option func(*optionState)
 
 type optionState struct {
-	metricsEnabled                               bool
-	prometheusSubsystem                          string
+	metrics                                      dispatch.MetricsOptions
 	upstreamAddr                                 string
 	upstreamCAPath                               string
 	grpcPresharedKey                             string
@@ -44,19 +42,22 @@ type optionState struct {
 	caveatTypeSet                                *caveattypes.TypeSet
 	relationshipChunkCacheConfig                 *cache.Config
 	relationshipChunkCache                       cache.Cache[cache.StringKey, any]
+	queryPlanMetadata                            *query.QueryPlanMetadata
 }
 
-// MetricsEnabled enables issuing prometheus metrics
-func MetricsEnabled(enabled bool) Option {
+// QueryPlanMetadata sets the shared count-stats store used by the receiver-side
+// query plan dispatcher. Pass the same instance to the permissions service so
+// stats accumulate across both compile and dispatch boundaries.
+func QueryPlanMetadata(m *query.QueryPlanMetadata) Option {
 	return func(state *optionState) {
-		state.metricsEnabled = enabled
+		state.queryPlanMetadata = m
 	}
 }
 
-// PrometheusSubsystem sets the subsystem name for the prometheus metrics
-func PrometheusSubsystem(name string) Option {
+// Metrics sets the prometheus metrics
+func Metrics(reg dispatch.MetricsOptions) Option {
 	return func(state *optionState) {
-		state.prometheusSubsystem = name
+		state.metrics = reg
 	}
 }
 
@@ -178,20 +179,26 @@ func CaveatTypeSet(caveatTypeSet *caveattypes.TypeSet) Option {
 	}
 }
 
-// NewDispatcher initializes a Dispatcher that caches and redispatches
-// optionally to the provided upstream.
-func NewDispatcher(options ...Option) (dispatch.Dispatcher, error) {
+// newOptions applies the provided Options and returns the resulting state.
+func newOptions(options ...Option) optionState {
 	var opts optionState
 	for _, fn := range options {
 		fn(&opts)
 	}
+	return opts
+}
+
+// NewDispatcher initializes a Dispatcher that caches and redispatches
+// optionally to the provided upstream.
+func NewDispatcher(options ...Option) (dispatch.Dispatcher, error) {
+	opts := newOptions(options...)
 	log.Debug().Str("upstream", opts.upstreamAddr).Msg("configured combined dispatcher")
 
-	if opts.prometheusSubsystem == "" {
-		opts.prometheusSubsystem = "dispatch_client"
+	if opts.metrics.PrometheusSubsystem == "" {
+		opts.metrics.PrometheusSubsystem = "dispatch_client"
 	}
 
-	cachingRedispatch, err := caching.NewCachingDispatcher(opts.cache, opts.metricsEnabled, opts.prometheusSubsystem, &keys.CanonicalKeyHandler{})
+	cachingRedispatch, err := caching.NewCachingDispatcher(opts.cache, opts.metrics, &keys.CanonicalKeyHandler{})
 	if err != nil {
 		return nil, err
 	}
@@ -233,6 +240,7 @@ func NewDispatcher(options ...Option) (dispatch.Dispatcher, error) {
 			TypeSet:                caveattypes.TypeSetOrDefault(opts.caveatTypeSet),
 			DispatchChunkSize:      chunkSize,
 			RelationshipChunkCache: relationshipChunkCache,
+			QueryPlanMetadata:      opts.queryPlanMetadata,
 		}
 		redispatch, err = graph.NewDispatcher(cachingRedispatch, params)
 		if err != nil {
@@ -257,14 +265,14 @@ func NewDispatcher(options ...Option) (dispatch.Dispatcher, error) {
 		// we can enable it only for non-streaming rpcs.
 		// opts.grpcDialOpts = append(opts.grpcDialOpts, grpc.WithDefaultCallOptions(grpc.UseCompressor("s2")))
 
-		conn, err := grpchelpers.Dial(context.Background(), opts.upstreamAddr, opts.grpcDialOpts...)
+		conn, err := grpc.NewClient(opts.upstreamAddr, opts.grpcDialOpts...)
 		if err != nil {
 			return nil, err
 		}
 
 		secondaryClients := make(map[string]remote.SecondaryDispatch, len(opts.secondaryUpstreamAddrs))
 		for name, addr := range opts.secondaryUpstreamAddrs {
-			secondaryConn, err := grpchelpers.Dial(context.Background(), addr, opts.grpcDialOpts...)
+			secondaryConn, err := grpc.NewClient(addr, opts.grpcDialOpts...)
 			if err != nil {
 				return nil, err
 			}

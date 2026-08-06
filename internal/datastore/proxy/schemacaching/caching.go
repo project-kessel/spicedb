@@ -27,8 +27,7 @@ const (
 // DatastoreProxyTestCache returns a cache used for testing.
 func DatastoreProxyTestCache(t testing.TB) cache.Cache[cache.StringKey, CacheEntry] {
 	cache, err := cache.NewStandardCache[cache.StringKey, CacheEntry](&cache.Config{
-		NumCounters: 1000,
-		MaxCost:     1 * humanize.MiByte,
+		MaxCost: 1 * humanize.MiByte,
 	})
 	require.NoError(t, err)
 	return cache
@@ -38,18 +37,14 @@ type CacheEntry = *cacheEntry
 
 // NewCachingDatastoreProxy creates a new datastore proxy which caches definitions that
 // are loaded at specific datastore revisions.
+// The caller MUST call Close on the returned proxy when it is no longer needed.
 func NewCachingDatastoreProxy(delegate datastore.Datastore, c cache.Cache[cache.StringKey, CacheEntry], gcWindow time.Duration, cachingMode CachingMode, watchHeartbeat time.Duration) datastore.Datastore {
-	if c == nil {
-		c = cache.NoopCache[cache.StringKey, CacheEntry]()
-	}
+	standardCachingProxy := NewDefinitionCachingProxy(delegate, c)
 
 	if cachingMode == JustInTimeCaching {
 		log.Info().Msg("schema watch explicitly disabled")
-		return &definitionCachingProxy{
-			Datastore: delegate,
-			c:         c,
-		}
+		return standardCachingProxy
 	}
 
-	return createWatchingCacheProxy(delegate, c, gcWindow, watchHeartbeat)
+	return NewWatchingCacheProxy(delegate, standardCachingProxy, gcWindow, watchHeartbeat)
 }

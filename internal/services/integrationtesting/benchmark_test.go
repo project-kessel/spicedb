@@ -210,7 +210,7 @@ var allScenarios = []benchmarkScenario{
 				Relation:   "viewer",
 			}, tuple.ObjectAndRelation{
 				ObjectType: "user",
-				ObjectID:   "user181",
+				ObjectID:   "user214",
 				Relation:   tuple.Ellipsis,
 			}, revision, nil)
 			require.Equal(b, v1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION, result)
@@ -299,10 +299,8 @@ var allScenarios = []benchmarkScenario{
 // Hierarchy: engine → scenario (test data) → operation → {dispatch, queryplan}
 func BenchmarkServices(b *testing.B) {
 	for _, engineID := range enginesToBenchmark {
-		if testing.Short() {
-			if engineID != "memory" {
-				continue
-			}
+		if testing.Short() && engineID != "memory" {
+			b.Skip("skipping non-memory driver benchmarks in -short mode")
 		}
 		b.Run(engineID, func(b *testing.B) {
 			for _, scenario := range allScenarios {
@@ -340,21 +338,19 @@ func BenchmarkServices(b *testing.B) {
 
 						rev, err := ds.HeadRevision(b.Context())
 						require.NoError(b, err)
-						revision = rev
+						revision = rev.Revision
 					}
 
 					// Set up dispatch server (default path).
-					dispatchConn, dispatchCleanup := testserver.TestClusterWithDispatch(b, 1, ds)
-					b.Cleanup(dispatchCleanup)
+					dispatchConn := testserver.TestClusterWithDispatch(b, 1, ds)
 					dispatchTester := consistencytestutil.NewServiceTester(dispatchConn[0])
 
 					// Set up query plan server.
-					qpConn, qpCleanup := testserver.TestClusterWithDispatch(b, 1, ds,
+					qpConn := testserver.TestClusterWithDispatch(b, 1, ds,
 						server.WithExperimentalQueryPlan("check"),
 						server.WithExperimentalQueryPlan("lr"),
 						server.WithExperimentalQueryPlan("ls"),
 					)
-					b.Cleanup(qpCleanup)
 					qpTester := consistencytestutil.NewServiceTester(qpConn[0])
 
 					// Warm up the query planner so the server-side CountAdvisor

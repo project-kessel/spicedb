@@ -9,8 +9,6 @@ import (
 
 	"buf.build/go/protovalidate"
 	grpcvalidate "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/protovalidate"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -39,18 +37,11 @@ import (
 	"github.com/authzed/spicedb/pkg/genutil/mapz"
 	"github.com/authzed/spicedb/pkg/middleware/consistency"
 	dispatchv1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
+	"github.com/authzed/spicedb/pkg/query"
 	"github.com/authzed/spicedb/pkg/schema"
 	"github.com/authzed/spicedb/pkg/tuple"
 	"github.com/authzed/spicedb/pkg/zedtoken"
 )
-
-var writeUpdateCounter = promauto.NewHistogramVec(prometheus.HistogramOpts{
-	Namespace: "spicedb",
-	Subsystem: "v1",
-	Name:      "write_relationships_updates",
-	Help:      "The update counts for the WriteRelationships calls",
-	Buckets:   []float64{0, 1, 2, 5, 10, 15, 25, 50, 100, 250, 500, 1000},
-}, []string{"kind"})
 
 const MaximumTransactionMetadataSize = 65000 // bytes. Limited by the BLOB size used in MySQL driver
 
@@ -120,6 +111,19 @@ type PermissionsServerConfig struct {
 
 	// ExperimentalQueryPlan configures which API operations use the experimental query plan.
 	ExperimentalQueryPlan ExperimentalQueryPlanConfig
+
+	// Metrics holds the metrics shared by the v1 services. It is meant to be
+	// built once (via NewMetrics) when the server is assembled and passed to
+	// every service constructor sharing this config. When nil, a fresh,
+	// unregistered (and therefore unexported) instance is used.
+	Metrics *Metrics
+
+	// QueryPlanMetadata is the shared per-server stats store that drives the
+	// count-based plan advisor. When nil, NewPermissionsServer allocates a fresh
+	// instance. To share stats with a co-located dispatcher (so receiver-side
+	// dispatch can consult and update the same store), construct one externally
+	// and pass it both here and via graph.DispatcherParameters.
+	QueryPlanMetadata *query.QueryPlanMetadata
 }
 
 // ExperimentalQueryPlanConfig controls which API operations are routed through the
@@ -150,7 +154,7 @@ func NewPermissionsServer(
 		MaxReadRelationshipsLimit:          defaultIfZero(config.MaxReadRelationshipsLimit, 1_000),
 		MaxDeleteRelationshipsLimit:        defaultIfZero(config.MaxDeleteRelationshipsLimit, 1_000),
 		MaxLookupResourcesLimit:            defaultIfZero(config.MaxLookupResourcesLimit, 1_000),
-		MaxBulkExportRelationshipsLimit:    defaultIfZero(config.MaxBulkExportRelationshipsLimit, 100_000),
+		MaxBulkExportRelationshipsLimit:    defaultIfZero(config.MaxBulkExportRelationshipsLimit, 10_000),
 		DispatchChunkSize:                  defaultIfZero(config.DispatchChunkSize, 100),
 		MaxCheckBulkConcurrency:            defaultIfZero(config.MaxCheckBulkConcurrency, 50),
 		CaveatTypeSet:                      caveattypes.TypeSetOrDefault(config.CaveatTypeSet),
@@ -158,6 +162,14 @@ func NewPermissionsServer(
 		PerformanceInsightMetricsEnabled:   config.PerformanceInsightMetricsEnabled,
 		EnableExperimentalLookupResources3: config.EnableExperimentalLookupResources3,
 		ExperimentalQueryPlan:              config.ExperimentalQueryPlan,
+		Metrics:                            config.Metrics,
+		QueryPlanMetadata:                  config.QueryPlanMetadata,
+	}
+	if configWithDefaults.QueryPlanMetadata == nil {
+		configWithDefaults.QueryPlanMetadata = query.NewQueryPlanMetadata()
+	}
+	if configWithDefaults.Metrics == nil {
+		configWithDefaults.Metrics = NewMetrics(nil)
 	}
 	return &permissionServer{
 		dispatch: dispatch,
@@ -185,7 +197,8 @@ func NewPermissionsServer(
 			dispatchChunkSize:    configWithDefaults.DispatchChunkSize,
 			caveatTypeSet:        configWithDefaults.CaveatTypeSet,
 		},
-		queryPlanMetadata: NewQueryPlanMetadata(),
+		queryPlanMetadata: configWithDefaults.QueryPlanMetadata,
+		metrics:           configWithDefaults.Metrics,
 	}
 }
 
@@ -197,7 +210,8 @@ type permissionServer struct {
 	config   PermissionsServerConfig
 
 	bulkChecker       *bulkChecker
-	queryPlanMetadata *QueryPlanMetadata
+	queryPlanMetadata *query.QueryPlanMetadata
+	metrics           *Metrics
 }
 
 func (ps *permissionServer) ReadRelationships(req *v1.ReadRelationshipsRequest, resp v1.PermissionsService_ReadRelationshipsServer) error {
@@ -210,12 +224,12 @@ func (ps *permissionServer) ReadRelationships(req *v1.ReadRelationshipsRequest, 
 	}
 
 	ctx := resp.Context()
-	atRevision, revisionReadAt, err := consistency.RevisionFromContext(ctx)
+	atRevision, schemaHash, revisionReadAt, err := consistency.RevisionFromContext(ctx)
 	if err != nil {
 		return ps.rewriteError(ctx, err)
 	}
 
-	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision)
+	dl := datalayer.MustFromContext(ctx).SnapshotReader(atRevision, schemaHash)
 	sr, err := dl.ReadSchema(ctx)
 	if err != nil {
 		return ps.rewriteError(ctx, err)
@@ -317,7 +331,7 @@ func (ps *permissionServer) ReadRelationships(req *v1.ReadRelationshipsRequest, 
 		}
 
 		dispatchCursor.Sections[0] = tuple.StringWithoutCaveatOrExpiration(rel)
-		encodedCursor, err := cursor.EncodeFromDispatchCursor(dispatchCursor, rrRequestHash, atRevision, nil)
+		encodedCursor, err := cursor.EncodeFromDispatchCursor(dispatchCursor, rrRequestHash, atRevision, schemaHash, nil)
 		if err != nil {
 			return ps.rewriteError(ctx, err)
 		}
@@ -359,8 +373,6 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 		)
 	}
 
-	includesExpiresAt := false
-
 	// Check for duplicate updates and create the set of caveat names to load.
 	updateRelationshipSet := mapz.NewSet[string]()
 	for _, update := range req.Updates {
@@ -384,10 +396,6 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 				ctx,
 				errors.New("support for expiring relationships is not enabled"),
 			)
-		}
-
-		if update.Relationship.OptionalExpiresAt != nil {
-			includesExpiresAt = true
 		}
 	}
 	span.AddEvent(otelconv.EventRelationshipsMutationsValidated)
@@ -438,7 +446,7 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 		errWrite := rwt.WriteRelationships(ctx, relUpdates)
 		span.AddEvent(otelconv.EventRelationshipsWritten)
 		return errWrite
-	}, options.WithMetadata(req.OptionalTransactionMetadata), options.WithIncludesExpiredAt(includesExpiresAt))
+	}, options.WithMetadata(req.OptionalTransactionMetadata))
 	span.AddEvent(otelconv.EventRelationshipsReadWriteExecuted)
 	if err != nil {
 		return nil, ps.rewriteError(ctx, err)
@@ -451,10 +459,10 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 	}
 
 	for kind, count := range updateCountByOperation {
-		writeUpdateCounter.WithLabelValues(v1.RelationshipUpdate_Operation_name[int32(kind)]).Observe(float64(count))
+		ps.metrics.RecordWriteRelationshipsUpdates(kind, count)
 	}
 
-	zedToken, err := zedtoken.NewFromRevision(ctx, revision, dl)
+	zedToken, err := zedtoken.NewFromRevision(ctx, revision, datalayer.NoSchemaHashInTransaction, dl)
 	if err != nil {
 		return nil, ps.rewriteError(ctx, err)
 	}
@@ -589,7 +597,7 @@ func (ps *permissionServer) DeleteRelationships(ctx context.Context, req *v1.Del
 		return nil, ps.rewriteError(ctx, err)
 	}
 
-	zedToken, err := zedtoken.NewFromRevision(ctx, revision, dl)
+	zedToken, err := zedtoken.NewFromRevision(ctx, revision, datalayer.NoSchemaHashInTransaction, dl)
 	if err != nil {
 		return nil, ps.rewriteError(ctx, err)
 	}

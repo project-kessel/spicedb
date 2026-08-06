@@ -21,7 +21,7 @@ import (
 )
 
 func TestPartitionedExportEndToEnd(t *testing.T) {
-	b := testdatastore.RunCRDBForTesting(t, "", crdbTestVersion())
+	b := testdatastore.RunCRDBForTesting(t, crdbTestVersion())
 	ctx := t.Context()
 
 	var connectStr string
@@ -67,7 +67,7 @@ func TestPartitionedExportEndToEnd(t *testing.T) {
 		partitionCount := 0
 		iter, err := v1.StreamPartitionedExport(ctx, ds, v1.StreamRequest{
 			Partition: partition,
-			Revision:  rev,
+			Revision:  rev.Revision,
 		})
 		require.NoError(t, err)
 		for rel, err := range iter {
@@ -87,7 +87,7 @@ func TestPartitionedExportEndToEnd(t *testing.T) {
 }
 
 func TestStreamPartitionedExportBoundCombinations(t *testing.T) {
-	b := testdatastore.RunCRDBForTesting(t, "", crdbTestVersion())
+	b := testdatastore.RunCRDBForTesting(t, crdbTestVersion())
 
 	t.Run("all lower/upper bound combinations", func(t *testing.T) {
 		ctx := t.Context()
@@ -157,7 +157,7 @@ func TestStreamPartitionedExportBoundCombinations(t *testing.T) {
 						LowerBound: tc.lower,
 						UpperBound: tc.upper,
 					},
-					Revision: rev,
+					Revision: rev.Revision,
 				})
 				require.NoError(t, err)
 
@@ -187,7 +187,7 @@ func TestStreamPartitionedExportBoundCombinations(t *testing.T) {
 			} {
 				iter, err := v1.StreamPartitionedExport(ctx, ds, v1.StreamRequest{
 					Partition: partition,
-					Revision:  rev,
+					Revision:  rev.Revision,
 				})
 				require.NoError(t, err)
 				for rel, err := range iter {
@@ -208,7 +208,7 @@ func TestStreamPartitionedExportBoundCombinations(t *testing.T) {
 // round-trips all of them correctly. If CRDB changes its escaping behavior in a
 // future version, this test will fail — alerting us to update extractQuotedValues.
 func TestCRDBSpecialCharEncodingInRangeKeys(t *testing.T) {
-	b := testdatastore.RunCRDBForTesting(t, "", crdbTestVersion())
+	b := testdatastore.RunCRDBForTesting(t, crdbTestVersion())
 	ctx := t.Context()
 
 	var connectStr string
@@ -348,7 +348,7 @@ func TestCRDBSpecialCharEncodingInRangeKeys(t *testing.T) {
 // If CRDB adds or removes escaping for any byte, this test fails — alerting
 // us to update extractQuotedValues.
 func TestCRDBExhaustiveEscapeScan(t *testing.T) {
-	b := testdatastore.RunCRDBForTesting(t, "", crdbTestVersion())
+	b := testdatastore.RunCRDBForTesting(t, crdbTestVersion())
 	ctx := t.Context()
 
 	var connStr string
@@ -441,7 +441,7 @@ func TestCRDBExhaustiveEscapeScan(t *testing.T) {
 }
 
 func TestExplainPartitionedQuery(t *testing.T) {
-	b := testdatastore.RunCRDBForTesting(t, "", crdbTestVersion())
+	b := testdatastore.RunCRDBForTesting(t, crdbTestVersion())
 
 	t.Run("compare query plans", func(t *testing.T) {
 		ctx := t.Context()

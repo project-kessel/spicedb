@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 	"unsafe"
 
 	"resenje.org/singleflight"
@@ -23,8 +24,17 @@ type definitionCachingProxy struct {
 	readGroup singleflight.Group[string, *cacheEntry]
 }
 
-func (p *definitionCachingProxy) Unwrap() datastore.Datastore {
-	return p.Datastore
+// The caller MUST call Close on the returned proxy when it is no longer needed.
+// If a nil cache is passed, one is created, so Close is needed to stop its cleanup goroutine.
+func NewDefinitionCachingProxy(delegate datastore.Datastore, c cache.Cache[cache.StringKey, *cacheEntry]) *definitionCachingProxy {
+	if c == nil {
+		c, _ = cache.NewStandardCache[cache.StringKey, *cacheEntry](&cache.Config{
+			MaxCost:    10000,
+			DefaultTTL: 10000 * time.Second,
+		})
+	}
+
+	return &definitionCachingProxy{Datastore: delegate, c: c}
 }
 
 func (p *definitionCachingProxy) Close() error {

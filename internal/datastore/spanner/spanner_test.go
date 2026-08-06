@@ -26,7 +26,7 @@ func TestSpannerDatastore(t *testing.T) {
 	// t.Parallel() //nolint:tparallel, the test sets environment variables (the emulator)
 
 	ctx := t.Context()
-	b := testdatastore.RunSpannerForTesting(t, "", "head")
+	b := testdatastore.RunSpannerForTesting(t)
 
 	// Transaction tests are excluded because, for reasons unknown, one cannot read its own write in one transaction in the Spanner emulator.
 	test.AllWithExceptions(t, spannerFactory.NewTester(test.DatastoreTesterFunc(func(_ testing.TB, revisionQuantization, _, _ time.Duration, watchBufferLength uint16) (datastore.Datastore, error) {
@@ -48,6 +48,12 @@ func TestSpannerDatastore(t *testing.T) {
 	t.Run("TestFakeStats", createDatastoreTest(
 		b,
 		FakeStatsTest,
+	))
+
+	t.Run("TestOptimizedRevisionAfterFreshMigration", createDatastoreTest(
+		b,
+		OptimizedRevisionAfterFreshMigrationTest,
+		FollowerReadDelay(4800*time.Millisecond),
 	))
 }
 
@@ -147,4 +153,16 @@ func FakeStatsTest(t *testing.T, ds datastore.Datastore) {
 	stats, err = ds.Statistics(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, uint64(3), stats.EstimatedRelationshipCount)
+}
+
+// OptimizedRevisionAfterFreshMigrationTest verifies that OptimizedRevision
+// succeeds when the configured FollowerReadDelay pushes the stale read
+// timestamp before the migration that created the schema_revision table.
+// This reproduces the case hit by mage testcons:spanner, where the default
+// 4.8s FollowerReadDelay lands before the freshly-run migration.
+func OptimizedRevisionAfterFreshMigrationTest(t *testing.T, ds datastore.Datastore) {
+	result, err := ds.OptimizedRevision(t.Context())
+	require.NoError(t, err)
+	require.NotEqual(t, datastore.NoRevision, result.Revision)
+	require.Empty(t, result.SchemaHash, "schema hash should be empty when no schema has been written yet")
 }

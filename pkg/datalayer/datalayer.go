@@ -28,10 +28,10 @@ type LegacySchemaWriter interface {
 // It abstracts the underlying datastore, hiding Legacy* methods and
 // providing clean access to schema, relationships, and metadata.
 type DataLayer interface {
-	SnapshotReader(datastore.Revision) RevisionedReader
+	SnapshotReader(datastore.Revision, SchemaHash) RevisionedReader
 	ReadWriteTx(context.Context, TxUserFunc, ...options.RWTOptionsOption) (datastore.Revision, error)
-	OptimizedRevision(ctx context.Context) (datastore.Revision, error)
-	HeadRevision(ctx context.Context) (datastore.Revision, error)
+	OptimizedRevision(ctx context.Context) (datastore.Revision, SchemaHash, error)
+	HeadRevision(ctx context.Context) (datastore.Revision, SchemaHash, error)
 	CheckRevision(ctx context.Context, revision datastore.Revision) error
 	RevisionFromString(serialized string) (datastore.Revision, error)
 	Watch(ctx context.Context, afterRevision datastore.Revision, options datastore.WatchOptions) (<-chan datastore.RevisionChanges, <-chan error)
@@ -106,6 +106,12 @@ type RevisionedReader interface {
 }
 
 // TxUserFunc is a type for the function that users supply when they invoke a read-write transaction.
+//
+// When WithSchemaHashPrecondition is passed to ReadWriteTx, the datalayer may transparently retry
+// fn with a refreshed schema hash if the stored schema changed since the precondition was captured.
+// This is only safe when ALL schema-sensitive validation (ReadSchema, ValidateRelationshipUpdates,
+// validatePrecondition, etc.) happens INSIDE fn. Validation performed before calling ReadWriteTx
+// will not be re-run on retry, which can allow writes that violate the new schema.
 type TxUserFunc func(context.Context, ReadWriteTransaction) error
 
 // ReadWriteTransaction supports both reading and writing.
@@ -123,8 +129,10 @@ type ReadWriteTransaction interface {
 	// BulkLoad writes all relationships from the source in an optimized fashion.
 	BulkLoad(ctx context.Context, iter datastore.BulkWriteRelationshipSource) (uint64, error)
 
-	// WriteSchema writes the full set of schema definitions.
-	WriteSchema(ctx context.Context, definitions []datastore.SchemaDefinition, schemaString string, caveatTypeSet *caveattypes.TypeSet) error
+	// WriteSchema writes the full set of schema definitions and returns the
+	// hash of the resulting schema. The returned hash is NoSchemaHashInLegacyMode
+	// when the DataLayer does not write to unified schema storage.
+	WriteSchema(ctx context.Context, definitions []datastore.SchemaDefinition, schemaString string, caveatTypeSet *caveattypes.TypeSet) (SchemaHash, error)
 
 	// LegacySchemaWriter returns a legacy schema writer for backwards-compatible
 	// additive-only schema operations.
