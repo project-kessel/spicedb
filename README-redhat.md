@@ -19,7 +19,7 @@ The table below captures all changes to our fork from upstream. Each entry inclu
 | `.github/dependabot.yml` | Removed | Aligns with Red Hat mandates to leverage Konflux | Delete |
 | `.github/renovate.json` | Replaced with our own config | Configures Mintmaker (part of Konflux) to prevent Go pkg update PRs and move to weekly updates for Dockerfile base image updates | Keep ours |
 | Active workflows in `.github/workflows/` | Runner changed to `ubuntu-latest` | Authzed uses custom self-hosted runners (`depot-*`, `buildjet-*`) which we don't have access to | Re-apply |
-| `.github/workflows/build-test.yaml` | Disabled: build, steelthread, analyzer-unit, WASM, protobuf, benchmark jobs (`if: false`); disabled CockroachDB/MySQL/Spanner datastore tests; changed `Dockerfile` reference to `Dockerfile.fips`; limited Postgres versions to 16/17 | Non-critical to Red Hat builds or not applicable to our deployment targets | Re-apply |
+| `.github/workflows/build-test.yaml` | Disabled: build, steelthread, analyzer-unit, WASM, protobuf, benchmark, datastoreconstest jobs (`if: false`); disabled CockroachDB/MySQL/Spanner datastore tests; changed `Dockerfile` reference to `Dockerfile.fips`; limited Postgres versions to 16/17 | Non-critical to Red Hat builds or not applicable to our deployment targets | Re-apply |
 | `.github/workflows/benchmark.yaml` | Disabled (`if: false`) | Not critical to Red Hat builds | Re-apply |
 | `.github/workflows/commit-messages.yaml` | Disabled (`if: false`) | Not critical to Red Hat builds | Re-apply |
 | `.github/workflows/docs.yaml` | Disabled (`if: false`) | Not critical to Red Hat builds | Re-apply |
