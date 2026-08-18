@@ -7,9 +7,14 @@ WORKDIR /go/src/app
 COPY go.mod go.sum ./
 COPY . .
 
-RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/go/pkg/mod go mod download && \
+# VERSION is captured from SYNC.md to ensure the SpiceDB version is
+# defined as the release version vs Go Module pseudo-versions
+# This is critical for accurate CVE results
+RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/go/pkg/mod \
+    tag=$(grep '^TAG:' SYNC.md) && VERSION=${tag#*: } && \
+    go mod download && \
     go mod tidy && \
-    GOFLAGS="" go build -tags="memoryprotection" -ldflags=-checklinkname=0 -gcflags=all=-trimpath=/go -asmflags=all=-trimpath=/go -o spicedb ./cmd/spicedb
+    GOFLAGS="" go build -tags="memoryprotection" -ldflags="-checklinkname=0 -X 'github.com/jzelinskie/cobrautil/v2.Version=${VERSION}'" -gcflags=all=-trimpath=/go -asmflags=all=-trimpath=/go -o spicedb ./cmd/spicedb
 
 # Builder for health probe — pin matches upstream Dockerfile (updated during syncs).
 FROM base AS health-probe-builder
