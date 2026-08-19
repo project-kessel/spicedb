@@ -132,8 +132,8 @@ Otherwise, determine the latest supported SpiceDB version:
 git fetch upstream --tags
 git show tags/<tag>:go.mod | grep -E '^go '
 ```
-If the Go version exceeds our go-toolset version, stop and report the issue.
-The current go-toolset version constraint is documented in `README-redhat.md`.
+If the Go version exceeds the Go version in our Hummingbird builder image, stop and report the issue.
+The current Hummingbird Go image version is documented in `Dockerfile.fips` and `README-redhat.md`.
 
 ### Step 3: Sync
 
@@ -231,5 +231,6 @@ Report:
 - PR link
 - Number of Red Hat changes, stale files cleaned, diverged files reset
 - Remind the user to review the PR and check CI before merging
+- Note: once the PR merges, the `.github/workflows/tag-release.yaml` workflow automatically creates the release tag on the merge commit — no manual tagging needed
 - Note: this PR should be merged BEFORE the operator PR, since the operator
   depends on the SpiceDB image being built and available
