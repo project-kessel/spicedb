@@ -7,9 +7,12 @@ WORKDIR /go/src/app
 COPY go.mod go.sum ./
 COPY . .
 
-# VERSION is captured from SYNC.md to ensure the SpiceDB version is
-# defined as the release version vs Go Module pseudo-versions
-# This is critical for accurate CVE results
+# VERSION is captured from SYNC.md to ensure the SpiceDB version is set to the
+# correct release tag rather than a Go module pseudo-version. This is critical
+# for accurate CVE scanning: scanners read debug.BuildInfo.Main.Version from the
+# binary, and a pseudo-version (v0.0.0-...) causes false positives for all CVEs
+# fixed after that version. The Konflux clone task must use depth: "0" and
+# fetchTags: "true" so Go's VCS stamping can walk history back to the nearest tag.
 RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/go/pkg/mod \
     tag=$(grep '^TAG:' SYNC.md) && VERSION=${tag#*: } && \
     go mod download && \
