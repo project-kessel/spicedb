@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -14,28 +15,26 @@ import (
 	"github.com/authzed/spicedb/internal/datastore/common"
 	"github.com/authzed/spicedb/pkg/datalayer"
 	"github.com/authzed/spicedb/pkg/datastore"
+	"github.com/authzed/spicedb/pkg/datastore/options"
+	"github.com/authzed/spicedb/pkg/datastore/queryshape"
 	ns "github.com/authzed/spicedb/pkg/namespace"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	dispatch "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
 	"github.com/authzed/spicedb/pkg/tuple"
 )
 
-// RevisionQuantizationTest tests whether or not the requirements for revisions hold
-// for a particular datastore.
+// RevisionQuantizationTest tests that revision quantization works correctly
 func RevisionQuantizationTest(t *testing.T, tester DatastoreTester) {
-	testCases := []struct {
-		quantizationRange        time.Duration
-		expectFindLowerRevisions bool
-	}{
-		{0 * time.Second, false},
-		{100 * time.Millisecond, true},
+	quantizationRanges := []time.Duration{
+		0 * time.Second,
+		100 * time.Millisecond,
 	}
 
-	for _, tc := range testCases {
-		t.Run(fmt.Sprintf("quantization%s", tc.quantizationRange), func(t *testing.T) {
+	for _, quantizationRange := range quantizationRanges {
+		t.Run(fmt.Sprintf("quantization%s", quantizationRange), func(t *testing.T) {
 			require := require.New(t)
 
-			ds, err := tester.New(t, tc.quantizationRange, veryLargeGCInterval, veryLargeGCWindow, 1)
+			ds, err := tester.New(t, DefaultRevisionParameters().WithQuantization(quantizationRange), 1)
 			require.NoError(err)
 
 			ctx := t.Context()
@@ -46,10 +45,11 @@ func RevisionQuantizationTest(t *testing.T, tester DatastoreTester) {
 			postSetupRevision := setupDatastore(t, ds)
 			require.True(postSetupRevision.GreaterThan(veryFirstRevision), "post-setup revision should be greater than the first revision")
 
-			// Create some revisions
+			// Create some revisions (a brand new relationship each time to force a new revision)
 			var writtenAt datastore.Revision
-			tpl := makeTestRel("first", "owner")
-			for range 10 {
+
+			for i := range 10 {
+				tpl := makeTestRel(strconv.Itoa(i), "owner")
 				writtenAt, err = common.WriteRelationships(ctx, ds, tuple.UpdateOperationTouch, tpl)
 				require.NoError(err)
 			}
@@ -61,7 +61,7 @@ func RevisionQuantizationTest(t *testing.T, tester DatastoreTester) {
 			nowRevision := nowRevisionResult.Revision
 
 			// Let the quantization window expire
-			time.Sleep(tc.quantizationRange)
+			time.Sleep(quantizationRange)
 
 			// Now we should ONLY get revisions later than the now revision
 			for start := time.Now(); time.Since(start) < 10*time.Millisecond; {
@@ -74,12 +74,91 @@ func RevisionQuantizationTest(t *testing.T, tester DatastoreTester) {
 	}
 }
 
+// SnapshotReadStabilityTest asserts that the revision returned by
+// OptimizedRevision behaves like a snapshot: reads at it are repeatable, and
+// they never observe a write committed after it.
+func SnapshotReadStabilityTest(t *testing.T, tester DatastoreTester) {
+	const quantization = 1 * time.Second
+
+	ds, err := tester.New(t, DefaultRevisionParameters().WithQuantization(quantization), 1)
+	require.NoError(t, err)
+
+	ctx := t.Context()
+	setupDatastore(t, ds)
+
+	const docA = "stability-doc-a"
+	const docB = "stability-doc-b"
+
+	// docsAt reports which of the two documents are visible at the given revision.
+	docsAt := func(rev datastore.Revision) map[string]bool {
+		reader := ds.SnapshotReader(rev)
+		it, err := reader.QueryRelationships(ctx, datastore.RelationshipsFilter{
+			OptionalResourceType: testResourceNamespace,
+			OptionalResourceIds:  []string{docA, docB},
+		}, options.WithQueryShape(queryshape.Varying))
+		require.NoError(t, err)
+		rels, err := datastore.IteratorToSlice(it)
+		require.NoError(t, err)
+
+		seen := map[string]bool{}
+		for _, rel := range rels {
+			seen[rel.Resource.ObjectID] = true
+		}
+		return seen
+	}
+
+	// Wait for the optimized revision to advance past everything the datastore
+	// has already done — its own migrations and this test's schema write —
+	// before writing the relationships the assertions below depend on.
+	postSetup, err := ds.HeadRevision(ctx)
+	require.NoError(t, err)
+
+	var optimizedRevision datastore.Revision
+	for deadline := time.Now().Add(30 * time.Second); ; {
+		candidate, err := ds.OptimizedRevision(ctx)
+		require.NoError(t, err)
+		if !candidate.Revision.LessThan(postSetup.Revision) {
+			optimizedRevision = candidate.Revision
+			break
+		}
+		require.False(t, time.Now().After(deadline), "optimized revision never advanced to the post-setup revision %v", postSetup.Revision)
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Every write below is newer than optimizedRevision, so a correct datastore shows none of them when reading at optimizedRevision.
+	revA, err := common.WriteRelationships(ctx, ds, tuple.UpdateOperationTouch, makeTestRel(docA, "tom"))
+	require.NoError(t, err)
+
+	before := docsAt(optimizedRevision)
+
+	revB, err := common.WriteRelationships(ctx, ds, tuple.UpdateOperationTouch, makeTestRel(docB, "tom"))
+	require.NoError(t, err)
+
+	after := docsAt(optimizedRevision)
+
+	// Repeatability: the same revision must describe the same state twice.
+	require.Equal(t, before, after,
+		"two reads at the same revision %v returned different data (%v, then %v after an unrelated write at %v)",
+		optimizedRevision, before, after, revB)
+
+	// No future writes: neither relationship was committed as of optimizedRevision, so
+	// neither may be visible there. Each is guarded on the revisions actually
+	// being ordered, since a datastore may return revisions that are merely
+	// concurrent rather than comparable.
+	require.False(t, revA.GreaterThan(optimizedRevision) && before[docA],
+		"%s was committed at revision %v, which is after the read revision %v, but is visible there",
+		docA, revA, optimizedRevision)
+	require.False(t, revB.GreaterThan(optimizedRevision) && after[docB],
+		"%s was committed at revision %v, which is after the read revision %v, but is visible there",
+		docB, revB, optimizedRevision)
+}
+
 // RevisionSerializationTest tests whether the revisions generated by this datastore can
 // be serialized and sent through the dispatch layer.
 func RevisionSerializationTest(t *testing.T, tester DatastoreTester) {
 	require := require.New(t)
 
-	ds, err := tester.New(t, 0, veryLargeGCInterval, veryLargeGCWindow, 1)
+	ds, err := tester.New(t, DefaultRevisionParameters(), 1)
 	require.NoError(err)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
@@ -103,11 +182,16 @@ func RevisionSerializationTest(t *testing.T, tester DatastoreTester) {
 // TODO: rewrite using synctest
 func GCProcessRunTest(t *testing.T, tester DatastoreTester) {
 	require := require.New(t)
-	gcWindow := 300 * time.Millisecond
-	gcInterval := 500 * time.Millisecond
-
-	ds, err := tester.New(t, 0, gcInterval, gcWindow, 1)
+	ds, err := tester.New(t, DefaultRevisionParameters().
+		WithGCRunInterval(GCRunInterval(500*time.Millisecond)).
+		WithGCRetentionWindow(GCRetentionWindow(300*time.Millisecond)), 1)
 	require.NoError(err)
+
+	// NOTE: this test runs for all datastores, but only some datastores have GC logic.
+	gcable, ok := ds.(datastore.GarbageCollectableDatastore)
+	if !ok {
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -128,16 +212,11 @@ func GCProcessRunTest(t *testing.T, tester DatastoreTester) {
 	})
 	require.NoError(err)
 
-	gcable, ok := ds.(datastore.GarbageCollectableDatastore)
-	if !ok {
-		return
-	}
-
 	// Reset that GC was run.
 	gcable.ResetGCCompleted()
 
 	// Wait the GC interval + a bit more time.
-	time.Sleep(gcInterval + 100*time.Millisecond)
+	time.Sleep(500*time.Millisecond + 100*time.Millisecond)
 
 	// Ensure GC was run.
 	require.True(gcable.HasGCRun(), "GC was never run as expected")
@@ -150,8 +229,9 @@ func RevisionGCTest(t *testing.T, tester DatastoreTester) {
 	require := require.New(t)
 	gcWindow := 300 * time.Millisecond
 
-	// NOTE: we disable the background GC process here and instead manually run it below.
-	ds, err := tester.New(t, 0, veryLargeGCInterval, gcWindow, 1)
+	// NOTE: we leave the background GC process disabled here and instead manually run it below.
+	ds, err := tester.New(t, DefaultRevisionParameters().
+		WithGCRetentionWindow(GCRetentionWindow(gcWindow)), 1)
 	require.NoError(err)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -236,13 +316,89 @@ func RevisionGCTest(t *testing.T, tester DatastoreTester) {
 	require.Error(ds.CheckRevision(ctx, previousRev), "expected revision head-1 to be outside GC Window")
 }
 
-func CheckRevisionsTest(t *testing.T, tester DatastoreTester) {
+// QuantizedRevisionStaysReadableTest asserts that
+// OptimizedRevision never hands out a revision that CheckRevision would reject,
+// i.e. quantization must stay smaller than the GC retention window.
+// TODO: rewrite using synctest
+func QuantizedRevisionStaysReadableTest(t *testing.T, tester DatastoreTester) {
+	const (
+		quantization = 1 * time.Second
+		gcWindow     = 2 * time.Second
+
+		// How far the sleeps below stay clear of a bucket boundary, instead of
+		// landing right on it. This test picks its timings from its own clock,
+		// but Postgres, MySQL and CRDB derive buckets from the database's clock:
+		// a write this test believes is just inside a new bucket can land just
+		// before it in the datastore, which would put it in the previous bucket
+		// and test nothing. This margin absorbs any skew smaller than itself.
+		clockSkewBuffer = 100 * time.Millisecond
+	)
+
 	require := require.New(t)
 
-	ds, err := tester.New(t, 0, 1000*time.Second, 300*time.Minute, 1)
+	ds, err := tester.New(t, DefaultRevisionParameters().
+		WithQuantization(quantization).
+		WithGCRetentionWindow(GCRetentionWindow(gcWindow)), 1)
 	require.NoError(err)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	setupDatastore(t, ds)
+
+	// Land just inside a fresh bucket and write there, so that what gets
+	// advertised for the rest of the bucket dates from the top of it. Postgres
+	// and MySQL advertise the first transaction in the bucket, which is this
+	// write; memdb, CRDB and Spanner advertise the bucket start itself.
+	time.Sleep(time.Until(nextQuantizationBoundary(time.Now(), quantization)) + clockSkewBuffer)
+
+	rel := makeTestRel("photo", "owner")
+	writtenAt, err := common.WriteRelationships(ctx, ds, tuple.UpdateOperationCreate, rel)
+	require.NoError(err)
+	require.NoError(ds.CheckRevision(ctx, writtenAt))
+
+	// Sleep to the far end of the bucket, where the advertised revision is at
+	// its oldest and closest to aging out.
+	time.Sleep(time.Until(nextQuantizationBoundary(time.Now(), quantization)) - clockSkewBuffer)
+
+	// Sample a few times: every request in this bucket gets the same revision,
+	// so an aged-out one fails for all of them, not just one.
+	for range 5 {
+		optimized, err := ds.OptimizedRevision(ctx)
+		require.NoError(err)
+		require.NoError(ds.CheckRevision(ctx, optimized.Revision),
+			"revision advertised at the end of the quantization window must still be within the GC window")
+	}
+
+	// Now age the write out of the retention window. The second write gives the
+	// datastores that read the oldest valid revision off the transaction log a
+	// newer transaction to compare against.
+	time.Sleep(gcWindow)
+
+	_, err = common.WriteRelationships(ctx, ds, tuple.UpdateOperationTouch, rel)
+	require.NoError(err)
+
+	// This stale error is what every request would get, for the tail of every
+	// bucket, if quantization outgrew the retention window.
+	revisionErr := datastore.InvalidRevisionError{}
+	require.ErrorAs(ds.CheckRevision(ctx, writtenAt), &revisionErr)
+	require.Equal(datastore.RevisionStale, revisionErr.Reason())
+}
+
+// nextQuantizationBoundary returns the start of the bucket after the one
+// containing now.
+func nextQuantizationBoundary(now time.Time, quantization time.Duration) time.Time {
+	return now.Truncate(quantization).Add(quantization)
+}
+
+func CheckRevisionsTest(t *testing.T, tester DatastoreTester) {
+	require := require.New(t)
+	gcRunInterval := 10 * time.Second
+	ds, err := tester.New(t, DefaultRevisionParameters().
+		WithGCRunInterval(GCRunInterval(gcRunInterval)), 1)
+	require.NoError(err)
+
+	ctx, cancel := context.WithTimeout(t.Context(), gcRunInterval)
 	defer cancel()
 
 	// Write a new revision.
@@ -278,13 +434,15 @@ func CheckRevisionsTest(t *testing.T, tester DatastoreTester) {
 	require.NoError(ds.CheckRevision(ctx, head), "expected head revision to be valid in GC Window")
 }
 
+// SequentialRevisionsTest asserts that calls to HeadRevision move the revision forward
 func SequentialRevisionsTest(t *testing.T, tester DatastoreTester) {
 	require := require.New(t)
-
-	ds, err := tester.New(t, 0, 10*time.Second, 300*time.Minute, 1)
+	gcRunInterval := 10 * time.Second
+	ds, err := tester.New(t, DefaultRevisionParameters().
+		WithGCRunInterval(GCRunInterval(gcRunInterval)), 1)
 	require.NoError(err)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), gcRunInterval)
 	defer cancel()
 
 	var previous datastore.Revision
@@ -302,13 +460,15 @@ func SequentialRevisionsTest(t *testing.T, tester DatastoreTester) {
 	}
 }
 
+// ConcurrentRevisionsTest asserts that concurrent calls to HeadRevision move the revision forward
 func ConcurrentRevisionsTest(t *testing.T, tester DatastoreTester) {
 	require := require.New(t)
-
-	ds, err := tester.New(t, 0, 10*time.Second, 300*time.Minute, 1)
+	gcRunInterval := 10 * time.Second
+	ds, err := tester.New(t, DefaultRevisionParameters().
+		WithGCRunInterval(GCRunInterval(gcRunInterval)), 1)
 	require.NoError(err)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), gcRunInterval)
 	defer cancel()
 
 	var wg sync.WaitGroup

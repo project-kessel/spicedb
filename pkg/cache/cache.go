@@ -59,11 +59,6 @@ type Cache[K KeyString, V any] interface {
 	// otherwise it returns the zero value of V and false.
 	Get(key K) (V, bool)
 
-	// GetTTL returns the TTL configured for entries in this cache.
-	// If zero, entries never expire. The current Otter-backed
-	// implementation refreshes the TTL on access.
-	GetTTL() time.Duration
-
 	// Set attempts to store an entry for key, overwriting any existing entry,
 	// and returns true if the write was accepted for processing. cost is
 	// passed to the eviction policy and weighed against Config.MaxCost;
@@ -74,13 +69,6 @@ type Cache[K KeyString, V any] interface {
 	// the entry may still be dropped or evicted by the underlying
 	// implementation, so writes are best-effort.
 	Set(key K, entry V, cost int64) bool
-
-	// Wait blocks until buffered Set calls have been processed by the
-	// underlying implementation. Required for read-your-own-writes
-	// semantics with implementations that buffer writes (e.g. Ristretto);
-	// a no-op on the current Otter-backed implementation, which applies
-	// writes synchronously.
-	Wait()
 
 	// Close stops the cache's background workers (if any) and tears down
 	// associated metrics registration, if one was set up.
@@ -116,9 +104,7 @@ type noopCache[K KeyString, V any] struct{}
 var _ Cache[StringKey, any] = (*noopCache[StringKey, any])(nil)
 
 func (no *noopCache[K, V]) Get(_ K) (V, bool)          { return *new(V), false }
-func (no *noopCache[K, V]) GetTTL() time.Duration      { return time.Duration(0) }
 func (no *noopCache[K, V]) Set(_ K, _ V, _ int64) bool { return false }
-func (no *noopCache[K, V]) Wait()                      {}
 func (no *noopCache[K, V]) Close()                     {}
 func (no *noopCache[K, V]) GetMetrics() Metrics        { return &noopMetrics{} }
 func (no *noopCache[K, V]) MarshalZerologObject(e *zerolog.Event) {

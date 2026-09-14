@@ -29,15 +29,16 @@ type CRDBDriver struct {
 
 // NewCRDBDriver creates a new driver with active connections to the database
 // specified.
-func NewCRDBDriver(url string) (*CRDBDriver, error) {
+func NewCRDBDriver(ctx context.Context, url string) (*CRDBDriver, error) {
 	connConfig, err := pgx.ParseConfig(url)
 	if err != nil {
 		return nil, fmt.Errorf(errUnableToInstantiate, err)
 	}
 	pgxcommon.ConfigurePGXLogger(connConfig)
 	pgxcommon.ConfigureOTELTracer(connConfig, false)
+	pgxcommon.ConfigureDefaultQueryExecMode(connConfig)
 
-	db, err := pgx.ConnectConfig(context.Background(), connConfig)
+	db, err := pgx.ConnectConfig(ctx, connConfig)
 	if err != nil {
 		return nil, fmt.Errorf(errUnableToInstantiate, err)
 	}

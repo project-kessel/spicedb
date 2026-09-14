@@ -22,6 +22,7 @@ import (
 
 	"github.com/authzed/spicedb/internal/datastore/proxy/indexcheck"
 	"github.com/authzed/spicedb/internal/services/integrationtesting/consistencytestutil"
+	"github.com/authzed/spicedb/internal/services/integrationtesting/testconfigs"
 	"github.com/authzed/spicedb/internal/testserver"
 	testdatastore "github.com/authzed/spicedb/internal/testserver/datastore"
 	"github.com/authzed/spicedb/internal/testserver/datastore/config"
@@ -34,13 +35,6 @@ import (
 	"github.com/authzed/spicedb/pkg/development"
 	"github.com/authzed/spicedb/pkg/schema"
 	"github.com/authzed/spicedb/pkg/validationfile"
-)
-
-// veryLargeGCWindow is a very large time duration which, when passed to a datastore
-// constructor, effectively disables garbage collection.
-const (
-	veryLargeGCWindow   = 90000 * time.Second
-	veryLargeGCInterval = 90000 * time.Second
 )
 
 // AllConsistency runs the full system-wide consistency suite against the datastore
@@ -65,14 +59,14 @@ func AllConsistency(t *testing.T, tester dstest.DatastoreTester) {
 // This acts as essentially a full integration test for the API, dispatching, caching,
 // computation and datastore layers.
 func ConsistencyForEngine(t *testing.T, engineID string, tester dstest.DatastoreTester) {
-	consistencyTestFiles, err := consistencytestutil.ListTestConfigs()
+	consistencyTestFiles, err := testconfigs.List()
 	require.NoError(t, err)
 
 	// newDatastore creates a fresh datastore for a single consistency test file.
 	var newDatastore func(t *testing.T) datastore.Datastore
 	if tester != nil {
 		newDatastore = func(t *testing.T) datastore.Datastore {
-			ds, err := tester.New(t, 10, veryLargeGCInterval, veryLargeGCWindow, 0)
+			ds, err := tester.New(t, dstest.DefaultRevisionParameters().WithQuantization(10), 0)
 			require.NoError(t, err)
 			return ds
 		}
@@ -96,7 +90,7 @@ func ConsistencyForEngine(t *testing.T, engineID string, tester dstest.Datastore
 
 			// Write the schema and relationships.
 			dl := datalayer.NewDataLayer(ds)
-			populated, _, err := validationfile.PopulateFromFiles(t.Context(), dl, types.Default.TypeSet, []string{filePath})
+			populated, _, err := validationfile.PopulateFromFS(t.Context(), dl, types.Default.TypeSet, testconfigs.FS, filePath)
 			require.NoError(t, err)
 
 			dsCtx := datalayer.ContextWithHandle(t.Context())

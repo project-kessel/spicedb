@@ -17,6 +17,7 @@ import (
 	"github.com/authzed/spicedb/internal/dispatch"
 	"github.com/authzed/spicedb/internal/dispatch/caching"
 	"github.com/authzed/spicedb/internal/dispatch/keys"
+	"github.com/authzed/spicedb/internal/services/integrationtesting/testconfigs"
 	"github.com/authzed/spicedb/pkg/cache"
 	caveattypes "github.com/authzed/spicedb/pkg/caveats/types"
 	"github.com/authzed/spicedb/pkg/datalayer"
@@ -44,15 +45,9 @@ func newDispatchQueryPlanHandle(b *testing.B, fileName string) *dispatchQueryPla
 	ds, err := dsfortesting.NewMemDBDatastoreForTesting(b, 0, benchTimedelta, memdb.DisableGC)
 	require.NoError(b, err)
 
-	contents, err := testFiles.ReadFile(fileName)
-	require.NoError(b, err)
-
 	dl := datalayer.NewDataLayer(ds)
 
-	populated, rev, err := validationfile.PopulateFromFilesContents(
-		b.Context(), dl, caveattypes.Default.TypeSet,
-		map[string][]byte{"testfile": contents},
-	)
+	populated, rev, err := validationfile.PopulateFromFS(b.Context(), dl, caveattypes.Default.TypeSet, testconfigs.FS, fileName)
 	require.NoError(b, err)
 
 	_, schemaHash, err := dl.HeadRevision(b.Context())
@@ -175,8 +170,7 @@ func (h *dispatchQueryPlanHandle) newCachedDispatchContext(b *testing.B, caching
 func (h *dispatchQueryPlanHandle) newCachingDispatcher(b *testing.B) *caching.Dispatcher {
 	b.Helper()
 	cacheConfig := &cache.Config{
-		NumCounters: 1e4,
-		MaxCost:     1 << 20,
+		MaxCost: 1 << 20,
 	}
 	c, err := cache.NewStandardCache[keys.DispatchCacheKey, any](cacheConfig)
 	require.NoError(b, err)
@@ -331,7 +325,7 @@ func BenchmarkDispatchQueryPlanCheck(b *testing.B) {
 	}{
 		{
 			name:            "basic_rbac",
-			file:            "testconfigs/basicrbac.yaml",
+			file:            "basicrbac.yaml",
 			resourceType:    "example/document",
 			resourceID:      "firstdoc",
 			permission:      "view",
@@ -390,7 +384,7 @@ func BenchmarkDispatchQueryPlanLookupResources(b *testing.B) {
 	}{
 		{
 			name:            "basic_rbac",
-			file:            "testconfigs/basicrbac.yaml",
+			file:            "basicrbac.yaml",
 			resourceType:    "example/document",
 			permission:      "view",
 			subjectType:     "example/user",
@@ -445,7 +439,7 @@ func BenchmarkDispatchQueryPlanLookupSubjects(b *testing.B) {
 	}{
 		{
 			name:            "basic_rbac",
-			file:            "testconfigs/basicrbac.yaml",
+			file:            "basicrbac.yaml",
 			resourceType:    "example/document",
 			resourceID:      "firstdoc",
 			permission:      "view",
