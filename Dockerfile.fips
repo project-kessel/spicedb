@@ -1,5 +1,5 @@
 # Build stage -- the Go toolchain embeds the validated FIPS module in all binaries automatically.
-FROM registry.access.redhat.com/hi/go:1.26.5-fips AS base
+FROM registry.access.redhat.com/hi/go:1.26.6-fips AS base
 
 # Builder for spicedb
 FROM base AS spicedb-builder
@@ -22,7 +22,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/g
 # Builder for health probe — pin matches upstream Dockerfile (updated during syncs).
 FROM base AS health-probe-builder
 WORKDIR /go/src/app
-RUN git clone --branch v0.4.48 --depth 1 https://github.com/grpc-ecosystem/grpc-health-probe.git
+RUN git clone --branch v0.4.57 --depth 1 https://github.com/grpc-ecosystem/grpc-health-probe.git
 WORKDIR /go/src/app/grpc-health-probe
 RUN GOBIN=/go/bin go install -a -tags netgo -ldflags=-w
 

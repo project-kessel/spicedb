@@ -50,7 +50,7 @@ The table below captures all changes to our fork from upstream. Each entry inclu
 
 **Hummingbird Base Images**
 
-Our Dockerfiles use Red Hat Hummingbird images for both building and running the container. The builder stage uses `registry.access.redhat.com/hi/go:1.26.4-fips`, which provides a Go toolchain that automatically embeds a validated FIPS module into all compiled binaries. The runtime stage uses `registry.access.redhat.com/hi/core-runtime:2.42-openssl-fips`, a minimal image with OpenSSL FIPS support. At runtime, `GODEBUG=fips140=on` is set to activate FIPS mode.
+Our Dockerfiles use Red Hat Hummingbird images for both building and running the container. The builder stage uses `registry.access.redhat.com/hi/go:1.26.6-fips`, which provides a Go toolchain that automatically embeds a validated FIPS module into all compiled binaries. The runtime stage uses `registry.access.redhat.com/hi/core-runtime:2.42-openssl-fips`, a minimal image with OpenSSL FIPS support. At runtime, `GODEBUG=fips140=on` is set to activate FIPS mode.
 
 This replaces the previous approach of UBI 9 base images with Go Toolset, `CGO_ENABLED=1`, `GOEXPERIMENT=strictfipsruntime,boringcrypto`, and the `fips_enabled` build tag. With Hummingbird, FIPS compliance is handled transparently by the Go toolchain and runtime image, eliminating the need for manual FIPS build flags.
 
