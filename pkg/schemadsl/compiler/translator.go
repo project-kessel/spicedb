@@ -26,7 +26,6 @@ import (
 type translationContext struct {
 	objectTypePrefix *string
 	mapper           input.PositionMapper
-	schemaString     string
 	skipValidate     bool
 	allowedFlags     *mapz.Set[string]
 	enabledFlags     *mapz.Set[string]
@@ -68,6 +67,17 @@ func translate(tctx *translationContext, root *dslNode) (*CompiledSchema, error)
 	// Copy the name set so that we're not mutating the parent's context
 	// as we do our walk
 	names := tctx.existingNames.Copy()
+
+	// Enable use flags before any translation occurs, since partials (below)
+	// and hoisted imported definitions (in the main loop) are translated before
+	// the loop reaches the use nodes in source order.
+	for _, topLevelNode := range root.GetChildren() {
+		if topLevelNode.GetType() == dslshape.NodeTypeUseFlag {
+			if err := translateUseFlag(tctx, topLevelNode); err != nil {
+				return nil, err
+			}
+		}
+	}
 
 	// Do an initial pass to translate partials and add them to the
 	// translation context. This ensures that they're available for
@@ -160,6 +170,8 @@ func translateCaveatDefinition(tctx *translationContext, defNode *dslNode) (*cor
 		return nil, defNode.WithSourceErrorf(definitionName, "caveat `%s` must have at least one parameter defined", definitionName)
 	}
 
+	// NOTE: the environment must be constructed per caveat definition, as each
+	// caveat has its own, isolated set of parameters.
 	env := caveats.NewEnvironmentWithTypeSet(tctx.caveatTypeSet)
 	parameters := make(map[string]caveattypes.VariableType, len(paramNodes))
 	for _, paramNode := range paramNodes {
@@ -442,7 +454,7 @@ func translatePermission(tctx *translationContext, permissionNode *dslNode) (*co
 	var typeAnnotations []string
 	typeAnnotationNode, err := permissionNode.Lookup(dslshape.NodePermissionPredicateTypeAnnotations)
 	if err == nil {
-		annotations, err := extractTypeAnnotations(typeAnnotationNode)
+		annotations, err := extractTypeAnnotations(tctx, typeAnnotationNode)
 		if err != nil {
 			return nil, permissionNode.Errorf("error extracting type annotations: %w", err)
 		}
@@ -481,8 +493,11 @@ func translatePermission(tctx *translationContext, permissionNode *dslNode) (*co
 	return permission, nil
 }
 
-// extractTypeAnnotations is a helper function to return the literal identifiers under the type annotation node
-func extractTypeAnnotations(typeAnnotationNode *dslNode) ([]string, error) {
+// extractTypeAnnotations is a helper function to return the identifiers under the type annotation
+// node, normalized with the object type prefix in the same manner as relation type references.
+// When typechecking is not enabled, the annotations are returned as-is, since they are stripped
+// from the compiled schema.
+func extractTypeAnnotations(tctx *translationContext, typeAnnotationNode *dslNode) ([]string, error) {
 	children := typeAnnotationNode.List(dslshape.NodeTypeAnnotationPredicateTypes)
 
 	annotations := make([]string, 0, len(children))
@@ -492,6 +507,14 @@ func extractTypeAnnotations(typeAnnotationNode *dslNode) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
+
+		if tctx.enabledFlags.Has("typechecking") {
+			typeName, err = tctx.prefixedPath(typeName)
+			if err != nil {
+				return nil, err
+			}
+		}
+
 		annotations = append(annotations, typeName)
 	}
 

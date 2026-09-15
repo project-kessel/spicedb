@@ -20,7 +20,7 @@ import (
 	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/sdk/metric"
 	otelres "go.opentelemetry.io/otel/sdk/resource"
-	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
@@ -209,7 +209,7 @@ func NewSpannerDatastore(ctx context.Context, database string, opts ...Option) (
 
 	ds := &spannerDatastore{
 		RemoteClockRevisions: revisions.NewRemoteClockRevisions(
-			defaultChangeStreamRetention,
+			config.gcWindow,
 			maxRevisionStaleness,
 			config.followerReadDelay,
 			config.revisionQuantization,
@@ -298,6 +298,10 @@ func (sd *spannerDatastore) SnapshotReader(revisionRaw datastore.Revision) datas
 
 func (sd *spannerDatastore) MetricsID() (string, error) {
 	return sd.database, nil
+}
+
+func (sd *spannerDatastore) EngineName() string {
+	return Engine
 }
 
 func (sd *spannerDatastore) readTransactionMetadata(ctx context.Context, transactionTag string) (common.TransactionMetadata, error) {

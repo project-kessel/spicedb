@@ -57,16 +57,6 @@ func ParseConfigWithInstrumentation(url string) (*pgx.ConnConfig, error) {
 	return connConfig, nil
 }
 
-// ConnectWithInstrumentation returns a pgx.Conn that has been instrumented for observability
-func ConnectWithInstrumentation(ctx context.Context, url string) (*pgx.Conn, error) {
-	connConfig, err := ParseConfigWithInstrumentation(url)
-	if err != nil {
-		return nil, err
-	}
-
-	return pgx.ConnectConfig(ctx, connConfig)
-}
-
 // ConnectWithInstrumentationAndTimeout returns a pgx.Conn that has been instrumented for observability
 func ConnectWithInstrumentationAndTimeout(ctx context.Context, url string, connectTimeout time.Duration) (*pgx.Conn, error) {
 	connConfig, err := ParseConfigWithInstrumentation(url)
@@ -335,6 +325,7 @@ func ConfigureDefaultQueryExecMode(config *pgx.ConnConfig) {
 	if !strings.Contains(config.ConnString(), "default_query_exec_mode") {
 		// the execution mode was not overridden by the user
 		config.DefaultQueryExecMode = pgx.QueryExecModeExec
+		return
 	}
 
 	log.Info().

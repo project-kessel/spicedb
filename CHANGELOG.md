@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
+### Changed
+- Increase the timeout for datastore readiness checks to account for the possibility of far away databases (https://github.com/authzed/spicedb/pull/3305)
+
+### Fixed
+- Namespace cache: Fixed an issue where the cache was configured without a TTL, which meant that entries accumulated until the cache filled and new sets were rejected, reducing cache hit rate and increasing datastore load. (https://github.com/authzed/spicedb/pull/3112)
+- Cache metrics: Fixed cache hit rate reporting by removing unnecessary reads from the `Set` path (https://github.com/authzed/spicedb/pull/3112)
+- MemDB: a read at a given revision, such as a `Check` at an `at_exact_snapshot` ZedToken, could include relationships written *after* that revision, so the same revision returned different results as later writes arrived instead of a stable point-in-time view. Reads at a revision now return only the data committed as of it. (https://github.com/authzed/spicedb/pull/3257)
+- Spanner: the configured `--datastore-gc-window` was ignored, and revisions were always treated as valid for 24 hours (the change stream retention). Spanner now honors the configured window, capped at that retention since older revisions cannot be read regardless. (https://github.com/authzed/spicedb/pull/3257)
+
+### Security
+- Fixed an issue that exposes datastore information if tracing is enabled and if using command arguments instead of environment variables. (https://github.com/authzed/spicedb/security/advisories/GHSA-jf7w-wx43-32gc)
+
+## [1.56.1] - 2026-08-26
+### Changed
+- Schema compilation: reduce memory usage when caveats are involved (https://github.com/authzed/spicedb/pull/3266)
+- CockroachDB: read queries no longer accumulate prepared statements in CockroachDB. Reads inline the revision into the SQL text (`AS OF SYSTEM TIME <rev>`), so every new revision produced statement text that was never reused, and pgx's text-keyed statement cache grew without bound. The read pool now uses pgx's `exec` mode, matching Postgres. The write pool continues to use prepared statements, since write queries inline no revision and are genuinely reused. Measured on a three-node cluster under a blended read/write load, prepared-statement memory went from 61.75 MB and still growing to 1.18 MB and flat. Deployments can revert with `default_query_exec_mode=cache_statement` in the datastore URI. (https://github.com/authzed/spicedb/pull/3286)
+
+### Fixed
+- Schema: permission type annotations (`use typechecking`) now accept prefixed definition names (e.g. `permission view: example/user = viewer`), which previously failed to parse; annotations are also now normalized with the object type prefix in the same manner as relation type references (https://github.com/authzed/spicedb/pull/3273)
+- Postgres: read replicas no longer intermittently return `object definition not found` under load. The strict read-replica guard now verifies that the replica's snapshot has caught up to the revision being read (snapshot domination) instead of checking a single transaction id, and raises from within the read itself rather than from a trailing assertion, so a replica that catches up mid-query can no longer let an incomplete read through. In both cases the read correctly falls back to the primary. (https://github.com/authzed/spicedb/pull/3243)
+- Prevent ReadRelationships from doing work that's immediately discarded when the `optional_limit` parameter is used (https://github.com/authzed/spicedb/pull/3253)
+- MemDB: overlapping write transactions could violate every snapshot-consistency invariant of the datastore — a committed write could be invisible at its own returned revision (breaking read-your-writes, e.g. an at-exact-snapshot `Check` right after `WriteRelationships`), a later commit could leak into reads at an earlier revision, a write visible at one revision could be missing at a later one (including head), and two concurrent transactions could be assigned the same revision. Revisions are now assigned at write-transaction acquisition, where writer serialization makes the two orders identical. (https://github.com/authzed/spicedb/pull/3239)
+- All datastores now answer Ready (or not) within a bounded time (https://github.com/authzed/spicedb/pull/3262)
+
+## [1.56.0] - 2026-07-24
 ### Added
 - New metric `check_permissionship_total` for CheckPermission and CheckBulkPermissions that counts the number of requests that returned HAS_PERMISSION. Also, `write_relationships_updates` also includes BulkImport calls (https://github.com/authzed/spicedb/pull/3240)
 
@@ -3667,7 +3692,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 - First release.
 
-[Unreleased]: https://github.com/authzed/spicedb/compare/v1.54.0...HEAD
+[Unreleased]: https://github.com/authzed/spicedb/compare/v1.56.1...HEAD
+[1.56.1]: https://github.com/authzed/spicedb/compare/v1.56.0...v1.56.1
+[1.56.0]: https://github.com/authzed/spicedb/compare/v1.54.0...v1.56.0
 [1.54.0]: https://github.com/authzed/spicedb/compare/v1.53.0...v1.54.0
 [1.53.0]: https://github.com/authzed/spicedb/compare/v1.52.0...v1.53.0
 [1.52.0]: https://github.com/authzed/spicedb/compare/v1.51.1...v1.52.0

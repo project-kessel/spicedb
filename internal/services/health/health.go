@@ -14,7 +14,9 @@ import (
 	"github.com/authzed/spicedb/pkg/datastore"
 )
 
-const datastoreReadyTimeout = time.Millisecond * 500
+// This is kept high because the spicedb deployment and the datastore might not be in the same region.
+// Ideally, they are, but they might not.
+const datastoreReadyTimeout = time.Second * 3
 
 // NewHealthManager creates and returns a new health manager that checks the IsReady
 // status of the given dispatcher and datastore checker and sets the health check to
@@ -28,6 +30,7 @@ func NewHealthManager(dispatcher dispatch.Dispatcher, dsc DatastoreChecker) Mana
 // traffic.
 type DatastoreChecker interface {
 	// ReadyState returns whether the datastore is ready to be used.
+	// This call must respect context cancellation and deadlines.
 	ReadyState(ctx context.Context) (datastore.ReadyState, error)
 }
 
@@ -40,8 +43,15 @@ type Manager interface {
 	// HealthSvc is the health service this manager is managing.
 	HealthSvc() *grpcutil.AuthlessHealthServer
 
-	// Checker blocks until the status is SERVING.
+	// Checker blocks until the status is SERVING or until the context is done.
 	Checker(ctx context.Context) error
+
+	// right now, Checker is serving both as a startup probe and a readiness probe.
+	// However, its implementation is really only functioning as a startup probe because the function exits quickly.
+	// TODO(miparnisari): Split Checker into two functions: Startup and Readiness (to match kubernetes probes)
+	// Startup can continue with this implementation. Readiness can ... be something else (TBD).
+	// ALso: we don't need a per-service probe, just one a general one for the entire service.
+	// Also: we need a function Close() that sets status to NOT_SERVING.
 }
 
 type healthManager struct {
@@ -60,7 +70,11 @@ func (hm *healthManager) RegisterReportedService(serviceName string) {
 	hm.healthSvc.SetServingStatus(serviceName, healthpb.HealthCheckResponse_NOT_SERVING)
 }
 
+// Checker blocks until the underlying dependencies are ready.
+// When they are, it marks the service as "serving" and returns.
+// If they never become ready, it just returns.
 func (hm *healthManager) Checker(ctx context.Context) error {
+	log.Ctx(ctx).Info().Msg("HEALTHCHECK")
 	// Run immediately for the initial check
 	backoffInterval := backoff.NewExponentialBackOff()
 
@@ -96,6 +110,7 @@ func (hm *healthManager) Checker(ctx context.Context) error {
 	}
 }
 
+// checkIsReady returns true if both the datastore and the dispatcher are ready
 func (hm *healthManager) checkIsReady(ctx context.Context) bool {
 	log.Ctx(ctx).Debug().Msg("checking if datastore and dispatcher are ready")
 

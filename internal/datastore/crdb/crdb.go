@@ -80,6 +80,12 @@ func newCRDBDatastore(ctx context.Context, url string, options ...Option) (datas
 	if err != nil {
 		return nil, common.RedactAndLogSensitiveConnString(ctx, errUnableToInstantiate, err, url)
 	}
+	// Reads only. See the note on the write pool below for why the two differ.
+	pgxcommon.ConfigureDefaultQueryExecMode(readPoolConfig.ConnConfig)
+	readPoolConfig.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		RegisterTypes(conn.TypeMap())
+		return nil
+	}
 
 	writePoolConfig, err := pgxpool.ParseConfig(url)
 	if err != nil {
@@ -89,9 +95,28 @@ func newCRDBDatastore(ctx context.Context, url string, options ...Option) (datas
 	if err != nil {
 		return nil, common.RedactAndLogSensitiveConnString(ctx, errUnableToInstantiate, err, url)
 	}
-
-	initCtx, initCancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer initCancel()
+	// The write pool deliberately KEEPS pgx's default cache_statement mode, while the read pool is
+	// switched to exec. The two paths generate SQL text with very different lifetimes:
+	//
+	//   Reads inline the revision -- crdbReader.addFromToQuery concatenates
+	//   "AS OF SYSTEM TIME <rev>" into the FROM clause -- so every new revision produces a fresh
+	//   generation of statement text that will never be looked up again. pgx keys its cache on exact
+	//   text, so a read pool accumulates prepared statements without bound: measured at 62-68MB
+	//   across a 3-node cluster and still climbing linearly when the test ended.
+	//
+	//   Writes run with atSpecificRevision == "" and inline nothing. Their text varies only with the
+	//   number of relationships in the batch (squirrel appends one VALUES tuple per row), which is
+	//   bounded by the distinct batch sizes a workload uses, not by elapsed time. Those statements
+	//   are genuinely reused, so caching them is a real win rather than dead weight.
+	//
+	// Measured: writes were consistently ~1.4-2.5% slower at p50 under exec, in both a 0.2ms and an
+	// 11.5ms RTT condition -- the only latency signal in this work whose sign was stable across
+	// conditions. Keeping cache_statement here recovers that without reintroducing the unbounded
+	// growth, because the bound is structural rather than a matter of degree.
+	writePoolConfig.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		RegisterTypes(conn.TypeMap())
+		return nil
+	}
 
 	healthChecker, err := pool.NewNodeHealthChecker(url)
 	if err != nil {
@@ -99,8 +124,11 @@ func newCRDBDatastore(ctx context.Context, url string, options ...Option) (datas
 	}
 
 	// The initPool is a 1-connection pool that is only used for setup tasks.
-	// The actual pools are not given the initCtx, since cancellation can
-	// interfere with pool setup.
+	// If the database is completely unreachable (e.g. wrong credentials),
+	// this will block for 15 seconds and then error out.
+	// TODO(miparnisari): remove this initCtx once spicedb has a k8s startup probe. It will become unnecessary.
+	initCtx, initCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer initCancel()
 	initPoolConfig := readPoolConfig.Copy()
 	initPoolConfig.MinConns = 1
 	initPool, err := pool.NewRetryPool(initCtx, "init", initPoolConfig, healthChecker, config.maxRetries, config.connectRate)
@@ -208,7 +236,8 @@ func newCRDBDatastore(ctx context.Context, url string, options ...Option) (datas
 	ds.SetNowFunc(ds.headRevisionInternal)
 	ds.SetNowOnlyFunc(ds.headRevisionInternalNoHash)
 
-	// this ctx and cancel is tied to the lifetime of the datastore
+	// The actual pools are not given the initCtx.
+	// This ctx and cancel is tied to the lifetime of the datastore
 	ds.ctx, ds.cancel = context.WithCancel(context.Background())
 	ds.writePool, err = pool.NewRetryPool(ds.ctx, "write", writePoolConfig, healthChecker, config.maxRetries, config.connectRate)
 	if err != nil {
@@ -320,6 +349,10 @@ func (cds *crdbDatastore) MetricsID() (string, error) {
 	return common.MetricsIDFromURL(cds.dburl)
 }
 
+func (cds *crdbDatastore) EngineName() string {
+	return Engine
+}
+
 func (cds *crdbDatastore) ReadWriteTx(
 	ctx context.Context,
 	f datastore.TxUserFunc,
@@ -422,7 +455,7 @@ func wrapError(err error) error {
 // to be ready to receive traffic, and total connections counts connections in the constructing
 // state, which cannot receive traffic.
 func (cds *crdbDatastore) ReadyState(ctx context.Context) (datastore.ReadyState, error) {
-	currentRevision, err := migrations.NewCRDBDriver(cds.dburl)
+	currentRevision, err := migrations.NewCRDBDriver(ctx, cds.dburl)
 	if err != nil {
 		return datastore.ReadyState{}, err
 	}
